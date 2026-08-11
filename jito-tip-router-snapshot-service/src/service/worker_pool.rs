@@ -3,7 +3,7 @@ use {
         candidate::CandidateIdentity,
         candidate_store::CandidateStore,
         config::TipRouterSnapshotConfig,
-        snapshot_worker::{SnapshotWorkerHandle, WorkerCompletion, WorkerReport},
+        snapshot_worker::{SnapshotWorkerHandle, WorkerCompletion},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
     log::warn,
@@ -24,11 +24,11 @@ pub(super) struct WorkerShutdownTimeout {
 
 pub(super) struct SnapshotWorkerPool {
     workers: HashMap<CandidateIdentity, SnapshotWorkerHandle>,
-    completion_sender: Sender<WorkerReport>,
+    completion_sender: Sender<WorkerCompletion>,
 }
 
 impl SnapshotWorkerPool {
-    pub(super) fn new(completion_sender: Sender<WorkerReport>) -> Self {
+    pub(super) fn new(completion_sender: Sender<WorkerCompletion>) -> Self {
         Self {
             workers: HashMap::new(),
             completion_sender,
@@ -53,18 +53,21 @@ impl SnapshotWorkerPool {
         Ok(())
     }
 
-    pub(super) fn complete_report(&mut self, report: WorkerReport) -> Option<WorkerCompletion> {
-        let candidate = report_candidate(&report);
+    pub(super) fn complete_worker(
+        &mut self,
+        completion: WorkerCompletion,
+    ) -> Option<WorkerCompletion> {
+        let candidate = completion.candidate;
         let Some(worker) = self.workers.remove(&candidate) else {
-            warn!("received duplicate or unknown worker report for {candidate:?}");
+            warn!("received duplicate or unknown worker completion for {candidate:?}");
             return None;
         };
-        Some(worker.join_after_report(report))
+        Some(worker.join_after_completion(completion))
     }
 
     pub(super) fn shutdown_with_timeout(
         &mut self,
-        completion_receiver: &Receiver<WorkerReport>,
+        completion_receiver: &Receiver<WorkerCompletion>,
         timeout: Duration,
     ) -> Result<Vec<WorkerCompletion>, WorkerShutdownTimeout> {
         let deadline = Instant::now() + timeout;
@@ -81,8 +84,8 @@ impl SnapshotWorkerPool {
             }
 
             match completion_receiver.recv_timeout(deadline.saturating_duration_since(now)) {
-                Ok(report) => {
-                    if let Some(completion) = self.complete_report(report) {
+                Ok(worker_completion) => {
+                    if let Some(completion) = self.complete_worker(worker_completion) {
                         completions.push(completion);
                     }
                 }
@@ -115,13 +118,5 @@ impl SnapshotWorkerPool {
             self.completion_sender.clone(),
         );
         self.workers.insert(candidate, worker);
-    }
-}
-
-fn report_candidate(report: &WorkerReport) -> CandidateIdentity {
-    match report {
-        WorkerReport::Completed { candidate, .. } | WorkerReport::Panicked { candidate } => {
-            *candidate
-        }
     }
 }

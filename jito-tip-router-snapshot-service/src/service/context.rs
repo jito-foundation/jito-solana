@@ -1,14 +1,14 @@
 use {
     super::{
         TipRouterSnapshotServiceError, TipRouterSnapshotServiceResult,
-        publication_state::SnapshotPublicationState,
+        publication_state::SnapshotPublicationTracker,
         worker_pool::{SnapshotWorkerPool, WorkerShutdownTimeout},
     },
     crate::{
         candidate::CandidateIdentity,
-        candidate_store::{CandidateStore, CandidateStoreError},
+        candidate_store::{CandidateStore, CandidateStoreError, PublicationOutcome},
         config::TipRouterSnapshotConfig,
-        snapshot_worker::{SnapshotWorkerError, WorkerCompletion, WorkerReport},
+        snapshot_worker::{SnapshotWorkerError, WorkerCompletion, WorkerOutcome},
     },
     crossbeam_channel::{Receiver, Sender},
     log::{error, info, warn},
@@ -31,23 +31,21 @@ const ARTIFACT_WORKERS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Main state for the top-level service
 pub(super) struct TipRouterSnapshotServiceContext {
-    publication_state: SnapshotPublicationState,
+    publication_state: SnapshotPublicationTracker,
     workers: SnapshotWorkerPool,
 }
 
 impl TipRouterSnapshotServiceContext {
     pub(super) fn new(
-        completion_sender: Sender<WorkerReport>,
+        completion_sender: Sender<WorkerCompletion>,
         latest_published_epoch: Option<Epoch>,
     ) -> Self {
         Self {
-            publication_state: SnapshotPublicationState::new(latest_published_epoch),
+            publication_state: SnapshotPublicationTracker::new(latest_published_epoch),
             workers: SnapshotWorkerPool::new(completion_sender),
         }
     }
-}
 
-impl TipRouterSnapshotServiceContext {
     pub(super) fn handle_bank_notification(
         &mut self,
         config: &TipRouterSnapshotConfig,
@@ -70,10 +68,13 @@ impl TipRouterSnapshotServiceContext {
         rooted_chain: Vec<(Slot, Hash)>,
         candidate_store: &CandidateStore,
     ) -> TipRouterSnapshotServiceResult {
-        if let Some(winner) = self.publication_state.select_rooted_winner(&rooted_chain) {
+        if let Some(winner) = self
+            .publication_state
+            .select_winner_for_publication(&rooted_chain)
+        {
             info!("selected rooted tip-router snapshot candidate {winner:?}");
-            self.try_publish_winner(candidate_store);
         }
+        self.try_publish_winner(candidate_store);
         Ok(())
     }
 
@@ -85,13 +86,15 @@ impl TipRouterSnapshotServiceContext {
     ) -> TipRouterSnapshotServiceResult {
         let Some((candidate, parent_bank)) = self
             .publication_state
-            .candidate_from_boundary_bank(boundary_child_bank)
+            .eligible_candidate_from_boundary_child(boundary_child_bank)
         else {
             // 99.999% of slots are not epoch-boundary slots
+            // (though our notification filter should technically not forward them on the sender
+            // side)
             return Ok(());
         };
 
-        if !self.publication_state.allows_candidate(candidate) {
+        if !self.publication_state.can_spawn_candidate(candidate) {
             return Ok(());
         }
 
@@ -110,74 +113,69 @@ impl TipRouterSnapshotServiceContext {
             return Ok(());
         }
 
-        self.publication_state.record_candidate(candidate);
+        self.publication_state.record_spawned_candidate(candidate);
         Ok(())
     }
 
-    pub(super) fn handle_worker_report(
+    pub(super) fn handle_worker_completion(
         &mut self,
-        report: WorkerReport,
-        candidate_store: &CandidateStore,
+        worker_completion: WorkerCompletion,
         exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
-        let Some(completion) = self.workers.complete_report(report) else {
+        let Some(completion) = self.workers.complete_worker(worker_completion) else {
+            // Weird case where the worker was already removed and this has been duplicated
             return Ok(());
         };
-        self.record_worker_completion(completion, candidate_store, exit)
+        self.record_worker_completion(completion, exit)
     }
 
     fn record_worker_completion(
         &mut self,
         completion: WorkerCompletion,
-        candidate_store: &CandidateStore,
         exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
-        match completion {
-            WorkerCompletion::Written { candidate, path } => {
+        let WorkerCompletion { candidate, outcome } = completion;
+        match outcome {
+            WorkerOutcome::Written(path) => {
                 info!(
                     "wrote tip-router snapshot candidate {candidate:?} to {}",
                     path.display()
                 );
             }
-            WorkerCompletion::Failed {
-                candidate,
-                err:
-                    SnapshotWorkerError::CandidateStore(CandidateStoreError::DirectoryUnavailable {
-                        path,
-                        source,
-                    }),
-            } => {
+            WorkerOutcome::Failed(SnapshotWorkerError::CandidateStore(
+                CandidateStoreError::DirectoryUnavailable { path, source },
+            )) => {
                 error!(
                     "candidate {candidate:?} failed because {} is unavailable",
                     path.display()
                 );
-                self.publication_state.discard_failed_candidate(candidate);
+                self.publication_state.record_candidate_failure(candidate);
                 exit.store(true, Ordering::Relaxed);
                 return Err(TipRouterSnapshotServiceError::CandidateStoreUnavailable {
                     path,
                     source,
                 });
             }
-            WorkerCompletion::Failed { candidate, err } => {
+            WorkerOutcome::Failed(err) => {
                 error!("tip-router snapshot candidate {candidate:?} failed: {err}");
-                if self.publication_state.discard_failed_candidate(candidate) {
+                if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate, exit);
                 }
             }
-            WorkerCompletion::Panicked { candidate } => {
+            WorkerOutcome::Panicked => {
                 error!("tip-router snapshot worker panicked for {candidate:?}");
-                if self.publication_state.discard_failed_candidate(candidate) {
+                if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate, exit);
                 }
             }
-            WorkerCompletion::MissingResult { candidate } => {
+            WorkerOutcome::MissingResult => {
                 error!("tip-router snapshot worker returned no result for {candidate:?}");
-                if self.publication_state.discard_failed_candidate(candidate) {
+                if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate, exit);
                 }
             }
         }
-        self.maintenance(candidate_store)
+        Ok(())
     }
 
     fn rooted_candidate_failed(
@@ -193,37 +191,28 @@ impl TipRouterSnapshotServiceContext {
         })
     }
 
-    pub(super) fn maintenance(
-        &mut self,
-        candidate_store: &CandidateStore,
-    ) -> TipRouterSnapshotServiceResult {
-        self.try_publish_winner(candidate_store);
-        Ok(())
-    }
-
     fn try_publish_winner(&mut self, candidate_store: &CandidateStore) {
-        if let Some(winner) = self.publication_state.publishing_winner() {
-            match candidate_store.publish_winner(winner) {
-                Ok(path) => {
+        if let Some(winner) = self.publication_state.winner_pending_publication() {
+            match candidate_store.finalize_publication(winner) {
+                Ok(PublicationOutcome::Published { path }) => {
                     info!(
                         "published tip-router snapshot winner {winner:?} to {}",
                         path.display()
                     );
-                    self.publication_state.finish_publication(winner);
+                    self.publication_state.record_winner_published(winner);
                 }
-                Err(CandidateStoreError::AlreadyPublished { path, .. }) => {
+                Ok(PublicationOutcome::AlreadyPublished { path }) => {
                     warn!(
                         "tip-router snapshot epoch {} was already published at {}",
                         winner.epoch,
                         path.display()
                     );
-                    let _ = candidate_store.delete_candidate(winner);
-                    self.publication_state.finish_publication(winner);
+                    self.publication_state.record_winner_published(winner);
                 }
                 Err(err) => {
                     warn!(
-                        "failed to clean candidates or publish winner {winner:?}; will retry: \
-                         {err}"
+                        "failed to finalize tip-router snapshot winner {winner:?}; will retry on \
+                         the next rooted-chain notification: {err}"
                     )
                 }
             }
@@ -232,13 +221,11 @@ impl TipRouterSnapshotServiceContext {
 
     pub(super) fn shutdown_workers(
         &mut self,
-        completion_receiver: &Receiver<WorkerReport>,
-        candidate_store: &CandidateStore,
+        completion_receiver: &Receiver<WorkerCompletion>,
         exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         self.shutdown_workers_with_timeout(
             completion_receiver,
-            candidate_store,
             exit,
             ARTIFACT_WORKERS_SHUTDOWN_TIMEOUT,
         )
@@ -246,8 +233,7 @@ impl TipRouterSnapshotServiceContext {
 
     fn shutdown_workers_with_timeout(
         &mut self,
-        completion_receiver: &Receiver<WorkerReport>,
-        candidate_store: &CandidateStore,
+        completion_receiver: &Receiver<WorkerCompletion>,
         exit: &Arc<AtomicBool>,
         timeout: Duration,
     ) -> TipRouterSnapshotServiceResult {
@@ -273,7 +259,7 @@ impl TipRouterSnapshotServiceContext {
             ),
         };
         for completion in completions {
-            if let Err(err) = self.record_worker_completion(completion, candidate_store, exit) {
+            if let Err(err) = self.record_worker_completion(completion, exit) {
                 first_error.get_or_insert(err);
             }
         }
@@ -283,7 +269,6 @@ impl TipRouterSnapshotServiceContext {
             return Err(shutdown_timeout);
         }
 
-        self.maintenance(candidate_store)?;
         first_error.map_or(Ok(()), Err)
     }
 }
@@ -319,7 +304,9 @@ mod tests {
         let epoch = candidates.first().unwrap().epoch;
         assert!(candidates.iter().all(|candidate| candidate.epoch == epoch));
         for candidate in candidates {
-            context.publication_state.record_candidate(*candidate);
+            context
+                .publication_state
+                .record_spawned_candidate(*candidate);
         }
     }
 
@@ -344,7 +331,7 @@ mod tests {
             fs::read(output_dir.path().join("7_stake_meta_collection.json")).unwrap(),
             b"winner"
         );
-        assert_eq!(context.publication_state.publishing_winner(), None);
+        assert_eq!(context.publication_state.winner_pending_publication(), None);
         assert_eq!(context.publication_state.latest_published_epoch(), Some(7));
         assert!(!candidate_path(output_dir.path(), loser).exists());
         assert!(!candidate_path(output_dir.path(), stale).exists());
@@ -384,9 +371,8 @@ mod tests {
             .handle_new_rooted_chain(vec![(candidate.slot, candidate.bank_hash)], &store)
             .unwrap();
         collect(&mut context, &[candidate]);
-        context.maintenance(&store).unwrap();
 
-        assert!(context.publication_state.active_candidates().is_some());
+        assert!(context.publication_state.tracked_candidates().is_some());
         assert!(candidate_path(output_dir.path(), candidate).exists());
         assert!(
             !output_dir
@@ -406,22 +392,22 @@ mod tests {
         fs::write(&stale_path, b"stale").unwrap();
         collect(&mut context, &[stale]);
 
-        context.publication_state.record_candidate(newer);
+        context.publication_state.record_spawned_candidate(newer);
 
         assert_eq!(
-            context.publication_state.active_candidates(),
+            context.publication_state.tracked_candidates(),
             Some(&std::collections::HashSet::from([newer]))
         );
         assert!(stale_path.exists());
-        context.publication_state.record_candidate(stale);
+        context.publication_state.record_spawned_candidate(stale);
         assert_eq!(
-            context.publication_state.active_candidates(),
+            context.publication_state.tracked_candidates(),
             Some(&std::collections::HashSet::from([newer]))
         );
     }
 
     #[test]
-    fn failed_publication_retains_only_the_winner_for_retry() {
+    fn failed_publication_retries_on_the_next_rooted_chain() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
         let blocking_loser = candidate(6, 40, Hash::new_unique());
@@ -435,7 +421,10 @@ mod tests {
             .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
             .unwrap();
 
-        assert_eq!(context.publication_state.publishing_winner(), Some(winner));
+        assert_eq!(
+            context.publication_state.winner_pending_publication(),
+            Some(winner)
+        );
         assert!(
             !output_dir
                 .path()
@@ -444,9 +433,9 @@ mod tests {
         );
 
         fs::remove_dir(candidate_path(output_dir.path(), blocking_loser)).unwrap();
-        context.maintenance(&store).unwrap();
+        context.handle_new_rooted_chain(Vec::new(), &store).unwrap();
 
-        assert_eq!(context.publication_state.publishing_winner(), None);
+        assert_eq!(context.publication_state.winner_pending_publication(), None);
         assert!(
             output_dir
                 .path()
@@ -456,20 +445,55 @@ mod tests {
     }
 
     #[test]
+    fn worker_completion_does_not_publish_a_pending_winner() {
+        let mut context = context();
+        let winner = candidate(7, 42, Hash::new_unique());
+        let output_dir = tempdir().unwrap();
+        let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
+        let canonical_path = output_dir.path().join("7_stake_meta_collection.json");
+        let winner_path = candidate_path(output_dir.path(), winner);
+        let exit = Arc::new(AtomicBool::new(false));
+        collect(&mut context, &[winner]);
+
+        context
+            .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
+            .unwrap();
+        assert_eq!(
+            context.publication_state.winner_pending_publication(),
+            Some(winner)
+        );
+
+        fs::write(&winner_path, b"winner").unwrap();
+        context
+            .record_worker_completion(
+                WorkerCompletion {
+                    candidate: winner,
+                    outcome: WorkerOutcome::Written(winner_path),
+                },
+                &exit,
+            )
+            .unwrap();
+        assert!(!canonical_path.exists());
+
+        context.handle_new_rooted_chain(Vec::new(), &store).unwrap();
+        assert!(canonical_path.exists());
+    }
+
+    #[test]
     fn rooted_candidate_worker_failure_stops_the_service() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
-        context.publication_state.record_candidate(winner);
+        context.publication_state.record_spawned_candidate(winner);
         context
             .publication_state
-            .select_rooted_winner(&[(winner.slot, winner.bank_hash)]);
-        let output_dir = tempdir().unwrap();
-        let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
+            .select_winner_for_publication(&[(winner.slot, winner.bank_hash)]);
         let exit = Arc::new(AtomicBool::new(false));
 
         let result = context.record_worker_completion(
-            WorkerCompletion::MissingResult { candidate: winner },
-            &store,
+            WorkerCompletion {
+                candidate: winner,
+                outcome: WorkerOutcome::MissingResult,
+            },
             &exit,
         );
 
@@ -493,19 +517,13 @@ mod tests {
             context
                 .workers
                 .spawn_test_worker(identity, Duration::from_millis(200));
-            context.publication_state.record_candidate(identity);
+            context.publication_state.record_spawned_candidate(identity);
         }
-        let output_dir = tempdir().unwrap();
-        let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
         let exit = Arc::new(AtomicBool::new(false));
         let started = std::time::Instant::now();
 
-        let result = context.shutdown_workers_with_timeout(
-            &receiver,
-            &store,
-            &exit,
-            Duration::from_millis(20),
-        );
+        let result =
+            context.shutdown_workers_with_timeout(&receiver, &exit, Duration::from_millis(20));
 
         assert!(matches!(
             result,

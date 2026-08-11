@@ -8,36 +8,37 @@ use {
 };
 
 // At any given time the service is either:
-// 1. (Idle) - waiting for end of epoch
-// 2. (Collecting) - handling one or more unrooted epoch-boundary candidates
-// 3. (Publishing) - taking the rooted candidate, publishing it, and cleaning up dead forks
+// 1. (AwaitingCandidate) - waiting for end of epoch
+// 2. (TrackingCandidates) - handling one or more unrooted epoch-boundary candidates
+// 3. (WinnerPendingPublication) - taking the rooted candidate, publishing it, and cleaning up
+// dead forks
 #[derive(Debug, Default)]
-enum StakeSnapshotState {
+enum SnapshotPublicationPhase {
     #[default]
-    Idle,
-    Collecting {
-        epoch: Epoch,
-        candidates: HashSet<CandidateIdentity>,
+    AwaitingCandidate,
+    TrackingCandidates {
+        candidate_epoch: Epoch,
+        tracked_candidates: HashSet<CandidateIdentity>,
     },
-    Publishing {
-        winner: CandidateIdentity,
+    WinnerPendingPublication {
+        pending_winner: CandidateIdentity,
     },
 }
 
-pub(super) struct SnapshotPublicationState {
-    state: StakeSnapshotState,
+pub(super) struct SnapshotPublicationTracker {
+    phase: SnapshotPublicationPhase,
     latest_published_epoch: Option<Epoch>,
 }
 
-impl SnapshotPublicationState {
+impl SnapshotPublicationTracker {
     pub(super) fn new(latest_published_epoch: Option<Epoch>) -> Self {
         Self {
-            state: StakeSnapshotState::Idle,
+            phase: SnapshotPublicationPhase::AwaitingCandidate,
             latest_published_epoch,
         }
     }
 
-    pub(super) fn candidate_from_boundary_bank(
+    pub(super) fn eligible_candidate_from_boundary_child(
         &self,
         boundary_child_bank: Arc<Bank>,
     ) -> Option<(CandidateIdentity, Arc<Bank>)> {
@@ -69,98 +70,110 @@ impl SnapshotPublicationState {
         Some((candidate, parent_bank))
     }
 
-    pub(super) fn allows_candidate(&self, candidate: CandidateIdentity) -> bool {
-        match &self.state {
-            StakeSnapshotState::Idle => true,
-            StakeSnapshotState::Publishing { winner } => {
+    pub(super) fn can_spawn_candidate(&self, candidate: CandidateIdentity) -> bool {
+        match &self.phase {
+            SnapshotPublicationPhase::AwaitingCandidate => true,
+            SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => {
                 debug!(
                     "discarding frozen epoch-boundary candidate {candidate:?} while publishing \
-                     {winner:?}"
+                     {pending_winner:?}"
                 );
                 false
             }
-            StakeSnapshotState::Collecting { epoch, .. } if candidate.epoch < *epoch => {
+            SnapshotPublicationPhase::TrackingCandidates {
+                candidate_epoch, ..
+            } if candidate.epoch < *candidate_epoch => {
                 warn!(
                     "received out-of-order frozen epoch-boundary candidate {candidate:?} while \
-                     collecting candidates for newer epoch {epoch}"
+                     tracking candidates for newer epoch {candidate_epoch}"
                 );
                 false
             }
-            StakeSnapshotState::Collecting { candidates, .. }
-                if candidates.contains(&candidate) =>
-            {
+            SnapshotPublicationPhase::TrackingCandidates {
+                tracked_candidates, ..
+            } if tracked_candidates.contains(&candidate) => {
                 warn!(
                     "received duplicate frozen bank: {candidate:?} has already been seen and \
                      handled"
                 );
                 false
             }
-            StakeSnapshotState::Collecting { .. } => true,
+            SnapshotPublicationPhase::TrackingCandidates { .. } => true,
         }
     }
 
     /// State Machine Transition Function
     /// Keeps candidates for one epoch. Advancing to a newer epoch abandons the old
     /// candidates in memory and deliberately leaves their durable files untouched.
-    pub(super) fn record_candidate(&mut self, candidate: CandidateIdentity) {
-        //TODO: This contains a lot of duplicate error cases from "allows_candidate" but we
+    pub(super) fn record_spawned_candidate(&mut self, candidate: CandidateIdentity) {
+        //TODO: This contains a lot of duplicate error cases from "can_spawn_candidate" but we
         //want to explicitly run the "write" to the fork state after we launch the writer thread.
         //But we want to run the checks before it
-        let state = &mut self.state;
-        match state {
-            StakeSnapshotState::Idle => {
-                *state = StakeSnapshotState::Collecting {
-                    epoch: candidate.epoch,
-                    candidates: HashSet::from([candidate]),
+        let phase = &mut self.phase;
+        match phase {
+            SnapshotPublicationPhase::AwaitingCandidate => {
+                *phase = SnapshotPublicationPhase::TrackingCandidates {
+                    candidate_epoch: candidate.epoch,
+                    tracked_candidates: HashSet::from([candidate]),
                 };
             }
-            StakeSnapshotState::Publishing { winner } => error!(
+            SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => error!(
                 "could not record spawned tip-router snapshot candidate {candidate:?}: \
-                 publication of {winner:?} began after it was admitted"
+                 publication of {pending_winner:?} began after it was admitted"
             ),
-            StakeSnapshotState::Collecting { epoch, .. } if candidate.epoch < *epoch => {
+            SnapshotPublicationPhase::TrackingCandidates {
+                candidate_epoch, ..
+            } if candidate.epoch < *candidate_epoch => {
                 error!(
                     "could not record spawned tip-router snapshot candidate {candidate:?}: \
-                     collection advanced to newer epoch {epoch} after it was admitted"
+                     candidate tracking advanced to newer epoch {candidate_epoch} after it was \
+                     admitted"
                 );
             }
-            StakeSnapshotState::Collecting { candidates, .. }
-                if candidates.contains(&candidate) =>
-            {
+            SnapshotPublicationPhase::TrackingCandidates {
+                tracked_candidates, ..
+            } if tracked_candidates.contains(&candidate) => {
                 error!(
                     "could not record spawned tip-router snapshot candidate {candidate:?}: it was \
                      recorded after admission"
                 );
             }
-            StakeSnapshotState::Collecting { epoch, candidates } if candidate.epoch == *epoch => {
-                candidates.insert(candidate);
+            SnapshotPublicationPhase::TrackingCandidates {
+                candidate_epoch,
+                tracked_candidates,
+            } if candidate.epoch == *candidate_epoch => {
+                tracked_candidates.insert(candidate);
             }
-            StakeSnapshotState::Collecting { .. } => {
-                *state = StakeSnapshotState::Collecting {
-                    epoch: candidate.epoch,
-                    candidates: HashSet::from([candidate]),
+            SnapshotPublicationPhase::TrackingCandidates { .. } => {
+                *phase = SnapshotPublicationPhase::TrackingCandidates {
+                    candidate_epoch: candidate.epoch,
+                    tracked_candidates: HashSet::from([candidate]),
                 };
             }
         }
     }
 
-    pub(super) fn active_candidates(&self) -> Option<&HashSet<CandidateIdentity>> {
-        if let StakeSnapshotState::Collecting { candidates, .. } = &self.state {
-            Some(candidates)
+    pub(super) fn tracked_candidates(&self) -> Option<&HashSet<CandidateIdentity>> {
+        if let SnapshotPublicationPhase::TrackingCandidates {
+            tracked_candidates, ..
+        } = &self.phase
+        {
+            Some(tracked_candidates)
         } else {
             None
         }
     }
 
     // Checks to see if any candidates we've collected have been rooted yet
-    pub(super) fn select_rooted_winner(
+    pub(super) fn select_winner_for_publication(
         &mut self,
         rooted_chain: &[(Slot, Hash)],
     ) -> Option<CandidateIdentity> {
-        if let Some(candidates) = self.active_candidates().cloned() {
+        if let Some(candidates) = self.tracked_candidates().cloned() {
             for c in candidates {
                 if rooted_chain.contains(&(c.slot, c.bank_hash)) {
-                    self.state = StakeSnapshotState::Publishing { winner: c };
+                    self.phase =
+                        SnapshotPublicationPhase::WinnerPendingPublication { pending_winner: c };
                     return Some(c);
                 }
             }
@@ -169,34 +182,40 @@ impl SnapshotPublicationState {
     }
 
     /// Returns true when the failed worker owned the winner currently being published.
-    pub(super) fn discard_failed_candidate(&mut self, candidate: CandidateIdentity) -> bool {
-        match &mut self.state {
-            StakeSnapshotState::Collecting { candidates, .. } => {
-                candidates.remove(&candidate);
+    pub(super) fn record_candidate_failure(&mut self, candidate: CandidateIdentity) -> bool {
+        match &mut self.phase {
+            SnapshotPublicationPhase::TrackingCandidates {
+                tracked_candidates, ..
+            } => {
+                tracked_candidates.remove(&candidate);
                 false
             }
-            StakeSnapshotState::Publishing { winner } => *winner == candidate,
-            StakeSnapshotState::Idle => false,
+            SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => {
+                *pending_winner == candidate
+            }
+            SnapshotPublicationPhase::AwaitingCandidate => false,
         }
     }
 
-    pub(super) fn publishing_winner(&self) -> Option<CandidateIdentity> {
-        match &self.state {
-            StakeSnapshotState::Publishing { winner } => Some(*winner),
+    pub(super) fn winner_pending_publication(&self) -> Option<CandidateIdentity> {
+        match &self.phase {
+            SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => {
+                Some(*pending_winner)
+            }
             _ => None,
         }
+    }
+
+    pub(super) fn record_winner_published(&mut self, winner: CandidateIdentity) {
+        self.latest_published_epoch = Some(
+            self.latest_published_epoch
+                .map_or(winner.epoch, |epoch| epoch.max(winner.epoch)),
+        );
+        self.phase = SnapshotPublicationPhase::AwaitingCandidate;
     }
 
     #[cfg(test)]
     pub(super) fn latest_published_epoch(&self) -> Option<Epoch> {
         self.latest_published_epoch
-    }
-
-    pub(super) fn finish_publication(&mut self, winner: CandidateIdentity) {
-        self.latest_published_epoch = Some(
-            self.latest_published_epoch
-                .map_or(winner.epoch, |epoch| epoch.max(winner.epoch)),
-        );
-        self.state = StakeSnapshotState::Idle;
     }
 }

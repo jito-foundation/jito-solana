@@ -26,7 +26,7 @@ use {
 };
 
 /// How frequently to check for node-shutdown notification
-const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(1000);
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
 pub struct TipRouterSnapshotService {
     thread_hdl: JoinHandle<Result<(), TipRouterSnapshotServiceError>>,
@@ -36,6 +36,7 @@ pub struct TipRouterSnapshotService {
 #[derive(Debug)]
 pub enum TipRouterSnapshotServiceError {
     BankNotificationChannelDisconnected,
+    WorkerCompletionChannelDisconnected,
     RootedCandidateFailed {
         epoch: Epoch,
         slot: Slot,
@@ -61,6 +62,10 @@ impl fmt::Display for TipRouterSnapshotServiceError {
             Self::BankNotificationChannelDisconnected => write!(
                 formatter,
                 "tip-router snapshot bank notification channel disconnected"
+            ),
+            Self::WorkerCompletionChannelDisconnected => write!(
+                formatter,
+                "tip-router snapshot worker completion channel disconnected"
             ),
             Self::RootedCandidateFailed {
                 epoch,
@@ -98,6 +103,7 @@ impl error::Error for TipRouterSnapshotServiceError {
             Self::CandidateStoreInitialization { source, .. }
             | Self::CandidateStoreUnavailable { source, .. } => Some(source),
             Self::BankNotificationChannelDisconnected
+            | Self::WorkerCompletionChannelDisconnected
             | Self::RootedCandidateFailed { .. }
             | Self::ArtifactWorkersShutdownTimeout { .. } => None,
         }
@@ -162,6 +168,8 @@ impl TipRouterSnapshotService {
 
         while !exit.load(Ordering::Relaxed) {
             let iteration_result = crossbeam_channel::select! {
+
+                // Frozen and Rooted bank notifications
                 recv(bank_notification_receiver) -> notification => match notification {
                     Ok(notification) => context.handle_bank_notification(
                         &config,
@@ -171,24 +179,32 @@ impl TipRouterSnapshotService {
                     Err(_) if exit.load(Ordering::Relaxed) => Ok(()),
                     Err(_) => Err(TipRouterSnapshotServiceError::BankNotificationChannelDisconnected),
                 },
-                recv(completion_receiver) -> report => match report {
-                    Ok(report) => context.handle_worker_report(report, &candidate_store, &exit),
-                    Err(_) => Ok(()),
+
+                // StakeMeta generation / writer threads finishing
+                recv(completion_receiver) -> completion => match completion {
+                    Ok(completion) => context.handle_worker_completion(
+                        completion,
+                        &exit,
+                    ),
+                    Err(_) => Err(
+                        // This should be technically unreachable
+                        TipRouterSnapshotServiceError::WorkerCompletionChannelDisconnected,
+                    ),
                 },
 
                 // Needed so that the service checks the `exit` bool every so often
-                default(MAINTENANCE_INTERVAL) => context.maintenance(&candidate_store),
+                default(EXIT_POLL_INTERVAL) => Ok(()),
             };
 
             // If the service breaks, break out of the loop and shutdown
-            if let Err(err) = iteration_result {
-                service_result = Err(err);
+            if iteration_result.is_err() {
+                service_result = iteration_result;
                 break;
             }
         }
 
         // Wait for any inflight workers/writers
-        match context.shutdown_workers(&completion_receiver, &candidate_store, &exit) {
+        match context.shutdown_workers(&completion_receiver, &exit) {
             Ok(()) => service_result,
             Err(shutdown_err) => Err(shutdown_err),
         }

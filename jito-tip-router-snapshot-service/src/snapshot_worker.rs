@@ -44,31 +44,16 @@ impl std::error::Error for SnapshotWorkerError {
 
 pub(crate) type SnapshotWorkerResult = Result<PathBuf, SnapshotWorkerError>;
 
-pub(crate) enum WorkerReport {
-    Completed {
-        candidate: CandidateIdentity,
-        result: SnapshotWorkerResult,
-    },
-    Panicked {
-        candidate: CandidateIdentity,
-    },
+pub(crate) struct WorkerCompletion {
+    pub(crate) candidate: CandidateIdentity,
+    pub(crate) outcome: WorkerOutcome,
 }
 
-pub(crate) enum WorkerCompletion {
-    Written {
-        candidate: CandidateIdentity,
-        path: PathBuf,
-    },
-    Failed {
-        candidate: CandidateIdentity,
-        err: SnapshotWorkerError,
-    },
-    Panicked {
-        candidate: CandidateIdentity,
-    },
-    MissingResult {
-        candidate: CandidateIdentity,
-    },
+pub(crate) enum WorkerOutcome {
+    Written(PathBuf),
+    Failed(SnapshotWorkerError),
+    Panicked,
+    MissingResult,
 }
 
 pub(crate) struct SnapshotWorkerHandle {
@@ -82,7 +67,7 @@ impl SnapshotWorkerHandle {
         candidate_store: CandidateStore,
         candidate: CandidateIdentity,
         parent_bank: Arc<Bank>,
-        completion_sender: Sender<WorkerReport>,
+        completion_sender: Sender<WorkerCompletion>,
     ) -> io::Result<Self> {
         let handle = Builder::new()
             .name(format!(
@@ -90,13 +75,14 @@ impl SnapshotWorkerHandle {
                 candidate.epoch, candidate.slot
             ))
             .spawn(move || {
-                let report = match catch_unwind(AssertUnwindSafe(|| {
+                let outcome = match catch_unwind(AssertUnwindSafe(|| {
                     generate_and_write_snapshot(&config, &candidate_store, candidate, parent_bank)
                 })) {
-                    Ok(result) => WorkerReport::Completed { candidate, result },
-                    Err(_) => WorkerReport::Panicked { candidate },
+                    Ok(Ok(path)) => WorkerOutcome::Written(path),
+                    Ok(Err(err)) => WorkerOutcome::Failed(err),
+                    Err(_) => WorkerOutcome::Panicked,
                 };
-                let _ = completion_sender.send(report);
+                let _ = completion_sender.send(WorkerCompletion { candidate, outcome });
             })?;
 
         Ok(Self { candidate, handle })
@@ -106,14 +92,14 @@ impl SnapshotWorkerHandle {
     pub(crate) fn spawn_test_worker(
         candidate: CandidateIdentity,
         duration: std::time::Duration,
-        completion_sender: Sender<WorkerReport>,
+        completion_sender: Sender<WorkerCompletion>,
     ) -> Self {
         let handle = Builder::new()
             .spawn(move || {
                 std::thread::sleep(duration);
-                let _ = completion_sender.send(WorkerReport::Completed {
+                let _ = completion_sender.send(WorkerCompletion {
                     candidate,
-                    result: Ok(PathBuf::new()),
+                    outcome: WorkerOutcome::Written(PathBuf::new()),
                 });
             })
             .unwrap();
@@ -124,33 +110,24 @@ impl SnapshotWorkerHandle {
         self.handle.is_finished()
     }
 
-    pub(crate) fn join_after_report(self, report: WorkerReport) -> WorkerCompletion {
+    pub(crate) fn join_after_completion(self, completion: WorkerCompletion) -> WorkerCompletion {
         let candidate = self.candidate;
         if self.handle.join().is_err() {
-            return WorkerCompletion::Panicked { candidate };
+            return WorkerCompletion {
+                candidate,
+                outcome: WorkerOutcome::Panicked,
+            };
         }
-        match report {
-            WorkerReport::Completed {
-                candidate: reported_candidate,
-                result: Ok(path),
-            } if reported_candidate == candidate => WorkerCompletion::Written { candidate, path },
-            WorkerReport::Completed {
-                candidate: reported_candidate,
-                result: Err(err),
-            } if reported_candidate == candidate => WorkerCompletion::Failed { candidate, err },
-            WorkerReport::Panicked {
-                candidate: reported_candidate,
-            } if reported_candidate == candidate => WorkerCompletion::Panicked { candidate },
-            _ => WorkerCompletion::MissingResult { candidate },
-        }
+        completion
     }
 
     pub(crate) fn join_without_report(self) -> WorkerCompletion {
         let candidate = self.candidate;
-        match self.handle.join() {
-            Ok(()) => WorkerCompletion::MissingResult { candidate },
-            Err(_) => WorkerCompletion::Panicked { candidate },
-        }
+        let outcome = match self.handle.join() {
+            Ok(()) => WorkerOutcome::MissingResult,
+            Err(_) => WorkerOutcome::Panicked,
+        };
+        WorkerCompletion { candidate, outcome }
     }
 }
 

@@ -25,7 +25,6 @@ pub(crate) struct CandidateStoreInitializationError {
 #[derive(Debug)]
 pub(crate) enum CandidateStoreError {
     DirectoryUnavailable { path: PathBuf, source: io::Error },
-    AlreadyPublished { epoch: Epoch, path: PathBuf },
     Io(io::Error),
 }
 
@@ -37,11 +36,6 @@ impl std::fmt::Display for CandidateStoreError {
                 "candidate directory {} is unavailable: {source}",
                 path.display()
             ),
-            Self::AlreadyPublished { epoch, path } => write!(
-                formatter,
-                "candidate epoch {epoch} is already published at {}",
-                path.display()
-            ),
             Self::Io(err) => write!(formatter, "candidate store I/O failed: {err}"),
         }
     }
@@ -51,9 +45,14 @@ impl std::error::Error for CandidateStoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::DirectoryUnavailable { source, .. } | Self::Io(source) => Some(source),
-            Self::AlreadyPublished { .. } => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PublicationOutcome {
+    Published { path: PathBuf },
+    AlreadyPublished { path: PathBuf },
 }
 
 #[derive(Clone, Debug)]
@@ -114,20 +113,44 @@ impl CandidateStore {
         Ok(candidate_path)
     }
 
-    pub(crate) fn delete_candidate(
+    /// Reconciles durable candidates into the final published state for `winner`.
+    ///
+    /// On success, the canonical artifact exists, losing candidates and the winner's temporary
+    /// name are gone, and the directory changes have been synced.
+    pub(crate) fn finalize_publication(
         &self,
-        candidate: CandidateIdentity,
-    ) -> Result<(), CandidateStoreError> {
+        winner: CandidateIdentity,
+    ) -> Result<PublicationOutcome, CandidateStoreError> {
         self.ensure_available()?;
-        remove_file_idempotently(&self.candidate_path(candidate)).map_err(CandidateStoreError::Io)
+        self.remove_losing_candidates(winner)?;
+
+        let winner_path = self.candidate_path(winner);
+        let artifact_path = self.canonical_path(winner.epoch);
+        // The canonical name is the publication signal for downstream watchers.
+        let outcome = match fs::hard_link(&winner_path, &artifact_path) {
+            Ok(()) => PublicationOutcome::Published {
+                path: artifact_path.clone(),
+            },
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists && artifact_path.is_file() => {
+                PublicationOutcome::AlreadyPublished {
+                    path: artifact_path.clone(),
+                }
+            }
+            Err(err) => return Err(CandidateStoreError::Io(err)),
+        };
+
+        remove_file_idempotently(&winner_path).map_err(CandidateStoreError::Io)?;
+        File::open(&self.output_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(CandidateStoreError::Io)?;
+        Ok(outcome)
     }
 
     /// Deletes every durable candidate except `winner`, including candidates preserved at startup.
-    pub(crate) fn delete_all_candidates_except(
+    fn remove_losing_candidates(
         &self,
         winner: CandidateIdentity,
     ) -> Result<(), CandidateStoreError> {
-        self.ensure_available()?;
         for entry in fs::read_dir(&self.output_dir).map_err(CandidateStoreError::Io)? {
             let entry = entry.map_err(CandidateStoreError::Io)?;
             let Some(candidate) = candidate_identity_from_name(&entry.file_name()) else {
@@ -138,40 +161,6 @@ impl CandidateStore {
             }
         }
         Ok(())
-    }
-
-    /// Cleans all losing candidates, then atomically exposes the winner at the canonical path.
-    pub(crate) fn publish_winner(
-        &self,
-        winner: CandidateIdentity,
-    ) -> Result<PathBuf, CandidateStoreError> {
-        self.delete_all_candidates_except(winner)?;
-
-        let winner_path = self.candidate_path(winner);
-        let artifact_path = self.canonical_path(winner.epoch);
-        // The canonical name is the publication signal for downstream watchers.
-        match fs::hard_link(&winner_path, &artifact_path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists && artifact_path.is_file() => {
-                return Err(CandidateStoreError::AlreadyPublished {
-                    epoch: winner.epoch,
-                    path: artifact_path,
-                });
-            }
-            Err(err) => return Err(CandidateStoreError::Io(err)),
-        }
-        if let Err(err) = remove_file_idempotently(&winner_path) {
-            warn!(
-                "published tip-router snapshot winner to {}, but failed to remove candidate {}: {}",
-                artifact_path.display(),
-                winner_path.display(),
-                err
-            );
-        }
-        File::open(&self.output_dir)
-            .and_then(|directory| directory.sync_all())
-            .map_err(CandidateStoreError::Io)?;
-        Ok(artifact_path)
     }
 
     fn ensure_available(&self) -> Result<(), CandidateStoreError> {
@@ -343,7 +332,12 @@ mod tests {
         fs::write(store.candidate_path(loser_same_epoch), b"loser").unwrap();
         fs::write(store.candidate_path(loser_other_epoch), b"stale").unwrap();
 
-        let canonical_path = store.publish_winner(winner).unwrap();
+        let PublicationOutcome::Published {
+            path: canonical_path,
+        } = store.finalize_publication(winner).unwrap()
+        else {
+            panic!("expected a newly published artifact");
+        };
 
         assert_eq!(fs::read(&canonical_path).unwrap(), b"winner");
         assert!(!store.candidate_path(loser_same_epoch).exists());
@@ -351,10 +345,11 @@ mod tests {
 
         fs::write(store.candidate_path(winner), b"replacement").unwrap();
         assert!(matches!(
-            store.publish_winner(winner),
-            Err(CandidateStoreError::AlreadyPublished { epoch: 7, .. })
+            store.finalize_publication(winner),
+            Ok(PublicationOutcome::AlreadyPublished { .. })
         ));
         assert_eq!(fs::read(canonical_path).unwrap(), b"winner");
+        assert!(!store.candidate_path(winner).exists());
     }
 
     #[test]
@@ -366,10 +361,13 @@ mod tests {
         fs::write(store.candidate_path(winner), b"winner").unwrap();
         fs::create_dir(store.candidate_path(loser)).unwrap();
 
-        assert!(store.publish_winner(winner).is_err());
+        assert!(store.finalize_publication(winner).is_err());
         assert!(!store.canonical_path(winner.epoch).exists());
 
         fs::remove_dir(store.candidate_path(loser)).unwrap();
-        assert!(store.publish_winner(winner).is_ok());
+        assert!(matches!(
+            store.finalize_publication(winner),
+            Ok(PublicationOutcome::Published { .. })
+        ));
     }
 }
