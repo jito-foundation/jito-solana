@@ -220,9 +220,4 @@ impl SnapshotPublicationTracker {
         );
         self.phase = SnapshotPublicationPhase::AwaitingCandidate;
     }
-
-    #[cfg(test)]
-    pub(super) fn latest_published_epoch(&self) -> Option<Epoch> {
-        self.latest_published_epoch
-    }
 }

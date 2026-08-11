@@ -109,14 +109,4 @@ impl SnapshotWorkerPool {
 
         Ok(completions)
     }
-
-    #[cfg(test)]
-    pub(super) fn spawn_test_worker(&mut self, candidate: CandidateIdentity, duration: Duration) {
-        let worker = SnapshotWorkerHandle::spawn_test_worker(
-            candidate,
-            duration,
-            self.completion_sender.clone(),
-        );
-        self.workers.insert(candidate, worker);
-    }
 }

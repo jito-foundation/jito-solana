@@ -88,24 +88,6 @@ impl SnapshotWorkerHandle {
         Ok(Self { candidate, handle })
     }
 
-    #[cfg(test)]
-    pub(crate) fn spawn_test_worker(
-        candidate: CandidateIdentity,
-        duration: std::time::Duration,
-        completion_sender: Sender<WorkerCompletion>,
-    ) -> Self {
-        let handle = Builder::new()
-            .spawn(move || {
-                std::thread::sleep(duration);
-                let _ = completion_sender.send(WorkerCompletion {
-                    candidate,
-                    outcome: WorkerOutcome::Written(PathBuf::new()),
-                });
-            })
-            .unwrap();
-        Self { candidate, handle }
-    }
-
     pub(crate) fn is_finished(&self) -> bool {
         self.handle.is_finished()
     }
