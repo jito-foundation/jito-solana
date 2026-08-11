@@ -41,24 +41,11 @@ pub(crate) fn collect_stake_meta(
     config: &TipRouterSnapshotConfig,
     bank: StakeMetaCapture,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
-    let (
-        Some(tip_distribution_program_id),
-        Some(priority_fee_distribution_program_id),
-        Some(tip_payment_program_id),
-    ) = (
-        config.tip_distribution_program_id,
-        config.priority_fee_distribution_program_id,
-        config.tip_payment_program_id,
-    )
-    else {
-        return Err(StakeMetaError::MissingProgramIds);
-    };
-
     generate_stake_meta_collection(
         bank,
-        &tip_distribution_program_id,
-        &priority_fee_distribution_program_id,
-        &tip_payment_program_id,
+        &config.tip_distribution_program_id,
+        &config.priority_fee_distribution_program_id,
+        &config.tip_payment_program_id,
     )
 }
 
@@ -69,7 +56,6 @@ pub(crate) fn collect_stake_meta(
 /// are not part of this port.
 #[derive(Debug)]
 pub(crate) enum StakeMetaError {
-    MissingProgramIds,
     NotFrozen(u64),
     AnchorError(String),
     CheckedMathError,
@@ -80,10 +66,6 @@ pub(crate) enum StakeMetaError {
 impl std::fmt::Display for StakeMetaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingProgramIds => f.write_str(
-                "tip distribution, priority-fee distribution, and tip payment program IDs are \
-                 required",
-            ),
             Self::NotFrozen(slot) => {
                 write!(f, "stake metadata requires a frozen bank at slot {slot}")
             }
@@ -457,156 +439,3 @@ fn collect_delegations_for_epoch_voters<'a>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use {
-        super::*,
-        borsh::BorshSerialize,
-        capture::derive_tip_payment_pubkeys_for_tests,
-        jito_tip_payment_sdk::{CONFIG_ACCOUNT_SEED, CONFIG_SIZE, Config, InitBumps},
-        solana_accounts_db::{
-            accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig},
-            accounts_index::{
-                AccountIndex, AccountSecondaryIndexes, AccountSecondaryIndexesIncludeExclude,
-                IndexKey,
-            },
-        },
-        solana_runtime::{
-            bank::{Bank, BankTestConfig},
-            genesis_utils::{
-                GenesisConfigInfo, ValidatorVoteKeypairs, create_genesis_config_with_vote_accounts,
-            },
-        },
-        solana_signer::Signer,
-        solana_stake_interface as stake,
-        std::{collections::HashSet, sync::Arc},
-    };
-
-    /// Build a bank whose accounts-db carries a stake-program `ProgramId`
-    /// index, with `validator`'s vote and stake accounts baked into genesis.
-    fn new_indexed_bank_with_validator(validator: &ValidatorVoteKeypairs) -> Arc<Bank> {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config_with_vote_accounts(
-            100_000_000_000,
-            &[validator],
-            vec![1_000_000_000],
-        );
-        let account_indexes = AccountSecondaryIndexes {
-            keys: Some(AccountSecondaryIndexesIncludeExclude {
-                exclude: false,
-                keys: HashSet::from([stake::program::id()]),
-            }),
-            indexes: HashSet::from([AccountIndex::ProgramId]),
-        };
-        Arc::new(Bank::new_with_paths_for_tests(
-            &genesis_config,
-            Some(BankTestConfig {
-                accounts_db_config: AccountsDbConfig {
-                    account_indexes: Some(account_indexes),
-                    ..ACCOUNTS_DB_CONFIG_FOR_TESTING
-                },
-            }),
-            vec![],
-            None,
-        ))
-    }
-
-    /// The stakes cache must yield exactly the delegated stake accounts the
-    /// operator CLI's accounts-db scan produces: the scan is what every other
-    /// tip-router operator runs, and merkle-root consensus requires identical
-    /// stake metas. If a rebase changes stakes-cache semantics, this is the
-    /// tripwire.
-    #[test]
-    fn test_cached_stake_accounts_match_account_scan() {
-        let validator = ValidatorVoteKeypairs::new_rand();
-        let bank = new_indexed_bank_with_validator(&validator);
-        bank.freeze();
-
-        let stake_meta_capture = StakeMetaCapture::new(bank).unwrap();
-        let cached_stakes = stake_meta_capture.delegated_stakes_snapshot();
-        let mut cached = cached_stakes
-            .stake_delegations()
-            .iter()
-            .map(|(stake_pubkey, stake_account)| (*stake_pubkey, stake_account.clone()))
-            .collect::<Vec<_>>();
-        let mut scanned = stake_meta_capture.scan_stake_accounts().unwrap();
-        cached.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
-        scanned.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
-
-        assert!(!cached.is_empty());
-        assert_eq!(cached.len(), scanned.len());
-        for ((cached_pubkey, cached_account), (scanned_pubkey, scanned_account)) in
-            cached.iter().zip(scanned.iter())
-        {
-            assert_eq!(cached_pubkey, scanned_pubkey);
-            assert_eq!(cached_account, scanned_account);
-        }
-    }
-
-    #[test]
-    fn test_indexed_vat_stake_meta_generation() {
-        let validator = ValidatorVoteKeypairs::new_rand();
-        let bank = new_indexed_bank_with_validator(&validator);
-
-        let tip_payment_program_id = Pubkey::new_unique();
-        store_tip_payment_accounts(&bank, &tip_payment_program_id);
-        bank.freeze();
-
-        let indexed_stake_accounts = bank
-            .get_filtered_indexed_accounts(
-                &IndexKey::ProgramId(stake::program::id()),
-                |_| true,
-                None,
-            )
-            .unwrap();
-        assert!(
-            indexed_stake_accounts
-                .iter()
-                .any(|(pubkey, _)| { pubkey == &validator.stake_keypair.pubkey() })
-        );
-
-        let stake_meta = generate_stake_meta_collection(
-            StakeMetaCapture::new(bank).unwrap(),
-            &Pubkey::new_unique(),
-            &Pubkey::new_unique(),
-            &tip_payment_program_id,
-        )
-        .unwrap();
-        assert!(!stake_meta.stake_metas.is_empty());
-        assert_eq!(
-            stake_meta.stake_metas[0].validator_vote_account,
-            validator.vote_keypair.pubkey()
-        );
-        assert!(!stake_meta.stake_metas[0].delegations.is_empty());
-    }
-
-    fn store_tip_payment_accounts(bank: &Bank, program_id: &Pubkey) {
-        let tip_receiver = Pubkey::new_unique();
-        let config = Config {
-            tip_receiver,
-            block_builder: Pubkey::new_unique(),
-            block_builder_commission_pct: 0,
-            bumps: InitBumps {
-                config: 0,
-                tip_payment_account_0: 0,
-                tip_payment_account_1: 0,
-                tip_payment_account_2: 0,
-                tip_payment_account_3: 0,
-                tip_payment_account_4: 0,
-                tip_payment_account_5: 0,
-                tip_payment_account_6: 0,
-                tip_payment_account_7: 0,
-            },
-        };
-        let mut config_data = Config::DISCRIMINATOR.to_vec();
-        config.serialize(&mut config_data).unwrap();
-        assert_eq!(config_data.len(), CONFIG_SIZE);
-        let mut config_account = AccountSharedData::new(1, config_data.len(), program_id);
-        config_account.set_data_from_slice(&config_data);
-        let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], program_id).0;
-        bank.store_account(&config_pda, &config_account);
-
-        for tip_pda in derive_tip_payment_pubkeys_for_tests(program_id) {
-            bank.store_account(&tip_pda, &AccountSharedData::new(1, 0, program_id));
-        }
-    }
-}

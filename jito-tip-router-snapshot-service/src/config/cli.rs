@@ -8,8 +8,6 @@ use {
 
 const ENABLE_ARG: &str = "enable_tip_router_snapshot_service";
 const OUTPUT_DIR_ARG: &str = "tip_router_snapshot_output_dir";
-const NCN_ARG: &str = "tip_router_snapshot_ncn";
-const TIP_ROUTER_PROGRAM_ID_ARG: &str = "tip_router_snapshot_tip_router_program_id";
 const TIP_DISTRIBUTION_PROGRAM_ID_ARG: &str = "tip_router_snapshot_tip_distribution_program_id";
 const PRIORITY_FEE_DISTRIBUTION_PROGRAM_ID_ARG: &str =
     "tip_router_snapshot_priority_fee_distribution_program_id";
@@ -29,20 +27,6 @@ pub fn args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
             .takes_value(true)
             .requires(ENABLE_ARG)
             .help("Directory for tip-router snapshot artifacts"),
-        Arg::with_name(NCN_ARG)
-            .long("tip-router-snapshot-ncn")
-            .value_name("PUBKEY")
-            .takes_value(true)
-            .validator(is_pubkey)
-            .requires(ENABLE_ARG)
-            .help("NCN account for tip-router snapshot filtering"),
-        Arg::with_name(TIP_ROUTER_PROGRAM_ID_ARG)
-            .long("tip-router-snapshot-tip-router-program-id")
-            .value_name("PUBKEY")
-            .takes_value(true)
-            .validator(is_pubkey)
-            .requires(ENABLE_ARG)
-            .help("Tip-router program id"),
         Arg::with_name(TIP_DISTRIBUTION_PROGRAM_ID_ARG)
             .long("tip-router-snapshot-tip-distribution-program-id")
             .value_name("PUBKEY")
@@ -84,32 +68,34 @@ pub fn config_from_matches(
 
     Ok(Some(TipRouterSnapshotConfig {
         output_dir: PathBuf::from(output_dir),
-        ncn: parse_optional_pubkey(matches, NCN_ARG)?,
-        tip_router_program_id: parse_optional_pubkey(matches, TIP_ROUTER_PROGRAM_ID_ARG)?,
-        tip_distribution_program_id: parse_optional_pubkey(
+        tip_distribution_program_id: parse_required_pubkey(
             matches,
             TIP_DISTRIBUTION_PROGRAM_ID_ARG,
         )?,
-        priority_fee_distribution_program_id: parse_optional_pubkey(
+        priority_fee_distribution_program_id: parse_required_pubkey(
             matches,
             PRIORITY_FEE_DISTRIBUTION_PROGRAM_ID_ARG,
         )?,
-        tip_payment_program_id: parse_optional_pubkey(matches, TIP_PAYMENT_PROGRAM_ID_ARG)?,
+        tip_payment_program_id: parse_required_pubkey(matches, TIP_PAYMENT_PROGRAM_ID_ARG)?,
     }))
 }
 
-fn parse_optional_pubkey(
-    matches: &ArgMatches,
-    arg_name: &str,
-) -> Result<Option<Pubkey>, clap::Error> {
-    matches
-        .value_of(arg_name)
-        .map(Pubkey::from_str)
-        .transpose()
-        .map_err(|err| {
-            clap::Error::with_description(
-                &format!("failed to parse {arg_name} as pubkey: {err}"),
-                clap::ErrorKind::InvalidValue,
-            )
-        })
+fn parse_required_pubkey(matches: &ArgMatches, arg_name: &str) -> Result<Pubkey, clap::Error> {
+    let value = matches.value_of(arg_name).ok_or_else(|| {
+        clap::Error::with_description(
+            &format!(
+                "The --{} <PUBKEY> argument is required when --enable-tip-router-snapshot-service \
+                 is supplied",
+                arg_name.replace('_', "-"),
+            ),
+            clap::ErrorKind::ArgumentNotFound,
+        )
+    })?;
+
+    Pubkey::from_str(value).map_err(|err| {
+        clap::Error::with_description(
+            &format!("failed to parse {arg_name} as pubkey: {err}"),
+            clap::ErrorKind::InvalidValue,
+        )
+    })
 }
