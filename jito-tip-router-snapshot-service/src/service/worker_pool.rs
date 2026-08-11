@@ -62,10 +62,6 @@ impl SnapshotWorkerPool {
         Some(worker.join_after_report(report))
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.workers.is_empty()
-    }
-
     pub(super) fn shutdown_with_timeout(
         &mut self,
         completion_receiver: &Receiver<WorkerReport>,

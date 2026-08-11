@@ -1,7 +1,7 @@
 use {
     super::{
         TipRouterSnapshotServiceError, TipRouterSnapshotServiceResult,
-        rooted_chain::{ConflictingRootedBankHashes, RootedChain},
+        publication_state::SnapshotPublicationState,
         worker_pool::{SnapshotWorkerPool, WorkerShutdownTimeout},
     },
     crate::{
@@ -11,7 +11,7 @@ use {
         snapshot_worker::{SnapshotWorkerError, WorkerCompletion, WorkerReport},
     },
     crossbeam_channel::{Receiver, Sender},
-    log::{debug, error, info, warn},
+    log::{error, info, warn},
     solana_clock::{Epoch, Slot},
     solana_hash::Hash,
     solana_rpc::optimistically_confirmed_bank_tracker::{
@@ -19,8 +19,6 @@ use {
     },
     solana_runtime::bank::Bank,
     std::{
-        collections::{HashMap, HashSet},
-        path::PathBuf,
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -31,39 +29,20 @@ use {
 
 const ARTIFACT_WORKERS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug)]
-enum CandidateProgress {
-    Generating,
-    Written(PathBuf),
-    Terminal,
-}
-
-#[derive(Debug)]
-struct CandidateRecord {
-    progress: CandidateProgress,
-    losing: bool,
-}
-
+/// Main state for the top-level service
 pub(super) struct TipRouterSnapshotServiceContext {
-    candidates: HashMap<CandidateIdentity, CandidateRecord>,
+    publication_state: SnapshotPublicationState,
     workers: SnapshotWorkerPool,
-    rooted_chain: RootedChain,
-    winner: Option<CandidateIdentity>,
-    //TODO: Single one
-    published_epochs: HashSet<Epoch>,
 }
 
 impl TipRouterSnapshotServiceContext {
     pub(super) fn new(
         completion_sender: Sender<WorkerReport>,
-        published_epochs: HashSet<Epoch>,
+        latest_published_epoch: Option<Epoch>,
     ) -> Self {
         Self {
-            candidates: HashMap::new(),
+            publication_state: SnapshotPublicationState::new(latest_published_epoch),
             workers: SnapshotWorkerPool::new(completion_sender),
-            rooted_chain: RootedChain::default(),
-            winner: None,
-            published_epochs,
         }
     }
 }
@@ -74,19 +53,15 @@ impl TipRouterSnapshotServiceContext {
         config: &TipRouterSnapshotConfig,
         candidate_store: &CandidateStore,
         (notification, _dependency_work): BankNotificationWithDependencyWork,
-        exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         match notification {
             BankNotification::Frozen(bank) => {
-                self.handle_frozen_bank(config, candidate_store, bank)?;
-                Ok(())
+                self.handle_frozen_bank(config, candidate_store, bank)
             }
             BankNotification::NewRootedChain(rooted_chain) => {
-                self.handle_new_rooted_chain(rooted_chain, candidate_store, exit)
+                self.handle_new_rooted_chain(rooted_chain, candidate_store)
             }
-            BankNotification::OptimisticallyConfirmed(_) | BankNotification::NewRootBank(_) => {
-                Ok(())
-            }
+            _ => Ok(()),
         }
     }
 
@@ -94,44 +69,12 @@ impl TipRouterSnapshotServiceContext {
         &mut self,
         rooted_chain: Vec<(Slot, Hash)>,
         candidate_store: &CandidateStore,
-        exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
-        if let Err(ConflictingRootedBankHashes {
-            slot,
-            existing_hash,
-            new_hash,
-        }) = self.rooted_chain.record(rooted_chain)
-        {
-            exit.store(true, Ordering::Relaxed);
-            return Err(TipRouterSnapshotServiceError::ConflictingRootedBankHashes {
-                slot,
-                existing_hash,
-                new_hash,
-            });
+        if let Some(winner) = self.publication_state.select_rooted_winner(&rooted_chain) {
+            info!("selected rooted tip-router snapshot candidate {winner:?}");
+            self.try_publish_winner(candidate_store);
         }
-        self.reconcile_rooted_candidates(candidate_store)
-    }
-
-    fn reconcile_rooted_candidates(
-        &mut self,
-        candidate_store: &CandidateStore,
-    ) -> TipRouterSnapshotServiceResult {
-        if self.winner.is_some() {
-            return self.maintenance(candidate_store);
-        }
-
-        let rooted_winner = self
-            .candidates
-            .keys()
-            .copied()
-            .filter(|candidate| self.rooted_chain.contains(*candidate))
-            .max_by_key(|candidate| (candidate.epoch, candidate.slot));
-        if let Some(winner) = rooted_winner {
-            self.select_winner(winner);
-            self.maintenance(candidate_store)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn handle_frozen_bank(
@@ -140,51 +83,23 @@ impl TipRouterSnapshotServiceContext {
         candidate_store: &CandidateStore,
         boundary_child_bank: Arc<Bank>,
     ) -> TipRouterSnapshotServiceResult {
-        //TODO: Add a error variant here
-        let Some(parent_bank) = boundary_child_bank.parent() else {
-            error!("frozen epoch-boundary bank has no parent");
+        let Some((candidate, parent_bank)) = self
+            .publication_state
+            .candidate_from_boundary_bank(boundary_child_bank)
+        else {
+            // 99.999% of slots are not epoch-boundary slots
             return Ok(());
         };
 
-        //TODO: This is technically redundant since the notif filter handles it at the Sender level
-        if boundary_child_bank.epoch() <= parent_bank.epoch() {
+        if !self.publication_state.allows_candidate(candidate) {
             return Ok(());
         }
 
-        let candidate = CandidateIdentity::from_bank(&parent_bank);
-        if self.winner.is_some()
-            || self.candidates.contains_key(&candidate)
-            || self
-                .published_epochs
-                .iter()
-                .any(|published_epoch| candidate.epoch <= *published_epoch)
-        {
-            return Ok(());
-        }
-        if self
-            .rooted_chain
-            .hash_at(candidate.slot)
-            .is_some_and(|rooted_hash| rooted_hash != candidate.bank_hash)
-        {
-            debug!("rejecting non-rooted tip-router snapshot candidate {candidate:?}");
-            return Ok(());
-        }
-
-        let oldest_candidate_epoch = self
-            .candidates
-            .keys()
-            .map(|candidate| candidate.epoch)
-            .min()
-            .map_or(candidate.epoch, |epoch| epoch.min(candidate.epoch));
-        let first_retained_slot = parent_bank
-            .epoch_schedule()
-            .get_first_slot_in_epoch(oldest_candidate_epoch);
-        self.rooted_chain.prune_before(first_retained_slot);
-
-        debug!(
+        info!(
             "generating tip-router snapshot candidate at slot={}, bank_hash={}, epoch={}",
             candidate.slot, candidate.bank_hash, candidate.epoch,
         );
+
         if let Err(err) = self.workers.spawn(
             config.clone(),
             candidate_store.clone(),
@@ -194,22 +109,9 @@ impl TipRouterSnapshotServiceContext {
             error!("failed to spawn tip-router snapshot worker for {candidate:?}: {err}");
             return Ok(());
         }
-        self.candidates.insert(
-            candidate,
-            CandidateRecord {
-                progress: CandidateProgress::Generating,
-                losing: false,
-            },
-        );
-        self.reconcile_rooted_candidates(candidate_store)
-    }
 
-    fn select_winner(&mut self, winner: CandidateIdentity) {
-        info!("selected rooted tip-router snapshot candidate {winner:?}");
-        self.winner = Some(winner);
-        for (candidate, record) in &mut self.candidates {
-            record.losing = *candidate != winner;
-        }
+        self.publication_state.record_candidate(candidate);
+        Ok(())
     }
 
     pub(super) fn handle_worker_report(
@@ -236,11 +138,6 @@ impl TipRouterSnapshotServiceContext {
                     "wrote tip-router snapshot candidate {candidate:?} to {}",
                     path.display()
                 );
-                if let Some(record) = self.candidates.get_mut(&candidate) {
-                    record.progress = CandidateProgress::Written(path);
-                } else if let Err(err) = candidate_store.delete_candidate(candidate) {
-                    warn!("failed to delete untracked candidate {candidate:?}: {err}");
-                }
             }
             WorkerCompletion::Failed {
                 candidate,
@@ -254,9 +151,7 @@ impl TipRouterSnapshotServiceContext {
                     "candidate {candidate:?} failed because {} is unavailable",
                     path.display()
                 );
-                if let Some(record) = self.candidates.get_mut(&candidate) {
-                    record.progress = CandidateProgress::Terminal;
-                }
+                self.publication_state.discard_failed_candidate(candidate);
                 exit.store(true, Ordering::Relaxed);
                 return Err(TipRouterSnapshotServiceError::CandidateStoreUnavailable {
                     path,
@@ -265,107 +160,74 @@ impl TipRouterSnapshotServiceContext {
             }
             WorkerCompletion::Failed { candidate, err } => {
                 error!("tip-router snapshot candidate {candidate:?} failed: {err}");
-                if let Some(record) = self.candidates.get_mut(&candidate) {
-                    record.progress = CandidateProgress::Terminal;
+                if self.publication_state.discard_failed_candidate(candidate) {
+                    return self.rooted_candidate_failed(candidate, exit);
                 }
             }
             WorkerCompletion::Panicked { candidate } => {
                 error!("tip-router snapshot worker panicked for {candidate:?}");
-                if let Some(record) = self.candidates.get_mut(&candidate) {
-                    record.progress = CandidateProgress::Terminal;
+                if self.publication_state.discard_failed_candidate(candidate) {
+                    return self.rooted_candidate_failed(candidate, exit);
                 }
             }
             WorkerCompletion::MissingResult { candidate } => {
                 error!("tip-router snapshot worker returned no result for {candidate:?}");
-                if let Some(record) = self.candidates.get_mut(&candidate) {
-                    record.progress = CandidateProgress::Terminal;
+                if self.publication_state.discard_failed_candidate(candidate) {
+                    return self.rooted_candidate_failed(candidate, exit);
                 }
             }
         }
         self.maintenance(candidate_store)
     }
 
+    fn rooted_candidate_failed(
+        &self,
+        candidate: CandidateIdentity,
+        exit: &Arc<AtomicBool>,
+    ) -> TipRouterSnapshotServiceResult {
+        exit.store(true, Ordering::Relaxed);
+        Err(TipRouterSnapshotServiceError::RootedCandidateFailed {
+            epoch: candidate.epoch,
+            slot: candidate.slot,
+            bank_hash: candidate.bank_hash,
+        })
+    }
+
     pub(super) fn maintenance(
         &mut self,
         candidate_store: &CandidateStore,
     ) -> TipRouterSnapshotServiceResult {
-        self.cleanup_written_losers(candidate_store);
         self.try_publish_winner(candidate_store);
         Ok(())
     }
 
-    fn cleanup_written_losers(&mut self, candidate_store: &CandidateStore) {
-        let written_losers = self
-            .candidates
-            .iter()
-            .filter_map(|(candidate, record)| {
-                if record.losing
-                    && let CandidateProgress::Written(path) = &record.progress
-                {
-                    Some((*candidate, path.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        for (candidate, path) in written_losers {
-            match candidate_store.delete_candidate(candidate) {
-                Ok(()) => {
-                    if let Some(record) = self.candidates.get_mut(&candidate) {
-                        record.progress = CandidateProgress::Terminal;
-                    }
-                }
-                Err(err) => warn!(
-                    "failed to delete losing candidate {candidate:?} at {}: {err}",
-                    path.display()
-                ),
-            }
-        }
-    }
-
     fn try_publish_winner(&mut self, candidate_store: &CandidateStore) {
-        let Some(winner) = self.winner else {
-            return;
+        if let Some(winner) = self.publication_state.publishing_winner() {
+            match candidate_store.publish_winner(winner) {
+                Ok(path) => {
+                    info!(
+                        "published tip-router snapshot winner {winner:?} to {}",
+                        path.display()
+                    );
+                    self.publication_state.finish_publication(winner);
+                }
+                Err(CandidateStoreError::AlreadyPublished { path, .. }) => {
+                    warn!(
+                        "tip-router snapshot epoch {} was already published at {}",
+                        winner.epoch,
+                        path.display()
+                    );
+                    let _ = candidate_store.delete_candidate(winner);
+                    self.publication_state.finish_publication(winner);
+                }
+                Err(err) => {
+                    warn!(
+                        "failed to clean candidates or publish winner {winner:?}; will retry: \
+                         {err}"
+                    )
+                }
+            }
         };
-        let winner_is_written = self.candidates.get(&winner).is_some_and(|record| {
-            !record.losing && matches!(record.progress, CandidateProgress::Written(_))
-        });
-        let losers_are_terminal = self.candidates.iter().all(|(candidate, record)| {
-            *candidate == winner || matches!(record.progress, CandidateProgress::Terminal)
-        });
-        if !winner_is_written || !losers_are_terminal {
-            return;
-        }
-
-        match candidate_store.publish_winner(winner) {
-            Ok(path) => {
-                info!(
-                    "published tip-router snapshot winner {winner:?} to {}",
-                    path.display()
-                );
-                self.finish_publication(winner);
-            }
-            Err(CandidateStoreError::AlreadyPublished { path, .. }) => {
-                warn!(
-                    "tip-router snapshot epoch {} was already published at {}",
-                    winner.epoch,
-                    path.display()
-                );
-                let _ = candidate_store.delete_candidate(winner);
-                self.finish_publication(winner);
-            }
-            Err(err) => {
-                warn!("failed to clean candidates or publish winner {winner:?}; will retry: {err}")
-            }
-        }
-    }
-
-    fn finish_publication(&mut self, winner: CandidateIdentity) {
-        debug_assert!(self.workers.is_empty());
-        self.published_epochs.insert(winner.epoch);
-        self.candidates.clear();
-        self.winner = None;
-        self.rooted_chain.clear();
     }
 
     pub(super) fn shutdown_workers(
@@ -440,41 +302,29 @@ mod tests {
 
     fn context() -> TipRouterSnapshotServiceContext {
         let (sender, _receiver) = unbounded();
-        TipRouterSnapshotServiceContext::new(sender, HashSet::new())
+        TipRouterSnapshotServiceContext::new(sender, None)
     }
 
-    fn candidate_path(output_dir: &std::path::Path, candidate: CandidateIdentity) -> PathBuf {
+    fn candidate_path(
+        output_dir: &std::path::Path,
+        candidate: CandidateIdentity,
+    ) -> std::path::PathBuf {
         output_dir.join(format!(
             "tmp_{}_{}_{}_stake_meta_collection.json",
             candidate.slot, candidate.bank_hash, candidate.epoch
         ))
     }
 
-    #[test]
-    fn root_before_candidate_selects_exact_identity() {
-        let mut context = context();
-        let rooted_hash = Hash::new_unique();
-        let winner = candidate(1, 10, rooted_hash);
-        context
-            .rooted_chain
-            .record(vec![(10, rooted_hash)])
-            .unwrap();
-        context.candidates.insert(
-            winner,
-            CandidateRecord {
-                progress: CandidateProgress::Generating,
-                losing: false,
-            },
-        );
-        let output_dir = tempdir().unwrap();
-        let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
-        context.reconcile_rooted_candidates(&store).unwrap();
-
-        assert_eq!(context.winner, Some(winner));
+    fn collect(context: &mut TipRouterSnapshotServiceContext, candidates: &[CandidateIdentity]) {
+        let epoch = candidates.first().unwrap().epoch;
+        assert!(candidates.iter().all(|candidate| candidate.epoch == epoch));
+        for candidate in candidates {
+            context.publication_state.record_candidate(*candidate);
+        }
     }
 
     #[test]
-    fn winner_waits_for_running_loser_then_purges_every_candidate() {
+    fn exact_root_publishes_immediately_and_purges_durable_candidates() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
         let loser = candidate(7, 41, Hash::new_unique());
@@ -484,43 +334,18 @@ mod tests {
         fs::write(candidate_path(output_dir.path(), winner), b"winner").unwrap();
         fs::write(candidate_path(output_dir.path(), loser), b"loser").unwrap();
         fs::write(candidate_path(output_dir.path(), stale), b"stale").unwrap();
-        context.candidates.insert(
-            winner,
-            CandidateRecord {
-                progress: CandidateProgress::Written(candidate_path(output_dir.path(), winner)),
-                losing: false,
-            },
-        );
-        context.candidates.insert(
-            loser,
-            CandidateRecord {
-                progress: CandidateProgress::Generating,
-                losing: false,
-            },
-        );
+        collect(&mut context, &[winner, loser]);
+
         context
-            .rooted_chain
-            .record(vec![(winner.slot, winner.bank_hash)])
+            .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
             .unwrap();
-        context.reconcile_rooted_candidates(&store).unwrap();
-        assert!(
-            !output_dir
-                .path()
-                .join("7_stake_meta_collection.json")
-                .exists()
-        );
 
-        context.candidates.get_mut(&loser).unwrap().progress =
-            CandidateProgress::Written(candidate_path(output_dir.path(), loser));
-        context.maintenance(&store).unwrap();
-
-        assert!(
-            output_dir
-                .path()
-                .join("7_stake_meta_collection.json")
-                .exists()
+        assert_eq!(
+            fs::read(output_dir.path().join("7_stake_meta_collection.json")).unwrap(),
+            b"winner"
         );
-        assert!(context.candidates.is_empty());
+        assert_eq!(context.publication_state.publishing_winner(), None);
+        assert_eq!(context.publication_state.latest_published_epoch(), Some(7));
         assert!(!candidate_path(output_dir.path(), loser).exists());
         assert!(!candidate_path(output_dir.path(), stale).exists());
     }
@@ -534,23 +359,11 @@ mod tests {
         let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
         fs::write(candidate_path(output_dir.path(), winner), b"winner").unwrap();
         fs::write(candidate_path(output_dir.path(), loser), b"loser").unwrap();
-        for identity in [winner, loser] {
-            context.candidates.insert(
-                identity,
-                CandidateRecord {
-                    progress: CandidateProgress::Written(candidate_path(
-                        output_dir.path(),
-                        identity,
-                    )),
-                    losing: false,
-                },
-            );
-        }
+        collect(&mut context, &[winner, loser]);
+
         context
-            .rooted_chain
-            .record(vec![(winner.slot, winner.bank_hash)])
+            .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
             .unwrap();
-        context.reconcile_rooted_candidates(&store).unwrap();
 
         assert_eq!(
             fs::read(output_dir.path().join("7_stake_meta_collection.json")).unwrap(),
@@ -560,61 +373,127 @@ mod tests {
     }
 
     #[test]
-    fn newest_exact_root_wins_when_stale_epochs_remain() {
+    fn roots_are_not_retained_for_future_candidates() {
         let mut context = context();
-        let stale = candidate(6, 40, Hash::new_unique());
-        let winner = candidate(7, 42, Hash::new_unique());
+        let candidate = candidate(7, 42, Hash::new_unique());
         let output_dir = tempdir().unwrap();
         let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
-        for identity in [stale, winner] {
-            let path = candidate_path(output_dir.path(), identity);
-            fs::write(&path, identity.epoch.to_string()).unwrap();
-            context.candidates.insert(
-                identity,
-                CandidateRecord {
-                    progress: CandidateProgress::Written(path),
-                    losing: false,
-                },
-            );
-        }
+        fs::write(candidate_path(output_dir.path(), candidate), b"candidate").unwrap();
+
         context
-            .rooted_chain
-            .record(vec![
-                (stale.slot, stale.bank_hash),
-                (winner.slot, winner.bank_hash),
-            ])
+            .handle_new_rooted_chain(vec![(candidate.slot, candidate.bank_hash)], &store)
             .unwrap();
+        collect(&mut context, &[candidate]);
+        context.maintenance(&store).unwrap();
 
-        context.reconcile_rooted_candidates(&store).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(output_dir.path().join("7_stake_meta_collection.json")).unwrap(),
-            "7"
-        );
+        assert!(context.publication_state.active_candidates().is_some());
+        assert!(candidate_path(output_dir.path(), candidate).exists());
         assert!(
             !output_dir
                 .path()
-                .join("6_stake_meta_collection.json")
+                .join("7_stake_meta_collection.json")
                 .exists()
         );
     }
 
     #[test]
+    fn newer_candidate_epoch_forgets_prior_candidates_but_leaves_files() {
+        let mut context = context();
+        let stale = candidate(6, 40, Hash::new_unique());
+        let newer = candidate(7, 41, Hash::new_unique());
+        let output_dir = tempdir().unwrap();
+        let stale_path = candidate_path(output_dir.path(), stale);
+        fs::write(&stale_path, b"stale").unwrap();
+        collect(&mut context, &[stale]);
+
+        context.publication_state.record_candidate(newer);
+
+        assert_eq!(
+            context.publication_state.active_candidates(),
+            Some(&std::collections::HashSet::from([newer]))
+        );
+        assert!(stale_path.exists());
+        context.publication_state.record_candidate(stale);
+        assert_eq!(
+            context.publication_state.active_candidates(),
+            Some(&std::collections::HashSet::from([newer]))
+        );
+    }
+
+    #[test]
+    fn failed_publication_retains_only_the_winner_for_retry() {
+        let mut context = context();
+        let winner = candidate(7, 42, Hash::new_unique());
+        let blocking_loser = candidate(6, 40, Hash::new_unique());
+        let output_dir = tempdir().unwrap();
+        let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
+        fs::write(candidate_path(output_dir.path(), winner), b"winner").unwrap();
+        fs::create_dir(candidate_path(output_dir.path(), blocking_loser)).unwrap();
+        collect(&mut context, &[winner]);
+
+        context
+            .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
+            .unwrap();
+
+        assert_eq!(context.publication_state.publishing_winner(), Some(winner));
+        assert!(
+            !output_dir
+                .path()
+                .join("7_stake_meta_collection.json")
+                .exists()
+        );
+
+        fs::remove_dir(candidate_path(output_dir.path(), blocking_loser)).unwrap();
+        context.maintenance(&store).unwrap();
+
+        assert_eq!(context.publication_state.publishing_winner(), None);
+        assert!(
+            output_dir
+                .path()
+                .join("7_stake_meta_collection.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn rooted_candidate_worker_failure_stops_the_service() {
+        let mut context = context();
+        let winner = candidate(7, 42, Hash::new_unique());
+        context.publication_state.record_candidate(winner);
+        context
+            .publication_state
+            .select_rooted_winner(&[(winner.slot, winner.bank_hash)]);
+        let output_dir = tempdir().unwrap();
+        let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
+        let exit = Arc::new(AtomicBool::new(false));
+
+        let result = context.record_worker_completion(
+            WorkerCompletion::MissingResult { candidate: winner },
+            &store,
+            &exit,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TipRouterSnapshotServiceError::RootedCandidateFailed {
+                epoch: 7,
+                slot: 42,
+                bank_hash,
+            }) if bank_hash == winner.bank_hash
+        ));
+        assert!(exit.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn shutdown_uses_one_deadline_for_all_workers() {
         let (sender, receiver) = unbounded();
-        let mut context = TipRouterSnapshotServiceContext::new(sender.clone(), HashSet::new());
+        let mut context = TipRouterSnapshotServiceContext::new(sender.clone(), None);
         for slot in 40..50 {
             let identity = candidate(7, slot, Hash::new_unique());
-            context.candidates.insert(
-                identity,
-                CandidateRecord {
-                    progress: CandidateProgress::Generating,
-                    losing: false,
-                },
-            );
             context
                 .workers
                 .spawn_test_worker(identity, Duration::from_millis(200));
+            context.publication_state.record_candidate(identity);
         }
         let output_dir = tempdir().unwrap();
         let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();

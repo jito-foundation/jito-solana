@@ -1,5 +1,5 @@
 mod context;
-mod rooted_chain;
+mod publication_state;
 mod worker_pool;
 
 use {
@@ -14,7 +14,6 @@ use {
     solana_hash::Hash,
     solana_rpc::optimistically_confirmed_bank_tracker::BankNotificationReceiver,
     std::{
-        collections::HashSet,
         error, fmt, io,
         path::PathBuf,
         sync::{
@@ -37,10 +36,10 @@ pub struct TipRouterSnapshotService {
 #[derive(Debug)]
 pub enum TipRouterSnapshotServiceError {
     BankNotificationChannelDisconnected,
-    ConflictingRootedBankHashes {
+    RootedCandidateFailed {
+        epoch: Epoch,
         slot: Slot,
-        existing_hash: Hash,
-        new_hash: Hash,
+        bank_hash: Hash,
     },
     CandidateStoreInitialization {
         path: PathBuf,
@@ -63,13 +62,14 @@ impl fmt::Display for TipRouterSnapshotServiceError {
                 formatter,
                 "tip-router snapshot bank notification channel disconnected"
             ),
-            Self::ConflictingRootedBankHashes {
+            Self::RootedCandidateFailed {
+                epoch,
                 slot,
-                existing_hash,
-                new_hash,
+                bank_hash,
             } => write!(
                 formatter,
-                "conflicting rooted bank hashes for slot {slot}: {existing_hash} and {new_hash}"
+                "rooted tip-router snapshot candidate failed for epoch {epoch} at slot {slot} \
+                 with bank hash {bank_hash}"
             ),
             Self::CandidateStoreInitialization { path, source } => write!(
                 formatter,
@@ -98,7 +98,7 @@ impl error::Error for TipRouterSnapshotServiceError {
             Self::CandidateStoreInitialization { source, .. }
             | Self::CandidateStoreUnavailable { source, .. } => Some(source),
             Self::BankNotificationChannelDisconnected
-            | Self::ConflictingRootedBankHashes { .. }
+            | Self::RootedCandidateFailed { .. }
             | Self::ArtifactWorkersShutdownTimeout { .. } => None,
         }
     }
@@ -118,12 +118,13 @@ impl TipRouterSnapshotService {
             },
         )?;
 
-        let published_epochs = candidate_store.published_epochs().map_err(|source| {
-            TipRouterSnapshotServiceError::CandidateStoreInitialization {
-                path: config.output_dir.clone(),
-                source,
-            }
-        })?;
+        let latest_published_epoch =
+            candidate_store.latest_published_epoch().map_err(|source| {
+                TipRouterSnapshotServiceError::CandidateStoreInitialization {
+                    path: config.output_dir.clone(),
+                    source,
+                }
+            })?;
         let thread_hdl = Builder::new()
             .name("tipRtSnapshot".to_string())
             .spawn(move || {
@@ -131,7 +132,7 @@ impl TipRouterSnapshotService {
                 let result = Self::run(
                     config,
                     candidate_store,
-                    published_epochs,
+                    latest_published_epoch,
                     bank_notification_receiver,
                     exit,
                 );
@@ -149,13 +150,14 @@ impl TipRouterSnapshotService {
     fn run(
         config: TipRouterSnapshotConfig,
         candidate_store: CandidateStore,
-        published_epochs: HashSet<Epoch>,
+        latest_published_epoch: Option<Epoch>,
         bank_notification_receiver: BankNotificationReceiver,
         exit: Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         let (completion_sender, completion_receiver) = unbounded();
 
-        let mut context = TipRouterSnapshotServiceContext::new(completion_sender, published_epochs);
+        let mut context =
+            TipRouterSnapshotServiceContext::new(completion_sender, latest_published_epoch);
         let mut service_result = Ok(());
 
         while !exit.load(Ordering::Relaxed) {
@@ -165,7 +167,6 @@ impl TipRouterSnapshotService {
                         &config,
                         &candidate_store,
                         notification,
-                        &exit,
                     ),
                     Err(_) if exit.load(Ordering::Relaxed) => Ok(()),
                     Err(_) => Err(TipRouterSnapshotServiceError::BankNotificationChannelDisconnected),
@@ -174,6 +175,7 @@ impl TipRouterSnapshotService {
                     Ok(report) => context.handle_worker_report(report, &candidate_store, &exit),
                     Err(_) => Ok(()),
                 },
+
                 // Needed so that the service checks the `exit` bool every so often
                 default(MAINTENANCE_INTERVAL) => context.maintenance(&candidate_store),
             };
@@ -185,7 +187,7 @@ impl TipRouterSnapshotService {
             }
         }
 
-        // Wait for any inflight workers
+        // Wait for any inflight workers/writers
         match context.shutdown_workers(&completion_receiver, &candidate_store, &exit) {
             Ok(()) => service_result,
             Err(shutdown_err) => Err(shutdown_err),

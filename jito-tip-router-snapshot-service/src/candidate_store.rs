@@ -5,7 +5,6 @@ use {
     solana_clock::Epoch,
     solana_hash::Hash,
     std::{
-        collections::HashSet,
         ffi::OsStr,
         fs::{self, File, OpenOptions},
         io::{self, BufWriter, Write},
@@ -73,18 +72,18 @@ impl CandidateStore {
         Ok(Self { output_dir })
     }
 
-    pub(crate) fn published_epochs(&self) -> io::Result<HashSet<Epoch>> {
+    pub(crate) fn latest_published_epoch(&self) -> io::Result<Option<Epoch>> {
         ensure_output_directory(&self.output_dir)?;
-        let mut epochs = HashSet::new();
+        let mut latest_epoch = None;
         for entry in fs::read_dir(&self.output_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_file()
                 && let Some(epoch) = canonical_artifact_epoch(&entry.file_name())
             {
-                epochs.insert(epoch);
+                latest_epoch = Some(latest_epoch.map_or(epoch, |latest: Epoch| latest.max(epoch)));
             }
         }
-        Ok(epochs)
+        Ok(latest_epoch)
     }
 
     pub(crate) fn write_candidate(
@@ -330,7 +329,7 @@ mod tests {
         let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
 
         assert!(candidate_path.exists());
-        assert_eq!(store.published_epochs().unwrap(), HashSet::from([8]));
+        assert_eq!(store.latest_published_epoch().unwrap(), Some(8));
     }
 
     #[test]
