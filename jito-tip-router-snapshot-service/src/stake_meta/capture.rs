@@ -10,9 +10,9 @@ use {
         WrappedTipDistributionMeta,
     },
     jito_tip_payment_sdk::{
-        CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
+        CONFIG_ACCOUNT_SEED, Config, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
-        TIP_ACCOUNT_SEED_7, Config,
+        TIP_ACCOUNT_SEED_7,
     },
     log::warn,
     solana_account::{AccountSharedData, ReadableAccount},
@@ -297,32 +297,32 @@ pub(super) fn capture_stake_meta_inputs(
     // Capture the account-derived portion of every voter before releasing the
     // bank. The epoch-voter population is tiny relative to the stake map, and
     // the final zero-delegation filter still runs in the detached phase.
-    let voters = epoch_vote_accounts
-        .iter()
-        .map(|(vote_pubkey, (_, vote_account))| {
-            let tip_distribution_account =
-                capture_distribution_account::<WrappedTipDistributionMeta>(
-                    bank,
-                    tip_distribution_program_id,
-                    vote_pubkey,
+    let voters =
+        epoch_vote_accounts
+            .iter()
+            .map(|(vote_pubkey, (_, vote_account))| {
+                let tip_distribution_account = capture_distribution_account::<
+                    WrappedTipDistributionMeta,
+                >(
+                    bank, tip_distribution_program_id, vote_pubkey
                 );
-            let priority_fee_distribution_account =
-                capture_distribution_account::<WrappedPriorityFeeDistributionMeta>(
-                    bank,
-                    priority_fee_distribution_program_id,
-                    vote_pubkey,
-                );
-            let vote_state = vote_account.vote_state_view();
+                let priority_fee_distribution_account =
+                    capture_distribution_account::<WrappedPriorityFeeDistributionMeta>(
+                        bank,
+                        priority_fee_distribution_program_id,
+                        vote_pubkey,
+                    );
+                let vote_state = vote_account.vote_state_view();
 
-            CapturedVoter {
-                vote_pubkey: *vote_pubkey,
-                validator_node_pubkey: *vote_state.node_pubkey(),
-                commission: vote_state.commission(),
-                tip_distribution_account,
-                priority_fee_distribution_account,
-            }
-        })
-        .collect();
+                CapturedVoter {
+                    vote_pubkey: *vote_pubkey,
+                    validator_node_pubkey: *vote_state.node_pubkey(),
+                    commission: vote_state.commission(),
+                    tip_distribution_account,
+                    priority_fee_distribution_account,
+                }
+            })
+            .collect();
 
     Ok(CapturedStakeMetaInputs {
         bank_epoch,

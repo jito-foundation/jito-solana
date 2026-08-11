@@ -15,7 +15,6 @@
 mod capture;
 
 pub(crate) use capture::StakeMetaCapture;
-
 use {
     crate::config::TipRouterSnapshotConfig,
     borsh::de::BorshDeserialize,
