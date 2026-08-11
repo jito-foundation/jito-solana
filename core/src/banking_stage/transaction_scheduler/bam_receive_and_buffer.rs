@@ -187,7 +187,7 @@ impl BamReceiveAndBuffer {
 
             let working_bank = shared_leader_state
                 .as_ref()
-                .and_then(|leader_state| leader_state.load().working_bank())
+                .and_then(|leader_state| leader_state.load().working_bank().cloned())
                 .unwrap_or_else(|| bank_forks.read().unwrap().working_bank());
             let current_slot = working_bank.slot();
             let enable_tx_v1 = working_bank.feature_set.snapshot().enable_tx_v1;
