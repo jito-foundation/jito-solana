@@ -1391,7 +1391,7 @@ mod tests {
             rent_calculator::RENT_EXEMPT_RENT_EPOCH,
             rollback_accounts::RollbackAccounts,
         },
-        solana_account::{WritableAccount, create_account_shared_data_for_test},
+        solana_account::WritableAccount,
         solana_clock::Clock,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_epoch_schedule::EpochSchedule,
@@ -1414,12 +1414,31 @@ mod tests {
         solana_signature::Signature,
         solana_svm_callback::{AccountState, InvokeContextCallback},
         solana_system_interface::instruction as system_instruction,
+        solana_sysvar_id::SysvarId,
         solana_transaction::sanitized::SanitizedTransaction,
         solana_transaction_context::transaction::TransactionContext,
         solana_transaction_error::TransactionError,
         std::{borrow::Cow, collections::HashMap},
         test_case::test_case,
     };
+
+    fn create_sysvar_account<T>(value: &T) -> AccountSharedData
+    where
+        T: wincode::Serialize<Src = T> + SysvarId,
+    {
+        let serialized_len = wincode::serialized_size(value).unwrap() as usize;
+        let canonical_data_len = match T::id() {
+            sysvar::clock::ID => solana_clock::SIZE,
+            sysvar::epoch_schedule::ID => solana_epoch_schedule::SIZE,
+            sysvar::fees::ID => solana_sysvar::fees::SIZE,
+            sysvar::rent::ID => solana_rent::SIZE,
+            id => panic!("unsupported sysvar: {id}"),
+        };
+        let required_data_len = canonical_data_len.max(serialized_len);
+        let mut account = AccountSharedData::new(1, required_data_len, &sysvar::id());
+        wincode::serialize_into(account.data_as_mut_slice(), value).unwrap();
+        account
+    }
 
     fn new_unchecked_sanitized_message(message: Message) -> SanitizedMessage {
         SanitizedMessage::Legacy(LegacyMessage::new(message, &HashSet::new()))
@@ -1938,7 +1957,7 @@ mod tests {
             leader_schedule_epoch: 4,
             unix_timestamp: 5,
         };
-        let clock_account = create_account_shared_data_for_test(&clock);
+        let clock_account = create_sysvar_account(&clock);
         mock_bank
             .account_shared_data
             .write()
@@ -1946,7 +1965,7 @@ mod tests {
             .insert(sysvar::clock::id(), clock_account);
 
         let epoch_schedule = EpochSchedule::custom(64, 2, true);
-        let epoch_schedule_account = create_account_shared_data_for_test(&epoch_schedule);
+        let epoch_schedule_account = create_sysvar_account(&epoch_schedule);
         mock_bank
             .account_shared_data
             .write()
@@ -1958,7 +1977,7 @@ mod tests {
                 lamports_per_signature: 123,
             },
         };
-        let fees_account = create_account_shared_data_for_test(&fees);
+        let fees_account = create_sysvar_account(&fees);
         mock_bank
             .account_shared_data
             .write()
@@ -1966,7 +1985,7 @@ mod tests {
             .insert(sysvar::fees::id(), fees_account);
 
         let rent = Rent::default();
-        let rent_account = create_account_shared_data_for_test(&rent);
+        let rent_account = create_sysvar_account(&rent);
         mock_bank
             .account_shared_data
             .write()
@@ -2014,7 +2033,7 @@ mod tests {
             leader_schedule_epoch: 4,
             unix_timestamp: 5,
         };
-        let clock_account = create_account_shared_data_for_test(&clock);
+        let clock_account = create_sysvar_account(&clock);
         mock_bank
             .account_shared_data
             .write()
@@ -2022,7 +2041,7 @@ mod tests {
             .insert(sysvar::clock::id(), clock_account);
 
         let epoch_schedule = EpochSchedule::custom(64, 2, true);
-        let epoch_schedule_account = create_account_shared_data_for_test(&epoch_schedule);
+        let epoch_schedule_account = create_sysvar_account(&epoch_schedule);
         mock_bank
             .account_shared_data
             .write()
@@ -2034,7 +2053,7 @@ mod tests {
                 lamports_per_signature: 123,
             },
         };
-        let fees_account = create_account_shared_data_for_test(&fees);
+        let fees_account = create_sysvar_account(&fees);
         mock_bank
             .account_shared_data
             .write()
@@ -2042,7 +2061,7 @@ mod tests {
             .insert(sysvar::fees::id(), fees_account);
 
         let rent = Rent::default();
-        let rent_account = create_account_shared_data_for_test(&rent);
+        let rent_account = create_sysvar_account(&rent);
         mock_bank
             .account_shared_data
             .write()
@@ -2060,7 +2079,7 @@ mod tests {
             leader_schedule_epoch: 9,
             unix_timestamp: 10,
         };
-        let updated_clock_account = create_account_shared_data_for_test(&updated_clock);
+        let updated_clock_account = create_sysvar_account(&updated_clock);
         mock_bank
             .account_shared_data
             .write()
