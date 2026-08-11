@@ -68,13 +68,38 @@ impl TipRouterSnapshotServiceContext {
         rooted_chain: Vec<(Slot, Hash)>,
         candidate_store: &CandidateStore,
     ) -> TipRouterSnapshotServiceResult {
-        if let Some(winner) = self
+        let Some(winner) = self
             .publication_state
             .select_winner_for_publication(&rooted_chain)
-        {
-            info!("selected rooted tip-router snapshot candidate {winner:?}");
+        else {
+            return Ok(());
+        };
+
+        info!("selected rooted tip-router snapshot candidate {winner:?}");
+
+        match candidate_store.finalize_publication(winner) {
+            Ok(PublicationOutcome::Published { path }) => {
+                info!(
+                    "published tip-router snapshot winner {winner:?} to {}",
+                    path.display()
+                );
+                self.publication_state.record_winner_published(winner);
+            }
+            Ok(PublicationOutcome::AlreadyPublished { path }) => {
+                warn!(
+                    "tip-router snapshot epoch {} was already published at {}",
+                    winner.epoch,
+                    path.display()
+                );
+                self.publication_state.record_winner_published(winner);
+            }
+            Err(err) => {
+                warn!("failed to finalize tip-router snapshot winner {winner:?}: {err}");
+                self.publication_state
+                    .record_winner_publication_failure(winner);
+            }
         }
-        self.try_publish_winner(candidate_store);
+
         Ok(())
     }
 
@@ -191,34 +216,6 @@ impl TipRouterSnapshotServiceContext {
         })
     }
 
-    fn try_publish_winner(&mut self, candidate_store: &CandidateStore) {
-        if let Some(winner) = self.publication_state.winner_pending_publication() {
-            match candidate_store.finalize_publication(winner) {
-                Ok(PublicationOutcome::Published { path }) => {
-                    info!(
-                        "published tip-router snapshot winner {winner:?} to {}",
-                        path.display()
-                    );
-                    self.publication_state.record_winner_published(winner);
-                }
-                Ok(PublicationOutcome::AlreadyPublished { path }) => {
-                    warn!(
-                        "tip-router snapshot epoch {} was already published at {}",
-                        winner.epoch,
-                        path.display()
-                    );
-                    self.publication_state.record_winner_published(winner);
-                }
-                Err(err) => {
-                    warn!(
-                        "failed to finalize tip-router snapshot winner {winner:?}; will retry on \
-                         the next rooted-chain notification: {err}"
-                    )
-                }
-            }
-        };
-    }
-
     pub(super) fn shutdown_workers(
         &mut self,
         completion_receiver: &Receiver<WorkerCompletion>,
@@ -331,7 +328,6 @@ mod tests {
             fs::read(output_dir.path().join("7_stake_meta_collection.json")).unwrap(),
             b"winner"
         );
-        assert_eq!(context.publication_state.winner_pending_publication(), None);
         assert_eq!(context.publication_state.latest_published_epoch(), Some(7));
         assert!(!candidate_path(output_dir.path(), loser).exists());
         assert!(!candidate_path(output_dir.path(), stale).exists());
@@ -407,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_publication_retries_on_the_next_rooted_chain() {
+    fn failed_publication_is_not_retried() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
         let blocking_loser = candidate(6, 40, Hash::new_unique());
@@ -421,10 +417,7 @@ mod tests {
             .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
             .unwrap();
 
-        assert_eq!(
-            context.publication_state.winner_pending_publication(),
-            Some(winner)
-        );
+        assert_eq!(context.publication_state.latest_published_epoch(), None);
         assert!(
             !output_dir
                 .path()
@@ -435,9 +428,9 @@ mod tests {
         fs::remove_dir(candidate_path(output_dir.path(), blocking_loser)).unwrap();
         context.handle_new_rooted_chain(Vec::new(), &store).unwrap();
 
-        assert_eq!(context.publication_state.winner_pending_publication(), None);
+        assert_eq!(context.publication_state.latest_published_epoch(), None);
         assert!(
-            output_dir
+            !output_dir
                 .path()
                 .join("7_stake_meta_collection.json")
                 .exists()
@@ -445,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_completion_does_not_publish_a_pending_winner() {
+    fn worker_completion_does_not_publish_a_failed_winner() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
         let output_dir = tempdir().unwrap();
@@ -458,11 +451,6 @@ mod tests {
         context
             .handle_new_rooted_chain(vec![(winner.slot, winner.bank_hash)], &store)
             .unwrap();
-        assert_eq!(
-            context.publication_state.winner_pending_publication(),
-            Some(winner)
-        );
-
         fs::write(&winner_path, b"winner").unwrap();
         context
             .record_worker_completion(
@@ -476,7 +464,7 @@ mod tests {
         assert!(!canonical_path.exists());
 
         context.handle_new_rooted_chain(Vec::new(), &store).unwrap();
-        assert!(canonical_path.exists());
+        assert!(!canonical_path.exists());
     }
 
     #[test]

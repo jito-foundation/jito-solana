@@ -170,15 +170,31 @@ impl SnapshotPublicationTracker {
         rooted_chain: &[(Slot, Hash)],
     ) -> Option<CandidateIdentity> {
         if let Some(candidates) = self.tracked_candidates().cloned() {
-            for c in candidates {
-                if rooted_chain.contains(&(c.slot, c.bank_hash)) {
-                    self.phase =
-                        SnapshotPublicationPhase::WinnerPendingPublication { pending_winner: c };
-                    return Some(c);
+            for candidate in candidates {
+                if rooted_chain.contains(&(candidate.slot, candidate.bank_hash)) {
+                    self.phase = SnapshotPublicationPhase::WinnerPendingPublication {
+                        pending_winner: candidate,
+                    };
+                    return Some(candidate);
                 }
             }
         }
         None
+    }
+
+    pub(super) fn record_winner_publication_failure(&mut self, winner: CandidateIdentity) {
+        if !matches!(
+            self.phase,
+            SnapshotPublicationPhase::WinnerPendingPublication { pending_winner }
+                if pending_winner == winner
+        ) {
+            error!(
+                "could not record failed publication for {winner:?}: it is not the pending winner"
+            );
+            return;
+        }
+
+        self.phase = SnapshotPublicationPhase::AwaitingCandidate;
     }
 
     /// Returns true when the failed worker owned the winner currently being published.
@@ -194,15 +210,6 @@ impl SnapshotPublicationTracker {
                 *pending_winner == candidate
             }
             SnapshotPublicationPhase::AwaitingCandidate => false,
-        }
-    }
-
-    pub(super) fn winner_pending_publication(&self) -> Option<CandidateIdentity> {
-        match &self.phase {
-            SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => {
-                Some(*pending_winner)
-            }
-            _ => None,
         }
     }
 
