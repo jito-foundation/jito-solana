@@ -79,21 +79,6 @@ impl CandidateStore {
         Ok(Self { output_dir })
     }
 
-    pub(crate) fn latest_published_epoch(&self) -> io::Result<Option<Epoch>> {
-        ensure_output_directory(&self.output_dir)?;
-        ensure_output_directory(&candidate_directory(&self.output_dir))?;
-        let mut latest_epoch = None;
-        for entry in fs::read_dir(&self.output_dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file()
-                && let Some(epoch) = canonical_artifact_epoch(&entry.file_name())
-            {
-                latest_epoch = Some(latest_epoch.map_or(epoch, |latest: Epoch| latest.max(epoch)));
-            }
-        }
-        Ok(latest_epoch)
-    }
-
     pub(crate) fn write_candidate(
         &self,
         candidate: CandidateIdentity,
@@ -245,13 +230,6 @@ fn candidate_identity_from_name(file_name: &OsStr) -> Option<CandidateIdentity> 
         slot,
         bank_hash,
     })
-}
-
-fn canonical_artifact_epoch(file_name: &OsStr) -> Option<Epoch> {
-    let epoch = file_name.to_str()?.strip_suffix(ARTIFACT_SUFFIX)?;
-    (!epoch.starts_with(TEMP_ARTIFACT_PREFIX))
-        .then(|| epoch.parse().ok())
-        .flatten()
 }
 
 fn remove_file_idempotently(path: &Path) -> io::Result<()> {

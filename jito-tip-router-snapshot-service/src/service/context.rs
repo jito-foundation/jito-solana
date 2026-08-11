@@ -12,7 +12,7 @@ use {
     },
     crossbeam_channel::{Receiver, Sender},
     log::{error, info, warn},
-    solana_clock::{Epoch, Slot},
+    solana_clock::Slot,
     solana_hash::Hash,
     solana_rpc::optimistically_confirmed_bank_tracker::{
         BankNotification, BankNotificationWithDependencyWork,
@@ -36,12 +36,9 @@ pub(super) struct TipRouterSnapshotServiceContext {
 }
 
 impl TipRouterSnapshotServiceContext {
-    pub(super) fn new(
-        completion_sender: Sender<WorkerCompletion>,
-        latest_published_epoch: Option<Epoch>,
-    ) -> Self {
+    pub(super) fn new(completion_sender: Sender<WorkerCompletion>) -> Self {
         Self {
-            publication_state: SnapshotPublicationTracker::new(latest_published_epoch),
+            publication_state: SnapshotPublicationTracker::new(None),
             workers: SnapshotWorkerPool::new(completion_sender),
         }
     }

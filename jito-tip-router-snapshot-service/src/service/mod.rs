@@ -124,24 +124,11 @@ impl TipRouterSnapshotService {
             },
         )?;
 
-        let latest_published_epoch =
-            candidate_store.latest_published_epoch().map_err(|source| {
-                TipRouterSnapshotServiceError::CandidateStoreInitialization {
-                    path: config.output_dir.clone(),
-                    source,
-                }
-            })?;
         let thread_hdl = Builder::new()
             .name("tipRtSnapshot".to_string())
             .spawn(move || {
                 info!("TipRouterSnapshotService has started");
-                let result = Self::run(
-                    config,
-                    candidate_store,
-                    latest_published_epoch,
-                    bank_notification_receiver,
-                    exit,
-                );
+                let result = Self::run(config, candidate_store, bank_notification_receiver, exit);
                 if let Err(e) = result.as_ref() {
                     log::error!("TipRouterSnapshotService critical error: {:?}", e);
                 }
@@ -156,14 +143,12 @@ impl TipRouterSnapshotService {
     fn run(
         config: TipRouterSnapshotConfig,
         candidate_store: CandidateStore,
-        latest_published_epoch: Option<Epoch>,
         bank_notification_receiver: BankNotificationReceiver,
         exit: Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         let (completion_sender, completion_receiver) = unbounded();
 
-        let mut context =
-            TipRouterSnapshotServiceContext::new(completion_sender, latest_published_epoch);
+        let mut context = TipRouterSnapshotServiceContext::new(completion_sender);
         let mut service_result = Ok(());
 
         while !exit.load(Ordering::Relaxed) {

@@ -338,8 +338,3 @@ pub(super) fn capture_stake_meta_inputs(
         voters,
     })
 }
-
-#[cfg(test)]
-pub(super) fn derive_tip_payment_pubkeys_for_tests(program_id: &Pubkey) -> [Pubkey; 8] {
-    derive_tip_payment_pubkeys(program_id).tip_pdas
-}
