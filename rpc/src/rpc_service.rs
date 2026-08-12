@@ -31,7 +31,6 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_metrics::inc_new_counter_info,
-    solana_net_utils::Protocol,
     solana_perf::thread::renice_this_thread,
     solana_poh::poh_recorder::PohRecorder,
     solana_runtime::{
@@ -522,17 +521,9 @@ impl JsonRpcService {
 
         let RpcTpuClientArgs(identity_keypair, tpu_client_socket, client_runtime, cancel) =
             config.rpc_tpu_client_args;
-        let my_tpu_address = config
-            .cluster_info
-            .my_contact_info()
-            .tpu(Protocol::QUIC)
-            .ok_or(format!(
-                "Invalid {:?} socket address for TPU",
-                Protocol::QUIC
-            ))?;
         let leader_updater = create_leader_updater(
             leader_info,
-            my_tpu_address,
+            config.cluster_info.clone(),
             config.send_transaction_service_config.tpu_peers.clone(),
         );
         let (tpu_sender, client) = create_client(
@@ -878,7 +869,6 @@ mod tests {
             json_rpc_config.rpc_blocking_threads,
             json_rpc_config.rpc_niceness_adj,
         );
-        let tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let send_transaction_service_config = send_transaction_service::Config {
             retry_rate_ms: 1000,
             leader_forward_count: 1,
@@ -887,7 +877,7 @@ mod tests {
 
         let (tpu_sender, client) = create_client_for_tests(
             runtime.handle().clone(),
-            tpu_address,
+            cluster_info.clone(),
             send_transaction_service_config.tpu_peers.clone(),
             send_transaction_service_config.leader_forward_count,
         );

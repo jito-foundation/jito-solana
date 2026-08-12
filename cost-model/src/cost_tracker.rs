@@ -271,6 +271,10 @@ impl CostTracker {
         self.block_cost.clone()
     }
 
+    pub fn block_cost_limit(&self) -> u64 {
+        self.limits.block_cost
+    }
+
     pub fn transaction_count(&self) -> u64 {
         self.transaction_count.0
     }
@@ -363,6 +367,52 @@ impl CostTracker {
         self.ed25519_instruction_signature_count -= tx_cost.num_ed25519_instruction_signatures();
         self.secp256r1_instruction_signature_count -=
             tx_cost.num_secp256r1_instruction_signatures();
+    }
+
+    /// Re-adjust a committed transaction's reserved cost to its actual
+    /// execution cost. Kept in the fork for bundle_stage's QosService flow.
+    pub fn update_execution_cost(
+        &mut self,
+        estimated_tx_cost: &TransactionCost<impl TransactionWithMeta>,
+        actual_execution_units: u64,
+        actual_loaded_accounts_data_size_cost: u64,
+    ) {
+        let actual_load_and_execution_units =
+            actual_execution_units.saturating_add(actual_loaded_accounts_data_size_cost);
+        let estimated_load_and_execution_units = estimated_tx_cost
+            .programs_execution_cost()
+            .saturating_add(estimated_tx_cost.loaded_accounts_data_size_cost());
+        match actual_load_and_execution_units.cmp(&estimated_load_and_execution_units) {
+            std::cmp::Ordering::Equal => (),
+            std::cmp::Ordering::Greater => {
+                self.add_transaction_execution_cost(
+                    estimated_tx_cost,
+                    actual_load_and_execution_units - estimated_load_and_execution_units,
+                );
+            }
+            std::cmp::Ordering::Less => {
+                self.sub_transaction_execution_cost(
+                    estimated_tx_cost,
+                    estimated_load_and_execution_units - actual_load_and_execution_units,
+                );
+            }
+        }
+    }
+
+    /// Add extra execution units to cost_tracker
+    fn add_transaction_execution_cost(
+        &mut self,
+        tx_cost: &TransactionCost<impl TransactionWithMeta>,
+        adjustment: u64,
+    ) {
+        for account_key in tx_cost.writable_accounts() {
+            let account_cost = self
+                .cost_by_writable_accounts
+                .entry(*account_key)
+                .or_insert(0);
+            *account_cost = account_cost.saturating_add(adjustment);
+        }
+        self.block_cost.fetch_add(adjustment);
     }
 
     /// Subtract extra execution units from cost_tracker

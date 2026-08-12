@@ -44,6 +44,7 @@ use {
         metric_types::MAX_IN_FLIGHT_CONSENSUS_EVENTS,
     },
     agave_votor_transport::endpoint::QuicDatagramEndpoint,
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, Sender, bounded, unbounded},
     solana_client::connection_cache::ConnectionCache,
     solana_clock::Slot,
@@ -80,10 +81,12 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_streamer::evicting_sender::EvictingSender,
-    solana_turbine::{XdpSender as TurbineXdpSender, retransmit_stage::RetransmitStage},
+    solana_turbine::{
+        ShredReceiverAddresses, XdpSender as TurbineXdpSender, retransmit_stage::RetransmitStage,
+    },
     std::{
         collections::{HashMap, HashSet},
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
         sync::{Arc, RwLock, atomic::AtomicBool},
         thread::{self, JoinHandle},
@@ -256,6 +259,10 @@ impl Tvu {
         vote_connection_cache: Arc<ConnectionCache>,
         votor_init: AlpenglowInitializationState,
         reward_aggregates_sender: Sender<RewardInput>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_root_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -420,6 +427,10 @@ impl Tvu {
             slot_status_notifier.clone(),
             tvu_config.turbine_xdp_sender,
             votor_event_sender.clone(),
+            shredstream_receiver_address,
+            shred_receiver_addresses,
+            bam_shred_receiver_addresses,
+            multicast_root_receiver_address,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -924,6 +935,10 @@ pub mod tests {
                 bank_forks_controller_receiver,
             },
             reward_vote_aggregates_sender,
+            Arc::new(ArcSwap::from_pointee(None)),
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+            Arc::default(),
+            Arc::new(ArcSwap::from_pointee(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
