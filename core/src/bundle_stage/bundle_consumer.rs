@@ -321,6 +321,11 @@ impl BundleConsumer {
                     ),
                     drop_on_failure: true,
                     all_or_nothing: true,
+<<<<<<< HEAD
+=======
+                    strict_nonce_size_check: true,
+                    drop_noop_transactions: true,
+>>>>>>> ae85d6a708 (Simplify bundle recording after SIMD-0083 (#1539))
                 }
             ));
         execute_and_commit_timings.load_execute_us = load_execute_us;
