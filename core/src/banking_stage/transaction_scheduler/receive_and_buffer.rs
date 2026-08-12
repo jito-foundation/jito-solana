@@ -428,7 +428,7 @@ impl TransactionViewReceiveAndBuffer {
         }
     }
 
-    fn try_handle_packet(
+    pub(crate) fn try_handle_packet(
         bytes: SharedBytes,
         root_bank: &Bank,
         working_bank: &Bank,
@@ -439,6 +439,7 @@ impl TransactionViewReceiveAndBuffer {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
             root_bank,
+            working_bank.vote_only_bank(),
             transaction_account_lock_limit,
             sanitize_config,
         )?;
@@ -471,7 +472,8 @@ impl TransactionViewReceiveAndBuffer {
 /// ALT deactivation, if any. If no minimum slot, Slot::MAX is returned.
 pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     data: D,
-    bank: &Bank,
+    resolution_bank: &Bank,
+    vote_only: bool,
     transaction_account_lock_limit: usize,
     sanitize_config: &SanitizeConfig,
 ) -> Result<(RuntimeTransaction<ResolvedTransactionView<D>>, u64), PacketHandlingError> {
@@ -489,7 +491,7 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     };
 
     // Discard non-vote packets if in vote-only mode.
-    if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+    if vote_only && !view.is_simple_vote_transaction() {
         return Err(PacketHandlingError::Sanitization);
     }
 
@@ -497,12 +499,12 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
         return Err(PacketHandlingError::LockValidation);
     }
 
-    let (loaded_addresses, deactivation_slot) = load_addresses_for_view(&view, bank)?;
+    let (loaded_addresses, deactivation_slot) = load_addresses_for_view(&view, resolution_bank)?;
 
     let Ok(view) = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
         view,
         loaded_addresses,
-        bank.get_reserved_account_keys(),
+        resolution_bank.get_reserved_account_keys(),
     ) else {
         return Err(PacketHandlingError::Sanitization);
     };
