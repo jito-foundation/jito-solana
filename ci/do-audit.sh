@@ -55,6 +55,62 @@ default_cargo_audit_extra_args=(
   # URL:       https://rustsec.org/advisories/RUSTSEC-2024-0376
   # Solution:  Upgrade to >=0.12.3
   --ignore RUSTSEC-2024-0376
+
+  # Crate:     quinn-proto
+  # Version:   0.11.13
+  # Title:     Denial of service in Quinn endpoints
+  # Date:      2026-03-09
+  # ID:        RUSTSEC-2026-0037
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0037
+  # Solution:  Upgrade to >=0.11.14
+  --ignore RUSTSEC-2026-0037
+
+  # Crate:     quinn-proto
+  # Version:   0.11.14
+  # Title:     Remote memory exhaustion in quinn-proto from unbounded out-of-order stream reassembly
+  # Date:      2026-06-22
+  # ID:        RUSTSEC-2026-0185
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0185
+  # Severity:  7.5 (high)
+  # Solution:  Upgrade to >=0.11.15
+  --ignore RUSTSEC-2026-0185
+
+  # Crate:     ring
+  # Version:   0.16.20
+  # Title:     Some AES functions may panic when overflow checking is enabled.
+  # Date:      2025-03-06
+  # ID:        RUSTSEC-2025-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
+  # Solution:  Upgrade to >=0.17.12
+  --ignore RUSTSEC-2025-0009
+
+  # Crate:     rustls-webpki
+  # Version:   0.103.10
+  # Title:     Name constraints for URI names were incorrectly accepted
+  # Date:      2026-04-14
+  # ID:        RUSTSEC-2026-0098
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0098
+  # Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+  --ignore RUSTSEC-2026-0098
+
+  # Crate:     rustls-webpki
+  # Version:   0.103.10
+  # Title:     Name constraints were accepted for certificates asserting a wildcard name
+  # Date:      2026-04-14
+  # ID:        RUSTSEC-2026-0099
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0099
+  # Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+  --ignore RUSTSEC-2026-0099
+
+  # Crate:     rustls-webpki
+  # Version:   0.103.10
+  # Title:     Reachable panic in certificate revocation list parsing
+  # Date:      2026-04-22
+  # ID:        RUSTSEC-2026-0104
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
+  # Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
+  --ignore RUSTSEC-2026-0104
+
 )
 
 xtask_cargo_audit_extra_args=(
