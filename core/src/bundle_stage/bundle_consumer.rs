@@ -2,8 +2,8 @@ use {
     crate::banking_stage::{
         committer::{CommitTransactionDetails, Committer},
         consumer::{
-            ExecuteAndCommitTransactionsOutput, ExecutionFlags, LeaderProcessedTransactionCounts,
-            ProcessTransactionBatchOutput, RetryableIndex,
+            ENTRY_OVERHEAD_BYTES, ExecuteAndCommitTransactionsOutput, ExecutionFlags,
+            LeaderProcessedTransactionCounts, ProcessTransactionBatchOutput, RetryableIndex,
         },
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
@@ -12,17 +12,19 @@ use {
     itertools::Itertools,
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
-    solana_poh::transaction_recorder::{
-        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
+    solana_poh::{
+        poh_recorder::PohRecorderError,
+        transaction_recorder::{RecordTransactionsTimings, TransactionRecorder},
     },
     solana_runtime::{
-        bank::{Bank, LoadAndExecuteTransactionsOutput},
+        bank::{
+            Bank, LoadAndExecuteTransactionsOutput, entry_bytes_budget::EntryBytesReserveError,
+        },
         transaction_batch::TransactionBatch,
     },
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::{
         transaction_error_metrics::TransactionErrorMetrics,
-        transaction_processing_result::TransactionProcessingResultExtensions,
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
     solana_transaction::TransactionError,
@@ -34,6 +36,8 @@ use {
         vec,
     },
 };
+
+const SERIALIZED_ENTRIES_LENGTH_BYTES: u64 = 8;
 
 pub struct BundleConsumer {
     committer: Committer,
@@ -388,46 +392,59 @@ impl BundleConsumer {
             attempted_processing_count: processing_results.len() as u64,
         };
 
-        let (processed_transactions, processing_results_to_transactions_us) = measure_us!(
-            processing_results
-                .iter()
-                .zip(batch.sanitized_transactions())
-                .filter_map(|(processing_result, tx)| {
-                    if processing_result.was_processed() {
-                        Some(tx.to_versioned_transaction())
-                    } else {
-                        None
-                    }
-                })
-                .collect_vec()
+        // All processing results are successful here; failures bail out above. Therefore every
+        // transaction in the batch will be recorded as its own entry by record_bundle().
+        let entry_bytes = batch.sanitized_transactions().iter().fold(
+            SERIALIZED_ENTRIES_LENGTH_BYTES.saturating_add(
+                ENTRY_OVERHEAD_BYTES.saturating_mul(batch.sanitized_transactions().len() as u64),
+            ),
+            |entry_bytes, tx| entry_bytes.saturating_add(tx.serialized_size() as u64),
         );
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
 
-        // BundleStage: executes multiple transactions which may contain overlapping accounts
-        // This needs to happen until the relax_intrabatch_account_locks feature is enabled
-        let (record_transactions_summary, record_us) = measure_us!(
-            self.transaction_recorder
-                .record_bundle(bank.bank_id(), processed_transactions)
-        );
-        execute_and_commit_timings.record_us = record_us;
+        let reservation = bank
+            .entry_bytes_budget()
+            .reserve(entry_bytes)
+            .map_err(|EntryBytesReserveError::ExceedsSlotLimit| PohRecorderError::MaxHeightReached);
 
-        let RecordTransactionsSummary {
-            result: record_transactions_result,
-            record_transactions_timings,
-            starting_transaction_index,
-        } = record_transactions_summary;
-        execute_and_commit_timings.record_transactions_timings = RecordTransactionsTimings {
-            processing_results_to_transactions_us: Saturating(
-                processing_results_to_transactions_us,
-            ),
-            ..record_transactions_timings
+        let (recording_result, starting_transaction_index, record_us) = match reservation {
+            Ok(()) => {
+                let (processed_transactions, processing_results_to_transactions_us) = measure_us!(
+                    batch
+                        .sanitized_transactions()
+                        .iter()
+                        .map(|tx| tx.to_versioned_transaction())
+                        .collect_vec()
+                );
+
+                // BundleStage executes multiple transactions which may contain overlapping
+                // accounts. This is needed until relax_intrabatch_account_locks is enabled.
+                let (summary, record_us) = measure_us!(
+                    self.transaction_recorder
+                        .record_bundle(bank.bank_id(), processed_transactions)
+                );
+                execute_and_commit_timings.record_transactions_timings =
+                    RecordTransactionsTimings {
+                        processing_results_to_transactions_us: Saturating(
+                            processing_results_to_transactions_us,
+                        ),
+                        ..summary.record_transactions_timings
+                    };
+                (
+                    summary.result,
+                    summary.starting_transaction_index,
+                    record_us,
+                )
+            }
+            Err(err) => (Err(err), None, 0),
         };
+        execute_and_commit_timings.record_us = record_us;
 
         // If recording error, all transactions are retryable
         // Any transaction failures trigger a bailout of the entire bundle above
-        if let Err(recorder_err) = record_transactions_result {
+        if let Err(recorder_err) = recording_result {
             return ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
                 retryable_transaction_indexes: (0..batch.sanitized_transactions().len())
@@ -510,23 +527,35 @@ mod tests {
         },
         crossbeam_channel::unbounded,
         solana_cost_model::cost_model::CostModel,
+        solana_entry::entry::Entry,
         solana_genesis_config::create_genesis_config,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::{
             GenesisConfigInfo, bootstrap_validator_stake_lamports,
             create_genesis_config_with_leader,
         },
-        solana_poh::{record_channels::record_channels, transaction_recorder::TransactionRecorder},
+        solana_poh::{
+            poh_recorder::PohRecorderError, record_channels::record_channels,
+            transaction_recorder::TransactionRecorder,
+        },
         solana_pubkey::{Pubkey, new_rand},
-        solana_runtime::{bank::Bank, prioritization_fee_cache::PrioritizationFeeCache},
-        solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+        solana_runtime::{
+            bank::{Bank, entry_bytes_budget::EntryBytesReserveError},
+            prioritization_fee_cache::PrioritizationFeeCache,
+        },
+        solana_runtime_transaction::{
+            runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
+        },
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{
             InstructionError, Transaction, TransactionError, sanitized::SanitizedTransaction,
         },
         std::{sync::Arc, time::Duration},
+        test_case::test_case,
     };
+
+    const TEST_BUNDLE_LEN: usize = 5;
 
     fn sanitize_transactions(
         txs: Vec<Transaction>,
@@ -817,6 +846,134 @@ mod tests {
             commit_transactions_result[2],
             CommitTransactionDetails::Committed { result: Ok(_), .. }
         );
+    }
+
+    #[test_case(false; "one_byte_short")]
+    #[test_case(true; "exact_boundary")]
+    fn test_bundle_entry_bytes_budget(exact_boundary: bool) {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let recipients: [Pubkey; TEST_BUNDLE_LEN] = std::array::from_fn(|_| Pubkey::new_unique());
+        let transactions: [_; TEST_BUNDLE_LEN] = std::array::from_fn(|index| {
+            RuntimeTransaction::from_transaction_for_tests(transfer(
+                &mint_keypair,
+                &recipients[index],
+                1,
+                genesis_config.hash(),
+            ))
+        });
+        let entries = transactions
+            .iter()
+            .map(|tx| Entry {
+                num_hashes: 0,
+                hash: genesis_config.hash(),
+                transactions: vec![tx.to_versioned_transaction()],
+            })
+            .collect::<Vec<_>>();
+        let entry_bytes = wincode::serialized_size(&entries).unwrap();
+        let entry_bytes_limit = bank.entry_bytes_budget().slot_limit();
+        let remaining_entry_bytes = entry_bytes_limit
+            .checked_sub(entry_bytes)
+            .expect("test bundle must fit in an empty slot");
+        bank.entry_bytes_budget()
+            .reserve(remaining_entry_bytes + u64::from(!exact_boundary))
+            .unwrap();
+
+        let mint_balance = bank.get_balance(&mint_keypair.pubkey());
+        let block_cost = bank.read_cost_tracker().unwrap().block_cost();
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(bank.bank_id());
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
+        );
+        let mut consumer =
+            BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
+
+        let max_ages = [MaxAge::MAX; TEST_BUNDLE_LEN];
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    transaction_counts,
+                    retryable_transaction_indexes,
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &max_ages,
+            Duration::from_millis(20),
+        );
+
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert_eq!(
+            transaction_counts.processed_count,
+            transactions.len() as u64
+        );
+        if exact_boundary {
+            assert!(retryable_transaction_indexes.is_empty());
+            let commit_transactions_result = commit_transactions_result.unwrap();
+            assert_eq!(commit_transactions_result.len(), transactions.len());
+            assert!(commit_transactions_result.iter().all(|result| matches!(
+                result,
+                CommitTransactionDetails::Committed { result: Ok(_), .. }
+            )));
+            let record = record_receiver.try_recv().unwrap();
+            assert_eq!(record.bank_id, bank.bank_id());
+            assert_eq!(record.transaction_batches.len(), transactions.len());
+            assert!(
+                record
+                    .transaction_batches
+                    .iter()
+                    .all(|transaction_batch| transaction_batch.len() == 1)
+            );
+            assert!(record_receiver.try_recv().is_err());
+            assert!(
+                recipients
+                    .iter()
+                    .all(|recipient| bank.get_balance(recipient) == 1)
+            );
+            assert_eq!(
+                bank.entry_bytes_budget().reserve(1),
+                Err(EntryBytesReserveError::ExceedsSlotLimit)
+            );
+        } else {
+            assert_matches!(
+                commit_transactions_result,
+                Err(PohRecorderError::MaxHeightReached)
+            );
+            assert_eq!(retryable_transaction_indexes.len(), transactions.len());
+            assert!(
+                retryable_transaction_indexes
+                    .iter()
+                    .enumerate()
+                    .all(|(index, retryable)| retryable.index == index
+                        && retryable.immediately_retryable)
+            );
+            assert!(record_receiver.try_recv().is_err());
+            assert_eq!(bank.get_balance(&mint_keypair.pubkey()), mint_balance);
+            assert!(
+                recipients
+                    .iter()
+                    .all(|recipient| bank.get_balance(recipient) == 0)
+            );
+            assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), block_cost);
+        }
     }
 
     #[test]
