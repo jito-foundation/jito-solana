@@ -244,9 +244,7 @@ impl BlockEngineStage {
         local_block_engine_config: &BlockEngineConfig,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-            == BamConnectionState::Connected
-        {
+        if bam_enabled.load(Ordering::Acquire) > BamConnectionState::Connecting as u8 {
             tokio::time::sleep(Duration::from_millis(1000)).await;
             return Ok(());
         }
@@ -446,11 +444,12 @@ impl BlockEngineStage {
     }
 
     fn map_bam_enabled(bam_enabled: &Arc<AtomicU8>, err: ProxyError) -> ProxyError {
-        match BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed)) {
+        match BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire)) {
             BamConnectionState::Disconnected => err,
-            BamConnectionState::Connecting | BamConnectionState::Connected => {
-                ProxyError::BamEnabled
-            }
+            BamConnectionState::Connecting
+            | BamConnectionState::DrainingBlockEngine
+            | BamConnectionState::BlockEngineDrained
+            | BamConnectionState::Connected => ProxyError::BamEnabled,
         }
     }
 
@@ -857,9 +856,7 @@ impl BlockEngineStage {
         info!("connected to packet and bundle stream");
 
         while !exit.load(Ordering::Relaxed) {
-            if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-                == BamConnectionState::Connected
-            {
+            if bam_enabled.load(Ordering::Acquire) > BamConnectionState::Connecting as u8 {
                 info!("bam enabled, exiting block engine stage");
                 return Ok(());
             }

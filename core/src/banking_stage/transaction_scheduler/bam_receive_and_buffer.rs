@@ -740,7 +740,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let is_bam_enabled = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+        let is_bam_enabled = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire))
             == BamConnectionState::Connected;
 
         // Receive all stats

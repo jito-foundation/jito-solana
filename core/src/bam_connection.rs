@@ -233,8 +233,11 @@ impl BamConnection {
                                 };
                                 match result {
                                     Ok(Ok(response)) => {
-                                        *config.lock().unwrap() = Some(response.into_inner());
-                                        config_version.fetch_add(1, Relaxed);
+                                        let mut config = config.lock().unwrap();
+                                        if config.as_ref() != Some(response.get_ref()) {
+                                            *config = Some(response.into_inner());
+                                            config_version.fetch_add(1, Relaxed);
+                                        }
                                         builder_config_received.fetch_add(1, Relaxed);
                                     }
                                     Ok(Err(e)) => error!("Failed to get config: {e:?}"),
