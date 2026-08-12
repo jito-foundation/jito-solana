@@ -3734,22 +3734,6 @@ impl Bank {
         self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
     }
 
-    /// Override the relax_intrabatch_account_locks feature flag and use the SIMD83 logic for bundle execution
-    pub fn prepare_sanitized_batch_relax_intrabatch_account_locks<
-        'a,
-        'b,
-        Tx: TransactionWithMeta,
-    >(
-        &'a self,
-        transactions: &'b [Tx],
-    ) -> TransactionBatch<'a, 'b, Tx> {
-        TransactionBatch::new(
-            self.try_lock_accounts_with_results(transactions, transactions.iter().map(|_| Ok(()))),
-            self,
-            OwnedOrBorrowed::Borrowed(transactions),
-        )
-    }
-
     /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
     /// limited packing status
     pub fn prepare_sanitized_batch_with_results<'a, 'b, Tx: TransactionWithMeta>(
