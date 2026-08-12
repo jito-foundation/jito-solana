@@ -24,6 +24,7 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
@@ -50,6 +51,7 @@ use {
     solana_net_utils::{
         PortRange, SocketAddrSpace, find_available_ports_in_range, multihomed_sockets::BindIpAddrs,
     },
+    solana_program_binaries::{jito_tip_distribution, jito_tip_payment},
     solana_program_runtime::{
         execution_budget::SVMTransactionExecutionBudget, invoke_context::InvokeContext,
     },
@@ -166,6 +168,7 @@ pub struct TestValidatorGenesis {
     pub transaction_account_lock_limit: Option<usize>,
     pub geyser_plugin_manager: Arc<ArcSwap<GeyserPluginManager>>,
     pub admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -202,6 +205,7 @@ impl Default for TestValidatorGenesis {
             geyser_plugin_manager: Arc::new(ArcSwap::new(Arc::new(GeyserPluginManager::default()))),
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 }
@@ -1205,6 +1209,16 @@ impl TestValidator {
             accounts_db_config,
             runtime_config,
             enable_scheduler_bindings: config.enable_scheduler_bindings,
+            tip_manager_config: TipManagerConfig {
+                tip_payment_program_id: jito_tip_payment::id(),
+                tip_distribution_program_id: jito_tip_distribution::id(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: validator_identity.pubkey(),
+                    vote_account: vote_account_address,
+                    commission_bps: 10,
+                },
+            },
+            bam_url: config.bam_url.clone(),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {

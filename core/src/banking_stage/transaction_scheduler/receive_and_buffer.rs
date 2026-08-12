@@ -47,7 +47,7 @@ pub(crate) enum IngressCheckError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PacketHandlingError {
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
@@ -176,7 +176,7 @@ fn load_addresses_for_view<D: TransactionData>(
     }
 }
 
-fn calculate_max_age(
+pub(crate) fn calculate_max_age(
     sanitized_epoch: Epoch,
     deactivation_slot: Slot,
     current_slot: Slot,
@@ -186,6 +186,18 @@ fn calculate_max_age(
         sanitized_epoch,
         alt_invalidation_slot: alt_min_expire_slot,
     }
+}
+
+/// Returns true if any of the account keys are in the filter set. Used by the
+/// fork's bundle/BAM ingress paths; upstream's precheck inlines the same test.
+pub(crate) fn contains_blacklisted_account<'a>(
+    account_keys: impl IntoIterator<Item = &'a Pubkey>,
+    filter_keys: &ahash::HashSet<Pubkey>,
+) -> bool {
+    !filter_keys.is_empty()
+        && account_keys
+            .into_iter()
+            .any(|key| filter_keys.contains(key))
 }
 
 #[derive(Debug)]

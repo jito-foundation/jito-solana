@@ -161,6 +161,82 @@ impl RecordSender {
             }
         }
     }
+
+    /// Atomically reserve insertions for and send a batch of records that must
+    /// all land in the same slot (e.g. the entries of a bundle). All records
+    /// must share the same `bank_id`. Returns the starting transaction index
+    /// of the first record, if indexes are tracked.
+    pub fn try_send_batch(&self, records: Vec<Record>) -> Result<Option<usize>, RecordSenderError> {
+        let num_records = records.len() as u64;
+        assert!(num_records > 0);
+        let num_transactions: usize = records.iter().map(|r| r.transactions.len()).sum();
+        assert!(num_transactions > 0);
+        let record_bank_id = records[0].bank_id;
+        debug_assert!(records.iter().all(|r| r.bank_id == record_bank_id));
+        loop {
+            // Grab lock on `transaction_indexes` here to ensure we are sending
+            // sequentially, ONLY if this exists.
+            let transaction_indexes = self
+                .transaction_indexes
+                .as_ref()
+                .map(|transaction_indexes| transaction_indexes.lock().unwrap());
+
+            let current_bank_id_allowed_insertions =
+                self.bank_id_allowed_insertions.0.load(Ordering::Acquire);
+            let (bank_id, allowed_insertions) = (
+                BankIdAllowedInsertions::bank_id(current_bank_id_allowed_insertions),
+                BankIdAllowedInsertions::allowed_insertions(current_bank_id_allowed_insertions),
+            );
+
+            if bank_id == BankIdAllowedInsertions::DISABLED_BANK_ID {
+                return Err(RecordSenderError::Shutdown);
+            }
+            if bank_id != record_bank_id {
+                return Err(RecordSenderError::InactiveBankId);
+            }
+            if allowed_insertions < num_records {
+                return Err(RecordSenderError::Full);
+            }
+
+            let new_bank_id_allowed_insertions = BankIdAllowedInsertions::encoded_value(
+                bank_id,
+                allowed_insertions.wrapping_sub(num_records),
+            );
+
+            // Increment this before CAS so the receiver can see this send is in-flight.
+            self.active_senders.fetch_add(1, Ordering::AcqRel);
+
+            if self
+                .bank_id_allowed_insertions
+                .0
+                .compare_exchange(
+                    current_bank_id_allowed_insertions,
+                    new_bank_id_allowed_insertions,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+            {
+                // Failed to reserve space, decrement active senders and try again.
+                self.active_senders.fetch_sub(1, Ordering::AcqRel);
+                continue;
+            }
+
+            for record in records {
+                if let Err(err) = self.sender.try_send(record) {
+                    assert!(err.is_disconnected());
+                    self.active_senders.fetch_sub(1, Ordering::AcqRel);
+                    return Err(RecordSenderError::Disconnected);
+                }
+            }
+            self.active_senders.fetch_sub(1, Ordering::AcqRel);
+            return Ok(transaction_indexes.map(|mut transaction_indexes| {
+                let transaction_starting_index = *transaction_indexes;
+                *transaction_indexes += num_transactions;
+                transaction_starting_index
+            }));
+        }
+    }
 }
 
 /// A receiver for receiving [`Record`]s in PohService.
