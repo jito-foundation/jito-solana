@@ -7,6 +7,11 @@ fn push_unique_addr(
     addrs: &mut ShredReceiverAddresses,
     socket_addr: SocketAddr,
 ) -> Result<(), String> {
+    if socket_addr.is_ipv6() {
+        return Err(format!(
+            "IPv6 shred receiver addresses are not supported: {socket_addr}"
+        ));
+    }
     if addrs.contains(&socket_addr) {
         return Ok(());
     }
@@ -91,11 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_explicit_ipv6_socket_addr() {
-        let addrs = parse_shred_receiver_addresses(["[::1]:9003"]).unwrap();
-        assert_eq!(addrs.len(), 1);
-        assert!(addrs[0].is_ipv6());
-        assert_eq!(addrs[0].port(), 9003);
+    fn test_parse_explicit_ipv6_socket_addr_rejected() {
+        let err = parse_shred_receiver_addresses(["[::1]:9003"]).unwrap_err();
+        assert!(err.contains("IPv6 shred receiver addresses are not supported"));
     }
 
     #[test]
