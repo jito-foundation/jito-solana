@@ -3304,7 +3304,6 @@ mod tests {
     }
 
     fn setup_test_frame(
-        _relax_intrabatch_account_locks: bool,
         default_rent: bool,
     ) -> (
         TestFrame,
@@ -3403,7 +3402,7 @@ mod tests {
 
     #[test]
     fn test_worker_consume_no_bank() {
-        let (test_frame, worker) = setup_test_frame(true, false);
+        let (test_frame, worker) = setup_test_frame(false);
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3453,7 +3452,7 @@ mod tests {
 
     #[test]
     fn test_worker_consume_no_bank_drains_queue() {
-        let (test_frame, worker) = setup_test_frame(true, false);
+        let (test_frame, worker) = setup_test_frame(false);
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3508,7 +3507,7 @@ mod tests {
 
     #[test]
     fn test_worker_consume_simple() {
-        let (mut test_frame, worker) = setup_test_frame(true, false);
+        let (mut test_frame, worker) = setup_test_frame(false);
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3564,7 +3563,7 @@ mod tests {
 
     #[test]
     fn test_worker_consume_self_conflicting() {
-        let (mut test_frame, worker) = setup_test_frame(true, false);
+        let (mut test_frame, worker) = setup_test_frame(false);
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3624,7 +3623,7 @@ mod tests {
 
     #[test]
     fn test_worker_consume_multiple_messages() {
-        let (mut test_frame, worker) = setup_test_frame(true, false);
+        let (mut test_frame, worker) = setup_test_frame(false);
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3709,7 +3708,7 @@ mod tests {
 
     #[test]
     fn test_worker_ttl() {
-        let (mut test_frame, worker) = setup_test_frame(true, false);
+        let (mut test_frame, worker) = setup_test_frame(false);
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3892,7 +3891,7 @@ mod tests {
 
     #[test]
     fn test_handle_tip_programs() {
-        let (mut test_frame, worker) = setup_test_frame(true, true);
+        let (mut test_frame, worker) = setup_test_frame(true);
         let worker_thread = std::thread::spawn(move || worker.run());
         let TestFrame {
             mint_keypair,
