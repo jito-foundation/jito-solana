@@ -8333,8 +8333,10 @@ version = "4.4.0-alpha.0"
 dependencies = [
  "agave-logger",
  "agave-reserved-account-keys",
+ "agave-transaction-view",
  "agave-votor-messages",
  "assert_matches",
+ "bytes",
  "criterion",
  "crossbeam-channel",
  "log",
@@ -8363,6 +8365,7 @@ dependencies = [
  "solana-system-transaction",
  "solana-transaction",
  "solana-transaction-error",
+ "test-case",
  "thiserror 2.0.19",
  "wincode",
 ]

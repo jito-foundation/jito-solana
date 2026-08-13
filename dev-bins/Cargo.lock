@@ -6686,7 +6686,9 @@ dependencies = [
 name = "solana-entry"
 version = "4.4.0-alpha.0"
 dependencies = [
+ "agave-transaction-view",
  "agave-votor-messages",
+ "bytes",
  "crossbeam-channel",
  "log",
  "num_cpus",
