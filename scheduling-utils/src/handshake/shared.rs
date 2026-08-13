@@ -132,8 +132,6 @@ pub enum AgaveHandshakeError {
     WorkerCount(usize),
     #[error("Allocator handles; count={0}")]
     AllocatorHandles(usize),
-    #[error("{0}")]
-    Rejected(&'static str),
     #[error("Rts alloc; err={0:?}")]
     RtsAlloc(#[from] RtsAllocError),
     #[error("Shaq; err={0:?}")]

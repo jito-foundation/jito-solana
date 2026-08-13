@@ -183,19 +183,10 @@ fn accept_worker_count_max() {
     let mut server = Server::new(ipc.path()).unwrap();
 
     let server_handle = std::thread::spawn(move || {
-        let rejection = server.accept_with_validation(|| Err("test rejection"));
-        assert!(rejection.is_err());
         let res = server.accept();
         assert!(res.is_ok());
     });
     let client_handle = std::thread::spawn(move || {
-        let logon = ClientLogon {
-            worker_count: 1,
-            allocator_handles: 1,
-            ..ClientLogon::default()
-        };
-        let rejection = connect(&ipc, logon, Duration::from_secs(1));
-        assert!(matches!(rejection, Err(ClientHandshakeError::Rejected(_))));
         let res = connect(
             ipc,
             ClientLogon {
