@@ -581,8 +581,9 @@ impl BamReceiveAndBuffer {
         atomic_txn_batch_groups: &[MultipleAtomicTxnBatch],
         current_slot: Slot,
         prevalidated: &mut Vec<PrevalidationResult>,
-    ) -> ReceivingStats {
+    ) -> (ReceivingStats, usize) {
         let mut stats = ReceivingStats::default();
+        let mut packet_count = 0;
 
         prevalidated.clear();
         for atomic_txn_batch_group in atomic_txn_batch_groups {
@@ -648,8 +649,10 @@ impl BamReceiveAndBuffer {
                     continue;
                 };
 
+                let batch_packet_count = atomic_txn_batch.packets.len();
+                packet_count += batch_packet_count;
                 prevalidated.push(Ok((
-                    atomic_txn_batch.packets.len(),
+                    batch_packet_count,
                     revert_on_error,
                     atomic_txn_batch.seq_id,
                     atomic_txn_batch.max_schedule_slot,
@@ -657,7 +660,7 @@ impl BamReceiveAndBuffer {
             }
         }
 
-        stats
+        (stats, packet_count)
     }
 
     fn batch_verify(
@@ -669,13 +672,10 @@ impl BamReceiveAndBuffer {
         packet_data: &mut Vec<Bytes>,
         verification_results: &mut Vec<PacketVerificationResult>,
     ) -> ReceivingStats {
-        let stats = Self::prevalidate_batches(atomic_txn_batches, current_slot, prevalidated);
+        let (stats, packet_count) =
+            Self::prevalidate_batches(atomic_txn_batches, current_slot, prevalidated);
 
         packet_data.clear();
-        let packet_count = prevalidated
-            .iter()
-            .filter_map(|result| result.as_ref().ok().map(|result| result.0))
-            .sum();
         packet_data.reserve(packet_count);
         atomic_txn_batches
             .iter_mut()
