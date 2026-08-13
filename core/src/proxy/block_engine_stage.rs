@@ -376,16 +376,9 @@ impl BlockEngineStage {
 
         // try connecting to best block engine
         let endpoint_count = candidates.len();
-        for (block_engine_url, (maybe_shredstream_socket, latency_us)) in candidates
-            .into_iter()
-            .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
-        {
-            let backend_endpoint = if block_engine_url == local_block_engine_config.block_engine_url
-            {
-                endpoint.clone()
-            } else {
-                Self::get_endpoint(block_engine_url.as_str())?
-            };
+        for candidate in Self::rank_candidate_endpoints(candidates) {
+            let (block_engine_url, backend_endpoint, maybe_shredstream_socket, latency_us) =
+                candidate?;
             info!(
                 "Trying Block Engine url: {block_engine_url}, Shredstream socket: \
                  {maybe_shredstream_socket:?}, rtt: ({:?})",
@@ -552,6 +545,25 @@ impl BlockEngineStage {
                 ))
             },
         )
+    }
+
+    fn rank_candidate_endpoints(
+        candidates: ahash::HashMap<String, (Option<SocketAddr>, u64)>,
+    ) -> impl Iterator<Item = Result<(String, Endpoint, Option<SocketAddr>, u64), ProxyError>> {
+        candidates
+            .into_iter()
+            .sorted_unstable_by_key(|(_url, (_shredstream_socket, latency_us))| *latency_us)
+            .map(
+                |(block_engine_url, (maybe_shredstream_socket, latency_us))| {
+                    let backend_endpoint = Self::get_endpoint(&block_engine_url)?;
+                    Ok((
+                        block_engine_url,
+                        backend_endpoint,
+                        maybe_shredstream_socket,
+                        latency_us,
+                    ))
+                },
+            )
     }
 
     async fn probe_grpc_rtt_us(block_engine_url: &str) -> Result<u64, ProbeError> {
@@ -1103,5 +1115,46 @@ mod tests {
         assert!(!BlockEngineStage::is_valid_block_engine_config(&config(
             "not a valid url"
         )));
+    }
+
+    #[test]
+    fn autoconfig_ranking_preserves_candidate_endpoint_and_shredstream() {
+        let first_url = "https://localhost:1111";
+        let configured_url = "https://localhost:2222";
+        let first_shredstream = "127.0.0.1:1111".parse().unwrap();
+        let configured_shredstream = "127.0.0.1:2222".parse().unwrap();
+        let candidates = ahash::HashMap::from_iter([
+            (first_url.to_string(), (Some(first_shredstream), 1)),
+            (
+                configured_url.to_string(),
+                (Some(configured_shredstream), 2),
+            ),
+        ]);
+
+        let ranked = BlockEngineStage::rank_candidate_endpoints(candidates)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let attempts = ranked
+            .iter()
+            .map(|(url, endpoint, shredstream, _latency_us)| {
+                (
+                    url.as_str(),
+                    endpoint.uri().authority().unwrap().as_str(),
+                    *shredstream,
+                )
+            })
+            .collect_vec();
+
+        assert_eq!(
+            attempts,
+            [
+                (first_url, "localhost:1111", Some(first_shredstream)),
+                (
+                    configured_url,
+                    "localhost:2222",
+                    Some(configured_shredstream),
+                ),
+            ]
+        );
     }
 }
