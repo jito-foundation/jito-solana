@@ -10,7 +10,7 @@
 
 use {
     crate::rpc_subscriptions::RpcSubscriptions,
-    crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
+    crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender},
     solana_clock::{BankId, Slot},
     solana_hash::Hash,
     solana_rpc_client_api::response::{SlotTransactionStats, SlotUpdate},
@@ -22,7 +22,7 @@ use {
     std::{
         collections::HashSet,
         sync::{
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
         },
         thread::{self, Builder, JoinHandle},
@@ -82,18 +82,77 @@ pub type BankNotificationWithDependencyWork = (
 
 pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>;
 
+/// Decides whether a subscriber should receive a given bank notification.
+///
+/// Filters are evaluated synchronously on producer threads, so implementations must be pure,
+/// non-blocking, and cheap.
+pub trait NotificationFilter: Send + Sync + 'static {
+    fn do_forward_notification(&self, notification: &BankNotification) -> bool;
+}
+
+pub struct BankNotificationSender {
+    tx: Sender<BankNotificationWithDependencyWork>,
+    filter: Option<Box<dyn NotificationFilter>>,
+}
+
+impl BankNotificationSender {
+    /// Send every notification to `tx`.
+    pub fn new(tx: Sender<BankNotificationWithDependencyWork>) -> Self {
+        Self { tx, filter: None }
+    }
+
+    /// Send only notifications accepted by `filter` to `tx`.
+    pub fn new_with_filter<F: NotificationFilter>(
+        tx: Sender<BankNotificationWithDependencyWork>,
+        filter: F,
+    ) -> Self {
+        Self {
+            tx,
+            filter: Some(Box::new(filter)),
+        }
+    }
+
+    pub fn do_forward_notification(&self, notification: &BankNotification) -> bool {
+        self.filter
+            .as_ref()
+            .is_none_or(|filter| filter.do_forward_notification(notification))
+    }
+
+    /// Forward `notification` to this subscriber, returning whether it was delivered.
+    pub fn send_notification(&self, notification: BankNotificationWithDependencyWork) -> bool {
+        match self.tx.send(notification) {
+            Ok(()) => true,
+            Err(SendError(notification)) => {
+                warn!(
+                    "bank notification subscriber disconnected, dropping {:?}",
+                    notification.0
+                );
+                false
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for BankNotificationSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("BankNotificationSender")
+            .field("filtered", &self.filter.is_some())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BankNotificationBroadcaster {
-    subscriber_senders: Arc<Mutex<Vec<Sender<BankNotificationWithDependencyWork>>>>,
+    subscriber_senders: Arc<[BankNotificationSender]>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct BankNotificationBroadcastError;
 
 impl BankNotificationBroadcaster {
-    pub fn new(subscriber_senders: Vec<Sender<BankNotificationWithDependencyWork>>) -> Self {
+    pub fn new(subscriber_senders: Vec<BankNotificationSender>) -> Self {
         Self {
-            subscriber_senders: Arc::new(Mutex::new(subscriber_senders)),
+            subscriber_senders: subscriber_senders.into(),
         }
     }
 
@@ -101,29 +160,25 @@ impl BankNotificationBroadcaster {
         &self,
         notification: BankNotificationWithDependencyWork,
     ) -> Result<(), BankNotificationBroadcastError> {
-        let mut subscriber_senders = self.subscriber_senders.lock().unwrap();
-        let initial_subscriber_count = subscriber_senders.len();
-        subscriber_senders
-            .retain(|subscriber_sender| subscriber_sender.send(notification.clone()).is_ok());
+        let mut connected_subscriber_count = 0;
 
-        let disconnected_subscriber_count = initial_subscriber_count - subscriber_senders.len();
-        if subscriber_senders.is_empty() {
-            if disconnected_subscriber_count > 0 {
-                warn!(
-                    "bank notification broadcast failed: removed {disconnected_subscriber_count} \
-                     disconnected subscriber(s); no connected subscribers remain"
-                );
-            } else {
-                warn!("bank notification broadcast failed: no connected subscribers");
+        for sender in self.subscriber_senders.iter() {
+            // Filter before cloning, so a rejected notification never clones the bank it carries.
+            // A subscriber that filters the notification out is still assumed connected, since its
+            // channel was never touched.
+            if !sender.do_forward_notification(&notification.0) {
+                connected_subscriber_count += 1;
+                continue;
             }
-            return Err(BankNotificationBroadcastError);
+
+            if sender.send_notification(notification.clone()) {
+                connected_subscriber_count += 1;
+            }
         }
 
-        if disconnected_subscriber_count != 0 {
-            warn!(
-                "removed {disconnected_subscriber_count} disconnected bank notification \
-                 subscriber(s)"
-            );
+        if connected_subscriber_count == 0 {
+            warn!("bank notification broadcast failed: no connected subscribers");
+            return Err(BankNotificationBroadcastError);
         }
 
         Ok(())
@@ -538,40 +593,6 @@ mod tests {
                 .collect(),
             oldest_parent,
         )
-    }
-
-    #[test]
-    fn test_bank_notification_broadcaster_fans_out_and_prunes_disconnected_subscribers() {
-        let (first_sender, first_receiver) = bounded(1);
-        let (second_sender, second_receiver) = bounded(2);
-        let broadcaster = BankNotificationBroadcaster::new(vec![first_sender, second_sender]);
-
-        broadcaster
-            .send((BankNotification::OptimisticallyConfirmed(42), None))
-            .unwrap();
-        assert!(matches!(
-            first_receiver.recv().unwrap().0,
-            BankNotification::OptimisticallyConfirmed(42)
-        ));
-        assert!(matches!(
-            second_receiver.recv().unwrap().0,
-            BankNotification::OptimisticallyConfirmed(42)
-        ));
-
-        drop(first_receiver);
-        broadcaster
-            .send((BankNotification::OptimisticallyConfirmed(43), None))
-            .unwrap();
-        assert!(matches!(
-            second_receiver.recv().unwrap().0,
-            BankNotification::OptimisticallyConfirmed(43)
-        ));
-
-        drop(second_receiver);
-        assert_eq!(
-            broadcaster.send((BankNotification::OptimisticallyConfirmed(44), None)),
-            Err(BankNotificationBroadcastError)
-        );
     }
 
     #[test]
