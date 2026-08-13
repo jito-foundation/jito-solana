@@ -46,11 +46,18 @@ impl Server {
     }
 
     pub fn accept(&mut self) -> Result<AgaveSession, AgaveHandshakeError> {
+        self.accept_with_validation(|| Ok(()))
+    }
+
+    pub fn accept_with_validation(
+        &mut self,
+        validate: impl FnOnce() -> Result<(), &'static str>,
+    ) -> Result<AgaveSession, AgaveHandshakeError> {
         // Wait for next stream.
         let (mut stream, _) = self.listener.accept()?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
-        match self.handle_logon(&mut stream) {
+        match self.handle_logon(&mut stream, validate) {
             Ok(session) => Ok(session),
             Err(err) => {
                 let reason = err.to_string();
@@ -75,9 +82,11 @@ impl Server {
     fn handle_logon(
         &mut self,
         stream: &mut UnixStream,
+        validate: impl FnOnce() -> Result<(), &'static str>,
     ) -> Result<AgaveSession, AgaveHandshakeError> {
         // Receive & validate the logon message.
         let logon = self.recv_logon(stream)?;
+        validate().map_err(AgaveHandshakeError::Rejected)?;
 
         // Setup the requested shared memory regions.
         let (session, files) = Self::setup_session(logon)?;

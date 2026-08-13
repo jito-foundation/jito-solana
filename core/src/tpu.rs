@@ -81,7 +81,7 @@ use {
         path::PathBuf,
         sync::{
             Arc, Mutex, RwLock,
-            atomic::{AtomicBool, AtomicU8},
+            atomic::{AtomicBool, AtomicU8, Ordering},
         },
         thread::{self, JoinHandle},
     },
@@ -460,7 +460,11 @@ impl Tpu {
 
         #[cfg(unix)]
         if let Some((path, banking_control_sender)) = scheduler_bindings {
-            super::scheduler_bindings_server::spawn(&path, banking_control_sender);
+            super::scheduler_bindings_server::spawn(&path, banking_control_sender, move || {
+                (bam_enabled.load(Ordering::Relaxed) == BamConnectionState::Disconnected as u8)
+                    .then_some(())
+                    .ok_or("External scheduler cannot connect while BAM is active")
+            });
         }
         #[cfg(not(unix))]
         assert!(scheduler_bindings.is_none());
