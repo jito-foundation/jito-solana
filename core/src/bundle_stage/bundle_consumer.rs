@@ -2,7 +2,7 @@ use {
     crate::banking_stage::{
         committer::{CommitTransactionDetails, Committer},
         consumer::{
-            ENTRY_OVERHEAD_BYTES, ExecuteAndCommitTransactionsOutput, ExecutionFlags,
+            ENTRY_OVERHEAD_BYTES, ExecuteAndCommitTransactionsOutput,
             LeaderProcessedTransactionCounts, ProcessTransactionBatchOutput, RetryableIndex,
         },
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
@@ -37,8 +37,6 @@ use {
     },
 };
 
-const SERIALIZED_ENTRIES_LENGTH_BYTES: u64 = 8;
-
 pub struct BundleConsumer {
     committer: Committer,
     transaction_recorder: TransactionRecorder,
@@ -46,7 +44,6 @@ pub struct BundleConsumer {
 }
 
 impl BundleConsumer {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         committer: Committer,
         transaction_recorder: TransactionRecorder,
@@ -236,16 +233,10 @@ impl BundleConsumer {
             };
         }
 
-        let execute_and_commit_transactions_output = self.execute_and_commit_transactions_locked(
-            bank,
-            &batch,
-            ExecutionFlags {
-                drop_on_failure: true,
-                all_or_nothing: true,
-            },
-        );
+        let execute_and_commit_transactions_output =
+            self.execute_and_commit_transactions_locked(bank, &batch);
 
-        // // Once the accounts are new transactions can enter the pipeline to process them
+        // Once the accounts are unlocked, new transactions can enter the pipeline.
         let (_, unlock_us) = measure_us!(drop(batch));
 
         let ExecuteAndCommitTransactionsOutput {
@@ -288,7 +279,7 @@ impl BundleConsumer {
     {
         let start = Instant::now();
         while start.elapsed() < max_bundle_duration {
-            let batch = bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs);
+            let batch = bank.prepare_sanitized_batch(txs);
             if let Some(err) = batch.lock_results().iter().find(|x| x.is_err()) {
                 if err.as_ref().unwrap_err() == &TransactionError::AccountInUse {
                     sleep(Duration::from_millis(1));
@@ -300,14 +291,13 @@ impl BundleConsumer {
             }
         }
 
-        bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs)
+        bank.prepare_sanitized_batch(txs)
     }
 
     fn execute_and_commit_transactions_locked(
         &self,
         bank: &Bank,
         batch: &TransactionBatch<impl TransactionWithMeta>,
-        flags: ExecutionFlags,
     ) -> ExecuteAndCommitTransactionsOutput {
         let transaction_status_sender_enabled = self.committer.transaction_status_sender_enabled();
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
@@ -328,8 +318,8 @@ impl BundleConsumer {
                     recording_config: ExecutionRecordingConfig::new_single_setting(
                         transaction_status_sender_enabled
                     ),
-                    drop_on_failure: flags.drop_on_failure,
-                    all_or_nothing: flags.all_or_nothing,
+                    drop_on_failure: true,
+                    all_or_nothing: true,
                     strict_nonce_size_check: true,
                     drop_noop_transactions: true,
                 }
@@ -368,23 +358,6 @@ impl BundleConsumer {
             };
         }
 
-        let actual_execute_time = execute_and_commit_timings
-            .execute_timings
-            .execute_accessories
-            .process_instructions
-            .total_us
-            .0;
-        let actual_executed_cu: u64 = processing_results
-            .iter()
-            .map(|processing_result| {
-                processing_result
-                    .as_ref()
-                    .map_or(0, |pr| pr.executed_units())
-            })
-            .sum();
-        let _actual_executed_cu = actual_executed_cu;
-        let _actual_execute_time = actual_execute_time;
-
         let transaction_counts = LeaderProcessedTransactionCounts {
             processed_count: processed_counts.processed_transactions_count,
             processed_with_successful_result_count: processed_counts
@@ -392,14 +365,25 @@ impl BundleConsumer {
             attempted_processing_count: processing_results.len() as u64,
         };
 
-        // All processing results are successful here; failures bail out above. Therefore every
-        // transaction in the batch will be recorded as its own entry by record_bundle().
-        let entry_bytes = batch.sanitized_transactions().iter().fold(
-            SERIALIZED_ENTRIES_LENGTH_BYTES.saturating_add(
-                ENTRY_OVERHEAD_BYTES.saturating_mul(batch.sanitized_transactions().len() as u64),
-            ),
-            |entry_bytes, tx| entry_bytes.saturating_add(tx.serialized_size() as u64),
-        );
+        // All processing results are successful here; failures bail out above. Convert once and
+        // calculate the serialized size of the single entry before taking the freeze lock.
+        let ((processed_transactions, entry_bytes), processing_results_to_transactions_us) =
+            measure_us!({
+                let mut entry_bytes = ENTRY_OVERHEAD_BYTES + 8; // Vec<Entry> length
+                let processed_transactions = batch
+                    .sanitized_transactions()
+                    .iter()
+                    .map(|tx| {
+                        let tx = tx.to_versioned_transaction();
+                        entry_bytes = entry_bytes.saturating_add(
+                            wincode::serialized_size(&tx)
+                                .expect("versioned transaction serialization should succeed"),
+                        );
+                        tx
+                    })
+                    .collect_vec();
+                (processed_transactions, entry_bytes)
+            });
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
@@ -411,19 +395,9 @@ impl BundleConsumer {
 
         let (recording_result, starting_transaction_index, record_us) = match reservation {
             Ok(()) => {
-                let (processed_transactions, processing_results_to_transactions_us) = measure_us!(
-                    batch
-                        .sanitized_transactions()
-                        .iter()
-                        .map(|tx| tx.to_versioned_transaction())
-                        .collect_vec()
-                );
-
-                // BundleStage executes multiple transactions which may contain overlapping
-                // accounts. This is needed until relax_intrabatch_account_locks is enabled.
                 let (summary, record_us) = measure_us!(
                     self.transaction_recorder
-                        .record_bundle(bank.bank_id(), processed_transactions)
+                        .record_transactions(bank.bank_id(), processed_transactions)
                 );
                 execute_and_commit_timings.record_transactions_timings =
                     RecordTransactionsTimings {
@@ -871,14 +845,14 @@ mod tests {
                 genesis_config.hash(),
             ))
         });
-        let entries = transactions
-            .iter()
-            .map(|tx| Entry {
-                num_hashes: 0,
-                hash: genesis_config.hash(),
-                transactions: vec![tx.to_versioned_transaction()],
-            })
-            .collect::<Vec<_>>();
+        let entries = vec![Entry {
+            num_hashes: 0,
+            hash: genesis_config.hash(),
+            transactions: transactions
+                .iter()
+                .map(|tx| tx.to_versioned_transaction())
+                .collect(),
+        }];
         let entry_bytes = wincode::serialized_size(&entries).unwrap();
         let entry_bytes_limit = bank.entry_bytes_budget().slot_limit();
         let remaining_entry_bytes = entry_bytes_limit
@@ -935,12 +909,9 @@ mod tests {
             )));
             let record = record_receiver.try_recv().unwrap();
             assert_eq!(record.bank_id, bank.bank_id());
-            assert_eq!(record.transaction_batches.len(), transactions.len());
-            assert!(
-                record
-                    .transaction_batches
-                    .iter()
-                    .all(|transaction_batch| transaction_batch.len() == 1)
+            assert_eq!(
+                record.transaction_batches,
+                vec![entries[0].transactions.clone()]
             );
             assert!(record_receiver.try_recv().is_err());
             assert!(
