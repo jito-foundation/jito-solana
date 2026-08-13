@@ -81,8 +81,10 @@ pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>
 
 /// Decides whether a subscriber should receive a given bank notification.
 ///
-/// Filters are evaluated synchronously on producer threads, so implementations must be pure,
-/// non-blocking, and cheap.
+/// This method runs synchronously on replay, gossip, and root-processing producer threads.
+/// Implementations must return quickly and must not perform blocking I/O, wait on contended locks,
+/// or do expensive work. A slow or blocking filter delays bank-notification production for every
+/// subscriber.
 pub trait NotificationFilter: Send + Sync + 'static {
     fn do_forward_notification(&self, notification: &BankNotification) -> bool;
 }
@@ -153,6 +155,12 @@ impl BankNotificationBroadcaster {
         }
     }
 
+    /// Broadcasts a notification to each matching subscriber.
+    ///
+    /// Concurrent calls are not serialized across subscribers. Each subscriber's channel
+    /// preserves its own send order, but different subscribers may observe concurrent
+    /// notifications in different relative orders because their fan-out loops can interleave.
+    /// Consumers must not rely on a common global ordering across subscriber channels.
     pub fn send(
         &self,
         notification: BankNotificationWithDependencyWork,
