@@ -380,7 +380,12 @@ impl BlockEngineStage {
             .into_iter()
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
         {
-            let backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
+            let backend_endpoint = if block_engine_url == local_block_engine_config.block_engine_url
+            {
+                endpoint.clone()
+            } else {
+                Self::get_endpoint(block_engine_url.as_str())?
+            };
             info!(
                 "Trying Block Engine url: {block_engine_url}, Shredstream socket: \
                  {maybe_shredstream_socket:?}, rtt: ({:?})",
