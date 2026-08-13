@@ -399,6 +399,13 @@ fn activate_configured_slot_time_feature(
     Ok(())
 }
 
+fn activate_configured_tx_v1_feature(genesis_config: &mut GenesisConfig, enable_tx_v1: bool) {
+    if enable_tx_v1 {
+        info!("Activating transaction v1 feature");
+        activate_feature(genesis_config, agave_feature_set::enable_tx_v1::id());
+    }
+}
+
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
     skip_last_validator: bool,
@@ -444,6 +451,7 @@ impl BamLocalCluster {
             ClusterType::Development,
             config.hashes_per_tick,
             config.slot_time_ms,
+            config.enable_tx_v1,
         )?;
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
@@ -577,6 +585,7 @@ impl BamLocalCluster {
         cluster_type: ClusterType,
         hashes_per_tick: Option<u64>,
         slot_time_ms: Option<u64>,
+        enable_tx_v1: bool,
     ) -> Result<GenesisConfigInfo> {
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
@@ -644,6 +653,7 @@ impl BamLocalCluster {
 
         activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
         activate_configured_slot_time_feature(&mut genesis_config, slot_time_ms)?;
+        activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
 
         let mut genesis_config_info = GenesisConfigInfo {
             genesis_config,
@@ -870,5 +880,31 @@ mod tests {
                 "explicit 400ms slot time should deactivate feature {feature_id}"
             );
         }
+    }
+
+    #[test]
+    fn activate_configured_tx_v1_feature_adds_feature_account_to_genesis() {
+        let mut genesis_config = GenesisConfig::default();
+
+        activate_configured_tx_v1_feature(&mut genesis_config, true);
+
+        assert!(
+            genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::enable_tx_v1::id())
+        );
+    }
+
+    #[test]
+    fn activate_configured_tx_v1_feature_leaves_feature_inactive_when_disabled() {
+        let mut genesis_config = GenesisConfig::default();
+
+        activate_configured_tx_v1_feature(&mut genesis_config, false);
+
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::enable_tx_v1::id())
+        );
     }
 }

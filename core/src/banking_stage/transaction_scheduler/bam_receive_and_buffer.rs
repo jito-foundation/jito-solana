@@ -26,7 +26,8 @@ use {
     },
     agave_transaction_view::{
         resolved_transaction_view::ResolvedTransactionView,
-        transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
+        transaction_version::TransactionVersion,
+        transaction_view::{SanitizedTransactionView, UnsanitizedTransactionView},
     },
     ahash::HashSet,
     bytes::Bytes,
@@ -42,6 +43,8 @@ use {
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{MAX_PROCESSING_AGE, Slot},
     solana_measure::{measure::Measure, measure_us},
+    solana_message::v1::MAX_TRANSACTION_SIZE,
+    solana_packet::PACKET_DATA_SIZE,
     solana_perf::sigverify::verify_transaction_view,
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
@@ -182,15 +185,27 @@ impl BamReceiveAndBuffer {
                 }
             }
 
-            let current_slot = shared_leader_state
+            let (current_slot, enable_tx_v1) = shared_leader_state
                 .as_ref()
-                .and_then(|leader_state| leader_state.load().working_bank().map(|b| b.slot()))
-                .unwrap_or_else(|| bank_forks.read().unwrap().working_bank().slot());
+                .and_then(|leader_state| {
+                    leader_state
+                        .load()
+                        .working_bank()
+                        .map(|bank| (bank.slot(), bank.feature_set.snapshot().enable_tx_v1))
+                })
+                .unwrap_or_else(|| {
+                    let working_bank = bank_forks.read().unwrap().working_bank();
+                    (
+                        working_bank.slot(),
+                        working_bank.feature_set.snapshot().enable_tx_v1,
+                    )
+                });
 
             let (deserialize_stats, duration_us) = measure_us!(Self::batch_verify(
                 &sigverify_thread_pool,
                 &mut recv_buffer,
                 current_slot,
+                enable_tx_v1,
                 &mut metrics,
                 &mut prevalidated,
                 &mut packet_data,
@@ -667,6 +682,7 @@ impl BamReceiveAndBuffer {
         sigverify_thread_pool: &rayon::ThreadPool,
         atomic_txn_batches: &mut [MultipleAtomicTxnBatch],
         current_slot: Slot,
+        enable_tx_v1: bool,
         metrics: &mut BamReceiveAndBufferMetrics,
         prevalidated: &mut Vec<PrevalidationResult>,
         packet_data: &mut Vec<Bytes>,
@@ -699,10 +715,13 @@ impl BamReceiveAndBuffer {
                 .par_iter_mut()
                 .map(|data| {
                     let data = core::mem::take(data);
+                    if data.len() > bam_packet_data_size_limit(&data, enable_tx_v1) {
+                        return None;
+                    }
                     let view =
                         SanitizedTransactionView::try_new_sanitized(data, &sanitize_config).ok()?;
                     let (is_simple_vote_transaction, is_valid) =
-                        verify_transaction_view(&view, false, false);
+                        verify_transaction_view(&view, false, enable_tx_v1);
                     if !is_valid {
                         return None;
                     }
@@ -724,6 +743,20 @@ impl BamReceiveAndBuffer {
             .increment_total_verify_time(verify_packet_batch_time_us.as_us());
 
         stats
+    }
+}
+
+fn bam_packet_data_size_limit(data: &[u8], enable_tx_v1: bool) -> usize {
+    if enable_tx_v1
+        && data.len() > PACKET_DATA_SIZE
+        && matches!(
+            UnsanitizedTransactionView::try_new_unsanitized(data).map(|view| view.version()),
+            Ok(TransactionVersion::V1)
+        )
+    {
+        MAX_TRANSACTION_SIZE
+    } else {
+        PACKET_DATA_SIZE
     }
 }
 
@@ -1042,13 +1075,15 @@ mod tests {
         ahash::HashSetExt,
         crossbeam_channel::unbounded,
         jito_protos::proto::bam_types::AtomicTxnBatch,
+        solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
-        solana_message::Message,
+        solana_message::{Message, VersionedMessage, v1},
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
         solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
         solana_signer::Signer,
+        solana_system_interface::instruction as system_instruction,
         solana_system_transaction::transfer,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
         std::sync::atomic::AtomicU8,
@@ -1063,6 +1098,41 @@ mod tests {
 
         let (_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
         (bank_forks, mint_keypair)
+    }
+
+    fn test_bank_forks_with_tx_v1() -> (Arc<RwLock<BankForks>>, Keypair) {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(u64::MAX);
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.activate_feature(&agave_feature_set::enable_tx_v1::id());
+        let (_bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        (bank_forks, mint_keypair)
+    }
+
+    fn large_v1_transfer_transaction(payer: &Keypair, blockhash: Hash) -> VersionedTransaction {
+        (1..=64)
+            .find_map(|instruction_count| {
+                let instructions = std::iter::repeat_with(|| {
+                    system_instruction::transfer(&payer.pubkey(), &Pubkey::new_unique(), 1)
+                })
+                .take(instruction_count)
+                .collect::<Vec<_>>();
+                let message = v1::Message::try_compile(&payer.pubkey(), &instructions, blockhash)
+                    .expect("compile v1 message");
+                let transaction =
+                    VersionedTransaction::try_new(VersionedMessage::V1(message), &[payer])
+                        .expect("sign v1 transaction");
+                let wire_size = wincode::serialize(&transaction)
+                    .expect("serialize v1 transaction")
+                    .len();
+                (wire_size > PACKET_DATA_SIZE
+                    && wire_size <= solana_message::v1::MAX_TRANSACTION_SIZE)
+                    .then_some(transaction)
+            })
+            .expect("transaction between legacy packet and tx v1 limits")
     }
 
     #[allow(clippy::type_complexity)]
@@ -1135,6 +1205,7 @@ mod tests {
             &thread_pool,
             &mut batches,
             current_slot,
+            false,
             metrics,
             &mut prevalidated,
             &mut packet_data,
@@ -1300,6 +1371,46 @@ mod tests {
             assert_eq!(deserialized_packets.len(), 1);
             assert_eq!(*seq_id, 1);
         }
+    }
+
+    #[test]
+    fn test_receive_and_buffer_accepts_large_v1_when_feature_active() {
+        let (bank_forks, mint_keypair) = test_bank_forks_with_tx_v1();
+        let (sender, receiver) = unbounded();
+        let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
+            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
+        let transaction = large_v1_transfer_transaction(
+            &mint_keypair,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let data = wincode::serialize(&transaction).expect("serialize v1 transaction");
+
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![AtomicTxnBatch {
+                    seq_id: 1,
+                    packets: vec![Packet {
+                        data: data.into(),
+                        meta: None,
+                    }],
+                    max_schedule_slot: Slot::MAX,
+                }],
+            })
+            .unwrap();
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(30) {
+            let ReceivingStats { num_received, .. } = receive_and_buffer
+                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+                .unwrap();
+            if num_received > 0 || !response_receiver.is_empty() {
+                break;
+            }
+        }
+
+        verify_container(&mut container, 1);
+        assert!(response_receiver.try_recv().is_err());
+        exit.store(true, Ordering::Relaxed);
     }
 
     #[test]
