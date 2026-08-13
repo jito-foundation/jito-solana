@@ -85,13 +85,13 @@ pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>
 /// Implementations must return quickly and must not perform blocking I/O, wait on contended locks,
 /// or do expensive work. A slow or blocking filter delays bank-notification production for every
 /// subscriber.
-pub trait NotificationFilter: Send + Sync + 'static {
-    fn do_forward_notification(&self, notification: &BankNotification) -> bool;
+pub trait BankNotificationFilter: Send + Sync + 'static {
+    fn should_forward(&self, notification: &BankNotification) -> bool;
 }
 
 pub struct BankNotificationSender {
     tx: Sender<BankNotificationWithDependencyWork>,
-    filter: Option<Box<dyn NotificationFilter>>,
+    filter: Option<Box<dyn BankNotificationFilter>>,
 }
 
 impl BankNotificationSender {
@@ -101,7 +101,7 @@ impl BankNotificationSender {
     }
 
     /// Send only notifications accepted by `filter` to `tx`.
-    pub fn new_with_filter<F: NotificationFilter>(
+    pub fn new_with_filter<F: BankNotificationFilter>(
         tx: Sender<BankNotificationWithDependencyWork>,
         filter: F,
     ) -> Self {
@@ -111,10 +111,10 @@ impl BankNotificationSender {
         }
     }
 
-    pub fn do_forward_notification(&self, notification: &BankNotification) -> bool {
+    pub fn should_forward(&self, notification: &BankNotification) -> bool {
         self.filter
             .as_ref()
-            .is_none_or(|filter| filter.do_forward_notification(notification))
+            .is_none_or(|filter| filter.should_forward(notification))
     }
 
     /// Forward `notification` to this subscriber, returning whether it was delivered.
@@ -171,7 +171,7 @@ impl BankNotificationBroadcaster {
             // Filter before cloning, so a rejected notification never clones the bank it carries.
             // A subscriber that filters the notification out is still assumed connected, since its
             // channel was never touched.
-            if !sender.do_forward_notification(&notification.0) {
+            if !sender.should_forward(&notification.0) {
                 connected_subscriber_count += 1;
                 continue;
             }
