@@ -160,9 +160,9 @@ impl BundleAccountLocker {
 #[cfg(test)]
 mod tests {
     use {
-        crate::bundle_stage::{
-            bundle_account_locker::BundleAccountLocker,
-            bundle_packet_deserializer::BundlePacketDeserializer,
+        crate::{
+            banking_stage::transaction_scheduler::receive_and_buffer::TransactionViewReceiveAndBuffer,
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         ahash::HashMap,
         solana_keypair::Keypair,
@@ -170,6 +170,7 @@ mod tests {
         solana_perf::packet::{BytesPacket, bytes::Bytes},
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
+        solana_runtime_transaction::sanitize_config::sanitize_config,
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::versioned::VersionedTransaction,
@@ -209,21 +210,23 @@ mod tests {
         let tx1_data =
             Bytes::copy_from_slice(BytesPacket::from_data(&tx1).unwrap().data(..).unwrap());
 
-        let mut tx0 = BundlePacketDeserializer::try_handle_packet(
+        let mut tx0 = TransactionViewReceiveAndBuffer::try_handle_packet(
             tx0_data,
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
+            &sanitize_config(true),
             &HashSet::default(),
         )
         .unwrap();
         let tx0 = vec![tx0.take_transaction_for_scheduling().0];
 
-        let mut tx1 = BundlePacketDeserializer::try_handle_packet(
+        let mut tx1 = TransactionViewReceiveAndBuffer::try_handle_packet(
             tx1_data,
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
+            &sanitize_config(true),
             &HashSet::default(),
         )
         .unwrap();
@@ -338,20 +341,22 @@ mod tests {
         let tx1_data =
             Bytes::copy_from_slice(BytesPacket::from_data(&tx1).unwrap().data(..).unwrap());
 
-        let mut tx0 = BundlePacketDeserializer::try_handle_packet(
+        let mut tx0 = TransactionViewReceiveAndBuffer::try_handle_packet(
             tx0_data,
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
+            &sanitize_config(true),
             &HashSet::default(),
         )
         .unwrap();
         let tx0 = vec![tx0.take_transaction_for_scheduling().0];
-        let mut tx1 = BundlePacketDeserializer::try_handle_packet(
+        let mut tx1 = TransactionViewReceiveAndBuffer::try_handle_packet(
             tx1_data,
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
+            &sanitize_config(true),
             &HashSet::default(),
         )
         .unwrap();
