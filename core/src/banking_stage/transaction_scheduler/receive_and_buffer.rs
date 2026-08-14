@@ -1,6 +1,3 @@
-// Re-exported so sibling modules (bam_receive_and_buffer, bundle_packet_deserializer) can
-// reach it through this module.
-pub(crate) use crate::transaction_priority::calculate_priority_and_cost;
 use {
     super::{
         transaction_priority_id::TransactionPriorityId,
@@ -10,8 +7,11 @@ use {
             TransactionViewStateContainer,
         },
     },
-    crate::banking_stage::{
-        consumer::Consumer, decision_maker::BufferedPacketsDecision, scheduler_messages::MaxAge,
+    crate::{
+        banking_stage::{
+            consumer::Consumer, decision_maker::BufferedPacketsDecision, scheduler_messages::MaxAge,
+        },
+        transaction_priority::calculate_priority_and_cost,
     },
     agave_banking_stage_ingress_types::{BankingPacketBatch, BankingPacketReceiver},
     agave_transaction_view::{
