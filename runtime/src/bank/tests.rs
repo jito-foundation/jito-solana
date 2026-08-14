@@ -11424,6 +11424,45 @@ fn test_failed_simulation_load_error() {
 }
 
 #[test]
+fn test_simulate_transaction_unchecked_allows_oversized_nonce_account() {
+    let (bank, _mint_keypair, custodian_keypair, nonce_keypair, _bank_forks) =
+        setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
+    let nonce_pubkey = nonce_keypair.pubkey();
+    let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+
+    let nonce_account = bank.get_account(&nonce_pubkey).unwrap();
+    let mut resized_nonce_account = AccountSharedData::new(
+        nonce_account.lamports(),
+        nonce::state::State::size() + 1,
+        nonce_account.owner(),
+    );
+    resized_nonce_account.data_as_mut_slice()[..nonce_account.data().len()]
+        .copy_from_slice(nonce_account.data());
+    bank.store_account(&nonce_pubkey, &resized_nonce_account);
+
+    let transaction = Transaction::new_signed_with_payer(
+        &[
+            system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
+            system_instruction::transfer(
+                &custodian_keypair.pubkey(),
+                &Pubkey::new_unique(),
+                100_000,
+            ),
+        ],
+        Some(&custodian_keypair.pubkey()),
+        &[&custodian_keypair, &nonce_keypair],
+        nonce_hash,
+    );
+    let sanitized = RuntimeTransaction::from_transaction_for_tests(transaction);
+
+    assert_eq!(
+        bank.simulate_transaction_unchecked(&sanitized, false)
+            .result,
+        Ok(())
+    );
+}
+
+#[test]
 fn test_filter_program_errors_and_collect_fee_details() {
     // TX  | PROCESSING RESULT           | COLLECT            | COLLECT
     //     |                             | (TX_FEE, PRIO_FEE) | RESULT
