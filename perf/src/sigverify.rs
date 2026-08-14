@@ -50,37 +50,8 @@ pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool, enable_tx
         return false;
     };
 
-<<<<<<< HEAD
-    let (is_simple_vote_tx, verified) = {
-        let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config()) else {
-            return false;
-        };
-
-        if !enable_tx_v1 && matches!(view.version(), TransactionVersion::V1) {
-            return false;
-        }
-
-        let is_simple_vote_tx = is_simple_vote_transaction_view(&view);
-        if reject_non_vote && !is_simple_vote_tx {
-            (is_simple_vote_tx, false)
-        } else {
-            let signatures = view.signatures();
-            if signatures.is_empty() {
-                (is_simple_vote_tx, false)
-            } else {
-                let message = view.message_data();
-                let static_account_keys = view.static_account_keys();
-                let verified = signatures
-                    .iter()
-                    .zip(static_account_keys.iter())
-                    .all(|(signature, pubkey)| signature.verify(pubkey.as_ref(), message));
-                (is_simple_vote_tx, verified)
-            }
-        }
-=======
-    let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config(true)) else {
+    let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config()) else {
         return false;
->>>>>>> dafd8b8d3b (Avoid duplicate BAM transaction parsing (#1551))
     };
     let (is_simple_vote_transaction, is_valid) =
         verify_transaction_view(&view, reject_non_vote, enable_tx_v1);

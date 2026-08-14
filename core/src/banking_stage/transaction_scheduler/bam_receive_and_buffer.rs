@@ -348,26 +348,9 @@ impl BamReceiveAndBuffer {
         for (index, verified_packet) in verified_batch.iter_mut().enumerate() {
             // Load static runtime metadata from the view retained by sigverify.
             let sanitization_start = Instant::now();
-<<<<<<< HEAD
-            let Ok(view) = SanitizedTransactionView::try_new_sanitized(
-                verified_packet,
-                &solana_runtime_transaction::sanitize_config::sanitize_config(),
-            ) else {
-                return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::SanitizeError as i32,
-                        },
-                    )),
-                    stats,
-                );
-            };
-=======
             let (view, is_simple_vote_transaction) = verified_packet
                 .take()
                 .expect("signature failures are handled before parsing");
->>>>>>> dafd8b8d3b (Avoid duplicate BAM transaction parsing (#1551))
 
             let Ok(view) = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
                 view,
@@ -710,7 +693,7 @@ impl BamReceiveAndBuffer {
 
         let mut verify_packet_batch_time_us = Measure::start("verify_packet_batch_time_us");
         verification_results.reserve(packet_count);
-        let sanitize_config = solana_runtime_transaction::sanitize_config::sanitize_config(true);
+        let sanitize_config = solana_runtime_transaction::sanitize_config::sanitize_config();
         sigverify_thread_pool.install(|| {
             packet_data
                 .par_iter_mut()
