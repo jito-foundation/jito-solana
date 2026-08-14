@@ -472,7 +472,7 @@ impl TransactionViewReceiveAndBuffer {
 /// ALT deactivation, if any. If no minimum slot, Slot::MAX is returned.
 pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     data: D,
-    resolution_bank: &Bank,
+    bank: &Bank,
     vote_only: bool,
     transaction_account_lock_limit: usize,
     sanitize_config: &SanitizeConfig,
@@ -499,12 +499,12 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
         return Err(PacketHandlingError::LockValidation);
     }
 
-    let (loaded_addresses, deactivation_slot) = load_addresses_for_view(&view, resolution_bank)?;
+    let (loaded_addresses, deactivation_slot) = load_addresses_for_view(&view, bank)?;
 
     let Ok(view) = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
         view,
         loaded_addresses,
-        resolution_bank.get_reserved_account_keys(),
+        bank.get_reserved_account_keys(),
     ) else {
         return Err(PacketHandlingError::Sanitization);
     };
