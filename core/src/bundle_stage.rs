@@ -1306,9 +1306,13 @@ mod tests {
         verified_bundle_sender.send(verified_bundle).unwrap();
 
         let start = Instant::now();
+        const PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
         const MAX_EXPECTED_TXS: usize = 6; // 4 initial for tips + 2 transfers
+        let expected_balance = genesis_config_info.genesis_config.rent.minimum_balance(0);
         let mut tx_count = 0;
-        while start.elapsed() < Duration::from_secs(2) {
+        while (tx_count < MAX_EXPECTED_TXS || bank.get_balance(&kp2.pubkey()) != expected_balance)
+            && start.elapsed() < PROCESSING_TIMEOUT
+        {
             if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
@@ -1318,15 +1322,9 @@ mod tests {
         }
 
         let balance = bank.get_balance(&kp1.pubkey());
-        assert_eq!(
-            balance,
-            genesis_config_info.genesis_config.rent.minimum_balance(0)
-        );
+        assert_eq!(balance, expected_balance);
         let balance = bank.get_balance(&kp2.pubkey());
-        assert_eq!(
-            balance,
-            genesis_config_info.genesis_config.rent.minimum_balance(0)
-        );
+        assert_eq!(balance, expected_balance);
 
         exit.store(true, Ordering::Relaxed);
         bundle_stage.join().unwrap();

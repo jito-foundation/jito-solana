@@ -14,6 +14,29 @@ use {
 // Empirically derived to constrain max verify latency to ~8ms at lower packet counts
 pub const VERIFY_PACKET_CHUNK_SIZE: usize = 128;
 
+/// Returns `(is_simple_vote_transaction, is_valid)` for a sanitized transaction view.
+#[must_use]
+pub fn verify_transaction_view<D: TransactionData>(
+    view: &SanitizedTransactionView<D>,
+    reject_non_vote: bool,
+    enable_tx_v1: bool,
+) -> (bool, bool) {
+    if !enable_tx_v1 && matches!(view.version(), TransactionVersion::V1) {
+        return (false, false);
+    }
+
+    let is_simple_vote_transaction = is_simple_vote_transaction_view(view);
+    let message = view.message_data();
+    let is_valid = (!reject_non_vote || is_simple_vote_transaction)
+        && view
+            .signatures()
+            .iter()
+            .zip(view.static_account_keys())
+            .all(|(signature, pubkey)| signature.verify(pubkey.as_ref(), message));
+
+    (is_simple_vote_transaction, is_valid)
+}
+
 /// Returns true if the signature on the packet verifies.
 /// Caller must do packet.set_discard(true) if this returns false.
 #[must_use]
@@ -27,6 +50,7 @@ pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool, enable_tx
         return false;
     };
 
+<<<<<<< HEAD
     let (is_simple_vote_tx, verified) = {
         let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config()) else {
             return false;
@@ -53,13 +77,19 @@ pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool, enable_tx
                 (is_simple_vote_tx, verified)
             }
         }
+=======
+    let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config(true)) else {
+        return false;
+>>>>>>> dafd8b8d3b (Avoid duplicate BAM transaction parsing (#1551))
     };
+    let (is_simple_vote_transaction, is_valid) =
+        verify_transaction_view(&view, reject_non_vote, enable_tx_v1);
 
-    if is_simple_vote_tx {
+    if is_simple_vote_transaction {
         packet.meta_mut().flags |= PacketFlags::SIMPLE_VOTE_TX;
     }
 
-    verified
+    is_valid
 }
 
 pub fn count_packets_in_batches(batches: &[PacketBatch]) -> usize {
