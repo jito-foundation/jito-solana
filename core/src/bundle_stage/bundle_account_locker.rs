@@ -215,8 +215,8 @@ mod tests {
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
-            &sanitize_config(true),
-            &HashSet::default(),
+            &sanitize_config(),
+            &HashSet::<Pubkey>::default(),
         )
         .unwrap();
         let tx0 = vec![tx0.take_transaction_for_scheduling().0];
@@ -226,8 +226,8 @@ mod tests {
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
-            &sanitize_config(true),
-            &HashSet::default(),
+            &sanitize_config(),
+            &HashSet::<Pubkey>::default(),
         )
         .unwrap();
         let tx1 = vec![tx1.take_transaction_for_scheduling().0];
@@ -346,8 +346,8 @@ mod tests {
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
-            &sanitize_config(true),
-            &HashSet::default(),
+            &sanitize_config(),
+            &HashSet::<Pubkey>::default(),
         )
         .unwrap();
         let tx0 = vec![tx0.take_transaction_for_scheduling().0];
@@ -356,8 +356,8 @@ mod tests {
             &bank,
             &bank,
             bank.get_transaction_account_lock_limit(),
-            &sanitize_config(true),
-            &HashSet::default(),
+            &sanitize_config(),
+            &HashSet::<Pubkey>::default(),
         )
         .unwrap();
         let tx1 = vec![tx1.take_transaction_for_scheduling().0];

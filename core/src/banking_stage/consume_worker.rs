@@ -1814,6 +1814,7 @@ pub(crate) mod external {
             let tx = translate_to_runtime_view(
                 &simple_tx[..],
                 &bank,
+                bank.vote_only_bank(),
                 bank.get_transaction_account_lock_limit(),
                 &sanitize_config(),
             )

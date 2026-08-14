@@ -179,32 +179,22 @@ impl BundleStorage {
         }
 
         let mut container_ids: Vec<usize> = Vec::with_capacity(batch.len());
-<<<<<<< HEAD
-        let transaction_account_lock_limit = working_bank.get_transaction_account_lock_limit();
-=======
-        let mut maybe_error = Ok(());
-        let sanitize_config = sanitize_config(
-            working_bank
-                .feature_set
-                .snapshot()
-                .limit_instruction_accounts,
-        );
+        let sanitize_config = sanitize_config();
         let transaction_account_lock_limit = working_bank
             .get_transaction_account_lock_limit()
             .min(root_bank.get_transaction_account_lock_limit());
->>>>>>> c5b089d86b (Resolve bundle ALTs against the root bank (#1542))
 
         for (idx, packet) in batch.iter().enumerate() {
             // bundles shall contain all valid packets; checked above
             let bytes = Bytes::copy_from_slice(packet.data(..).unwrap());
 
             // try to insert the packet into the container
-<<<<<<< HEAD
-            match BundlePacketDeserializer::try_handle_packet(
+            match TransactionViewReceiveAndBuffer::try_handle_packet(
                 bytes,
                 root_bank,
                 working_bank,
                 transaction_account_lock_limit,
+                &sanitize_config,
                 blacklisted_accounts,
             ) {
                 Ok(state) => {
@@ -216,24 +206,6 @@ impl BundleStorage {
                     for container_id in container_ids.iter() {
                         self.transaction_view_state_container
                             .remove_by_id(*container_id);
-=======
-            if let Some(container_id) = self
-                .transaction_view_state_container
-                .try_insert_map_only_with_data(packet_data, |bytes| {
-                    match TransactionViewReceiveAndBuffer::try_handle_packet(
-                        bytes,
-                        root_bank,
-                        working_bank,
-                        transaction_account_lock_limit,
-                        &sanitize_config,
-                        blacklisted_accounts,
-                    ) {
-                        Ok(state) => Ok(state),
-                        Err(e) => {
-                            maybe_error = Err(e);
-                            Err(())
-                        }
->>>>>>> c5b089d86b (Resolve bundle ALTs against the root bank (#1542))
                     }
                     return Err(BundleStorageError::PacketFilterError((e, idx)));
                 }
@@ -341,7 +313,7 @@ mod tests {
         let data = address_lookup_table.serialize_for_tests().unwrap();
         let mut account =
             AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
-        account.set_data(data);
+        account.set_data_from_slice(&data);
         working_bank.store_account(&address_lookup_table_key, &account);
 
         let message = v0::Message::try_compile(
