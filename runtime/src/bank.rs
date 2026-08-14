@@ -5980,7 +5980,7 @@ impl Bank {
         self.add_builtin(
             program_id,
             "mockup",
-            ProgramCacheEntry::new_builtin(0, builtin),
+            ProgramCacheEntry::new_builtin(builtin),
         );
     }
 
@@ -6311,7 +6311,7 @@ impl Bank {
                 self.add_builtin(
                     builtin.program_id,
                     builtin.name,
-                    ProgramCacheEntry::new_builtin(0, builtin.register_fn),
+                    ProgramCacheEntry::new_builtin(builtin.register_fn),
                 );
             }
 
@@ -6461,7 +6461,7 @@ impl Bank {
             if builtin_is_active {
                 self.transaction_processor.add_builtin(
                     builtin.program_id,
-                    ProgramCacheEntry::new_builtin(0, builtin.register_fn),
+                    ProgramCacheEntry::new_builtin(builtin.register_fn),
                 );
             }
         }
