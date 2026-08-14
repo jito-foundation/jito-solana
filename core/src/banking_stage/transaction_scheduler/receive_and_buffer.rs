@@ -70,32 +70,15 @@ pub(crate) fn precheck_transaction(
 ) -> PrecheckResult {
     let sanitize_config = sanitize_config();
     let transaction_account_lock_limit = working_bank.get_transaction_account_lock_limit();
-    let (view, deactivation_slot) = translate_to_runtime_view(
+    let state = TransactionViewReceiveAndBuffer::try_handle_packet(
         bytes,
         root_bank,
+        working_bank,
         transaction_account_lock_limit,
         &sanitize_config,
+        filter_keys,
     )
     .map_err(IngressCheckError::PacketHandling)?;
-
-    if !filter_keys.is_empty()
-        && view
-            .account_keys()
-            .iter()
-            .any(|key| filter_keys.contains(key))
-    {
-        return Err(IngressCheckError::PacketHandling(
-            PacketHandlingError::FilterKey,
-        ));
-    }
-
-    let transaction_configuration = view
-        .transaction_configuration(&working_bank.feature_set)
-        .map_err(|_| IngressCheckError::PacketHandling(PacketHandlingError::ComputeBudget))?;
-    let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
-    let (priority, cost) =
-        calculate_priority_and_cost(working_bank, &view, &transaction_configuration);
-    let state = TransactionState::new(view, max_age, priority, cost);
 
     let mut error_counters = TransactionErrorMetrics::default();
     let validated_nonce_address = working_bank
@@ -121,6 +104,7 @@ pub(crate) fn precheck_transaction(
 pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     data: D,
     bank: &Bank,
+    vote_only: bool,
     transaction_account_lock_limit: usize,
     sanitize_config: &SanitizeConfig,
 ) -> Result<(RuntimeTransaction<ResolvedTransactionView<D>>, u64), PacketHandlingError> {
@@ -136,7 +120,8 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
         return Err(PacketHandlingError::Sanitization);
     };
 
-    if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+    // Discard non-vote packets if in vote-only mode.
+    if vote_only && !view.is_simple_vote_transaction() {
         return Err(PacketHandlingError::Sanitization);
     }
 
@@ -189,7 +174,7 @@ pub(crate) fn calculate_max_age(
 }
 
 /// Returns true if any of the account keys are in the filter set. Used by the
-/// fork's bundle/BAM ingress paths; upstream's precheck inlines the same test.
+/// fork's BAM and external ingress paths.
 pub(crate) fn contains_blacklisted_account<'a>(
     account_keys: impl IntoIterator<Item = &'a Pubkey>,
     filter_keys: &ahash::HashSet<Pubkey>,
@@ -328,6 +313,41 @@ impl TransactionViewReceiveAndBuffer {
             check_work_sender,
             check_result_receiver,
         }
+    }
+
+    pub(crate) fn try_handle_packet<S: std::hash::BuildHasher>(
+        bytes: Bytes,
+        root_bank: &Bank,
+        working_bank: &Bank,
+        transaction_account_lock_limit: usize,
+        sanitize_config: &SanitizeConfig,
+        filter_keys: &HashSet<Pubkey, S>,
+    ) -> Result<TransactionViewState, PacketHandlingError> {
+        let (view, deactivation_slot) = translate_to_runtime_view(
+            bytes,
+            root_bank,
+            working_bank.vote_only_bank(),
+            transaction_account_lock_limit,
+            sanitize_config,
+        )?;
+
+        if !filter_keys.is_empty()
+            && view
+                .account_keys()
+                .iter()
+                .any(|key| filter_keys.contains(key))
+        {
+            return Err(PacketHandlingError::FilterKey);
+        }
+
+        let transaction_configuration = view
+            .transaction_configuration(&working_bank.feature_set)
+            .map_err(|_| PacketHandlingError::ComputeBudget)?;
+        let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
+        let (priority, cost) =
+            calculate_priority_and_cost(working_bank, &view, &transaction_configuration);
+
+        Ok(TransactionState::new(view, max_age, priority, cost))
     }
 }
 
