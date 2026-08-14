@@ -1,0 +1,36 @@
+[package]
+name = "jito-tip-router-snapshot-service"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+solana-clap-utils = { workspace = true }
+solana-clock = { workspace = true }
+solana-hash = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-rpc = { workspace = true }
+solana-runtime = { workspace = true }
+
+bincode = { workspace = true }
+borsh = { workspace = true }
+jito-priority-fee-distribution-sdk = { git = "https://github.com/jito-foundation/jito-tip-router.git", rev = "d3e10e9ca650197a78b01f64c492b1cd91eea7f4" }
+jito-stake-meta-types = { git = "https://github.com/jito-foundation/jito-tip-router.git", rev = "d3e10e9ca650197a78b01f64c492b1cd91eea7f4" }
+jito-tip-distribution-sdk = { git = "https://github.com/jito-foundation/jito-tip-router.git", rev = "d3e10e9ca650197a78b01f64c492b1cd91eea7f4" }
+jito-tip-payment-sdk = { git = "https://github.com/jito-foundation/jito-tip-router.git", rev = "d3e10e9ca650197a78b01f64c492b1cd91eea7f4" }
+
+solana-account = { workspace = true }
+solana-accounts-db = { workspace = true }
+solana-stake-interface = { workspace = true, features = ["sysvar"] }
+solana-vote = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+agave-feature-set = { workspace = true }
+solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-signer = { workspace = true }
+tempfile = { workspace = true }
