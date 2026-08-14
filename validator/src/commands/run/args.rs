@@ -1336,6 +1336,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
     .args(&send_transaction_config::args())
     .args(&rpc_bootstrap_config::args())
     .args(&blockstore_options::args())
+    .args(&jito_tip_router_snapshot_service::config::cli::args())
 }
 
 fn validators_set(
@@ -1445,6 +1446,28 @@ mod tests {
             [&["run_command"], &args[..]].concat(),
             expected_args,
         );
+    }
+
+    #[test]
+    fn test_tip_router_snapshot_service_requires_no_voting() {
+        let default_args = DefaultArgs::default();
+
+        let matches = add_args(App::new("run_command"), &default_args).get_matches_from_safe(vec![
+            "run_command",
+            "--enable-tip-router-snapshot-service",
+            "--tip-router-snapshot-output-dir",
+            "tip-router-artifacts",
+        ]);
+        assert!(matches.is_err());
+
+        let matches = add_args(App::new("run_command"), &default_args).get_matches_from_safe(vec![
+            "run_command",
+            "--no-voting",
+            "--enable-tip-router-snapshot-service",
+            "--tip-router-snapshot-output-dir",
+            "tip-router-artifacts",
+        ]);
+        assert!(matches.is_ok());
     }
 
     #[test]
