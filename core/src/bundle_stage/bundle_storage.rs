@@ -3,13 +3,12 @@ use {
         banking_stage::{
             scheduler_messages::MaxAge,
             transaction_scheduler::{
-                receive_and_buffer::PacketHandlingError,
+                receive_and_buffer::{PacketHandlingError, TransactionViewReceiveAndBuffer},
                 transaction_state_container::{
                     RuntimeTransactionView, StateContainer, TransactionViewStateContainer,
                 },
             },
         },
-        bundle_stage::bundle_packet_deserializer::BundlePacketDeserializer,
         packet_bundle::VerifiedPacketBundle,
     },
     ahash::HashSet,
@@ -18,7 +17,9 @@ use {
     solana_perf::packet::bytes::Bytes,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
-    solana_runtime_transaction::transaction_meta::TransactionMeta,
+    solana_runtime_transaction::{
+        sanitize_config::sanitize_config, transaction_meta::TransactionMeta,
+    },
     std::collections::VecDeque,
 };
 
@@ -178,18 +179,22 @@ impl BundleStorage {
         }
 
         let mut container_ids: Vec<usize> = Vec::with_capacity(batch.len());
-        let transaction_account_lock_limit = working_bank.get_transaction_account_lock_limit();
+        let sanitize_config = sanitize_config();
+        let transaction_account_lock_limit = working_bank
+            .get_transaction_account_lock_limit()
+            .min(root_bank.get_transaction_account_lock_limit());
 
         for (idx, packet) in batch.iter().enumerate() {
             // bundles shall contain all valid packets; checked above
             let bytes = Bytes::copy_from_slice(packet.data(..).unwrap());
 
             // try to insert the packet into the container
-            match BundlePacketDeserializer::try_handle_packet(
+            match TransactionViewReceiveAndBuffer::try_handle_packet(
                 bytes,
                 root_bank,
                 working_bank,
                 transaction_account_lock_limit,
+                &sanitize_config,
                 blacklisted_accounts,
             ) {
                 Ok(state) => {
@@ -264,19 +269,116 @@ mod tests {
             packet_bundle::VerifiedPacketBundle,
         },
         ahash::{HashSet, HashSetExt},
+        solana_account::AccountSharedData,
+        solana_address_lookup_table_interface::{
+            self as address_lookup_table,
+            state::{AddressLookupTable, LookupTableMeta},
+        },
         solana_genesis_config::GenesisConfig,
         solana_hash::Hash,
         solana_keypair::Keypair,
+        solana_leader_schedule::SlotLeader,
+        solana_message::{AddressLoader, AddressLookupTableAccount, VersionedMessage, v0},
         solana_perf::packet::{BytesPacket, PacketBatch},
-        solana_runtime::bank::Bank,
+        solana_pubkey::Pubkey,
+        solana_runtime::bank::{Bank, NewBankOptions},
         solana_signer::Signer,
-        solana_transaction::Transaction,
+        solana_system_interface::instruction as system_instruction,
+        solana_transaction::{Transaction, versioned::VersionedTransaction},
+        std::borrow::Cow,
     };
 
     pub fn test_tx() -> Transaction {
         let keypair1 = Keypair::new();
         let pubkey1 = keypair1.pubkey();
         solana_system_transaction::transfer(&keypair1, &pubkey1, 42, Hash::default())
+    }
+
+    #[test]
+    fn test_bundle_alt_resolution_uses_root_bank() {
+        let (root_bank, _bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
+        let working_bank = Bank::new_from_parent(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            root_bank.slot() + 1,
+        );
+        let payer = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let address_lookup_table_key = Pubkey::new_unique();
+        let address_lookup_table = AddressLookupTable {
+            meta: LookupTableMeta::default(),
+            addresses: Cow::Borrowed(&[recipient]),
+        };
+        let data = address_lookup_table.serialize_for_tests().unwrap();
+        let mut account =
+            AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
+        account.set_data_from_slice(&data);
+        working_bank.store_account(&address_lookup_table_key, &account);
+
+        let message = v0::Message::try_compile(
+            &payer.pubkey(),
+            &[system_instruction::transfer(&payer.pubkey(), &recipient, 1)],
+            &[AddressLookupTableAccount {
+                key: address_lookup_table_key,
+                addresses: vec![recipient],
+            }],
+            working_bank.last_blockhash(),
+        )
+        .unwrap();
+
+        assert!(
+            AddressLoader::load_addresses(&working_bank, &message.address_table_lookups).is_ok()
+        );
+
+        let transaction =
+            VersionedTransaction::try_new(VersionedMessage::V0(message), &[&payer]).unwrap();
+        let packet = BytesPacket::from_data(transaction).unwrap();
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
+        let mut bundle_storage = BundleStorage::with_capacity(1);
+
+        assert_eq!(
+            bundle_storage.insert_bundle(
+                bundle,
+                root_bank.as_ref(),
+                &working_bank,
+                &HashSet::new(),
+            ),
+            Err(BundleStorageError::PacketFilterError((
+                PacketHandlingError::ALTResolution,
+                0,
+            )))
+        );
+    }
+
+    #[test]
+    fn test_bundle_vote_only_check_uses_working_bank() {
+        let (root_bank, _bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
+        let working_bank = Bank::new_from_parent_with_options(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            root_bank.slot() + 1,
+            NewBankOptions {
+                vote_only_bank: true,
+            },
+        );
+        let packet = BytesPacket::from_data(test_tx()).unwrap();
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
+        let mut bundle_storage = BundleStorage::with_capacity(1);
+
+        assert_eq!(
+            bundle_storage.insert_bundle(
+                bundle,
+                root_bank.as_ref(),
+                &working_bank,
+                &HashSet::new(),
+            ),
+            Err(BundleStorageError::PacketFilterError((
+                PacketHandlingError::Sanitization,
+                0,
+            )))
+        );
     }
 
     #[test]
