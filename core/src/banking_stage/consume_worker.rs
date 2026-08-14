@@ -1257,6 +1257,7 @@ pub(crate) mod external {
             translate_to_runtime_view(
                 transaction_ptr,
                 bank,
+                bank.vote_only_bank(),
                 transaction_account_lock_limit,
                 sanitize_config,
             )
@@ -1697,6 +1698,7 @@ pub(crate) mod external {
                     translate_to_runtime_view(
                         &simple_tx[..],
                         &bank,
+                        bank.vote_only_bank(),
                         bank.get_transaction_account_lock_limit(),
                         &sanitize_config(true),
                     )

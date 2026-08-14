@@ -426,7 +426,7 @@ impl TransactionViewReceiveAndBuffer {
         }
     }
 
-    fn try_handle_packet(
+    pub(crate) fn try_handle_packet(
         bytes: SharedBytes,
         root_bank: &Bank,
         working_bank: &Bank,
@@ -437,6 +437,7 @@ impl TransactionViewReceiveAndBuffer {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
             root_bank,
+            working_bank.vote_only_bank(),
             transaction_account_lock_limit,
             sanitize_config,
         )?;
@@ -470,6 +471,7 @@ impl TransactionViewReceiveAndBuffer {
 pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     data: D,
     bank: &Bank,
+    vote_only: bool,
     transaction_account_lock_limit: usize,
     sanitize_config: &SanitizeConfig,
 ) -> Result<(RuntimeTransaction<ResolvedTransactionView<D>>, u64), PacketHandlingError> {
@@ -487,7 +489,7 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     };
 
     // Discard non-vote packets if in vote-only mode.
-    if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+    if vote_only && !view.is_simple_vote_transaction() {
         return Err(PacketHandlingError::Sanitization);
     }
 
