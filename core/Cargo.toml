@@ -78,6 +78,7 @@ futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
+jito-tip-router-snapshot-service = { workspace = true }
 lazy-lru = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
