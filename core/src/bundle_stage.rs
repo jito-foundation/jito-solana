@@ -829,6 +829,9 @@ impl BundleStage {
         keypair: &Keypair,
     ) -> BundleExecutionResult<()> {
         let block_builder_fee_info = block_builder_fee_info.load();
+        if block_builder_fee_info.block_builder == Pubkey::default() {
+            return Err(BundleExecutionError::TipError);
+        }
         let crank_tip_program_transactions = tip_manager
             .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info)
             .map_err(|e| {
