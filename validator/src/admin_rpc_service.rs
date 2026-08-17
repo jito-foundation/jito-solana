@@ -5,7 +5,7 @@ use {
     },
     arc_swap::ArcSwap,
     crossbeam_channel::Sender,
-    jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
+    jsonrpc_core::{BoxFuture, Error, ErrorCode, MetaIoHandler, Metadata, Result},
     jsonrpc_core_client::{RpcError, transports::ipc},
     jsonrpc_derive::rpc,
     jsonrpc_ipc_server::{
@@ -71,6 +71,7 @@ pub struct AdminRpcRequestMetadata {
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
+    pub enable_scheduler_bindings: bool,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
@@ -648,6 +649,12 @@ impl AdminRpc for AdminRpcImpl {
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
         let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
         let bam_url = bam_url.filter(|url| !url.trim().is_empty());
+
+        if meta.enable_scheduler_bindings && bam_url.is_some() {
+            let error = Error::invalid_params("BAM conflicts with external scheduler bindings");
+            return Err(error);
+        }
+
         let old_bam_url = meta.bam_url.load();
 
         if let Some(new_bam_url) = &bam_url {
@@ -1471,6 +1478,7 @@ mod tests {
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                enable_scheduler_bindings: false,
                 bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
             let mut io = MetaIoHandler::default();
@@ -1671,6 +1679,7 @@ mod tests {
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                enable_scheduler_bindings: false,
                 bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
 
@@ -1761,6 +1770,7 @@ mod tests {
             post_init: post_init.clone(),
             staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
             rpc_to_plugin_manager_sender: None,
+            enable_scheduler_bindings: false,
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
         };
 
@@ -1858,6 +1868,7 @@ mod tests {
             post_init: Arc::new(RwLock::new(None)),
             staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
             rpc_to_plugin_manager_sender: None,
+            enable_scheduler_bindings: false,
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
         };
 
@@ -1876,7 +1887,7 @@ mod tests {
     // This test checks that `setBamUrl` call works as expected when setting and clearing the BAM URL.
     #[test]
     fn test_set_bam_url() {
-        let test_validator = TestValidatorWithAdminRpc::new();
+        let mut test_validator = TestValidatorWithAdminRpc::new();
 
         let set_initial_bam_url_request = r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":["http://example.com:8080/bam"]}"#;
         let response = test_validator.handle_request(set_initial_bam_url_request);
@@ -1931,5 +1942,9 @@ mod tests {
             serde_json::from_str(&response.expect("actual response"))
                 .expect("actual response deserialization");
         assert_eq!(actual_parsed_response, expected_parsed_response);
+
+        test_validator.meta.enable_scheduler_bindings = true;
+        let response = test_validator.handle_request(set_initial_bam_url_request);
+        assert!(response.unwrap().contains("\"error\""));
     }
 }
