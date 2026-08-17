@@ -10,6 +10,7 @@ use {
         scheduler_messages::MaxAge,
     },
     itertools::Itertools,
+    smallvec::SmallVec,
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
     solana_poh::{
@@ -81,33 +82,17 @@ impl BundleConsumer {
         // Need to filter out transactions since they were sanitized earlier.
         // This means that the transaction may cross and epoch boundary (not allowed),
         //  or account lookup tables may have been closed.
-        let pre_results = txs
+        let pre_results: SmallVec<[_; 5]> = txs
             .iter()
             .zip(max_ages)
             .map(|(tx, max_age)| {
-                // If the transaction was sanitized before this bank's epoch,
-                // additional checks are necessary.
-                if bank.epoch() != max_age.sanitized_epoch {
-                    // Reserved key set may have changed, so we must verify that
-                    // no writable keys are reserved.
-                    bank.check_reserved_keys(tx)?;
-                }
-
-                if bank.slot() > max_age.alt_invalidation_slot {
-                    // The address table lookup **may** have expired, but the
-                    // expiration is not guaranteed since there may have been
-                    // skipped slot.
-                    // If the addresses still resolve here, then the transaction is still
-                    // valid, and we can continue with processing.
-                    // If they do not, then the ATL has expired and the transaction
-                    // can be dropped.
-                    let (_addresses, _deactivation_slot) =
-                        bank.load_addresses_from_ref(tx.message_address_table_lookups())?;
-                }
-
-                Ok(())
+                bank.resanitize_transaction_minimally(
+                    tx,
+                    max_age.sanitized_epoch,
+                    max_age.alt_invalidation_slot,
+                )
             })
-            .collect_vec();
+            .collect();
 
         let mut error_counters = TransactionErrorMetrics::default();
         let check_results = bank.check_transactions(
@@ -498,29 +483,33 @@ mod tests {
             },
             bundle_stage::bundle_consumer::BundleConsumer,
         },
+        agave_feature_set::limit_instruction_accounts,
         crossbeam_channel::unbounded,
         solana_cost_model::cost_model::CostModel,
         solana_entry::entry::Entry,
         solana_genesis_config::create_genesis_config,
         solana_keypair::Keypair,
+        solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::{
             GenesisConfigInfo, bootstrap_validator_stake_lamports,
             create_genesis_config_with_leader,
         },
+        solana_message::{Message, compiled_instruction::CompiledInstruction},
         solana_poh::{
             poh_recorder::PohRecorderError, record_channels::record_channels,
             transaction_recorder::TransactionRecorder,
         },
         solana_pubkey::{Pubkey, new_rand},
         solana_runtime::{
-            bank::{Bank, entry_bytes_budget::EntryBytesReserveError},
+            bank::{Bank, NewBankOptions, entry_bytes_budget::EntryBytesReserveError},
             prioritization_fee_cache::PrioritizationFeeCache,
         },
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{
-            InstructionError, Transaction, TransactionError, sanitized::SanitizedTransaction,
+            InstructionError, Transaction, TransactionError, TransactionVerificationMode,
+            sanitized::SanitizedTransaction,
         },
         std::{sync::Arc, time::Duration},
         test_case::test_case,
@@ -624,6 +613,155 @@ mod tests {
             commit_transactions_result[0],
             CommitTransactionDetails::Committed { result: Ok(_), .. }
         );
+    }
+
+    #[test]
+    fn test_rejects_non_vote_bundle_in_vote_only_bank() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (parent_bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let recipient = Pubkey::new_unique();
+        let transaction = parent_bank
+            .verify_transaction(
+                transfer(&mint_keypair, &recipient, 1, parent_bank.last_blockhash()).into(),
+                TransactionVerificationMode::FullVerification,
+            )
+            .unwrap();
+        let max_age = MaxAge {
+            sanitized_epoch: parent_bank.epoch(),
+            alt_invalidation_slot: u64::MAX,
+        };
+        let bank = Bank::new_from_parent_with_options(
+            parent_bank,
+            SlotLeader::new_unique(),
+            1,
+            NewBankOptions {
+                vote_only_bank: true,
+            },
+        );
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, None);
+
+        let output = consumer.process_and_record_aged_transactions(
+            &bank,
+            &[transaction],
+            &[max_age],
+            Duration::from_millis(20),
+        );
+
+        assert_matches!(
+            output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+                .unwrap()
+                .as_slice(),
+            [CommitTransactionDetails::NotCommitted(
+                TransactionError::SanitizeFailure
+            )]
+        );
+        assert_eq!(bank.get_balance(&recipient), 0);
+        assert!(record_receiver.try_recv().is_err());
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
+
+    #[test]
+    fn test_resanitizes_instruction_account_limit_after_epoch_change() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let mut sanitizing_bank = Bank::new_for_tests(&genesis_config);
+        sanitizing_bank.deactivate_feature(&limit_instruction_accounts::id());
+
+        let recent_blockhash = sanitizing_bank.last_blockhash();
+        let mut account_keys = vec![Pubkey::new_unique(); 10];
+        account_keys.insert(0, mint_keypair.pubkey());
+        let instruction = CompiledInstruction {
+            program_id_index: 1,
+            data: vec![],
+            accounts: (0..10).cycle().take(256).collect(),
+        };
+        let message = Message::new_with_compiled_instructions(
+            1,
+            0,
+            1,
+            account_keys,
+            recent_blockhash,
+            vec![instruction],
+        );
+        let transaction = sanitizing_bank
+            .verify_transaction(
+                Transaction::new(&[&mint_keypair], message, recent_blockhash).into(),
+                TransactionVerificationMode::FullVerification,
+            )
+            .unwrap();
+        let sanitized_epoch = sanitizing_bank.epoch();
+        let next_epoch_slot = sanitizing_bank
+            .epoch_schedule()
+            .get_first_slot_in_epoch(sanitized_epoch + 1);
+        let (sanitizing_bank, _bank_forks) = sanitizing_bank.wrap_with_bank_forks_for_tests();
+        let mut bank =
+            Bank::new_from_parent(sanitizing_bank, SlotLeader::new_unique(), next_epoch_slot);
+        bank.activate_feature(&limit_instruction_accounts::id());
+        assert_ne!(bank.epoch(), sanitized_epoch);
+        assert!(
+            bank.feature_set
+                .is_active(&limit_instruction_accounts::id())
+        );
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, None);
+
+        let output = consumer.process_and_record_aged_transactions(
+            &bank,
+            &[transaction],
+            &[MaxAge {
+                sanitized_epoch,
+                alt_invalidation_slot: u64::MAX,
+            }],
+            Duration::from_millis(20),
+        );
+
+        assert_matches!(
+            output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+                .unwrap()
+                .as_slice(),
+            [CommitTransactionDetails::NotCommitted(
+                TransactionError::SanitizeFailure
+            )]
+        );
+        assert!(record_receiver.try_recv().is_err());
     }
 
     #[test]
