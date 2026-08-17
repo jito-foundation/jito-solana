@@ -748,19 +748,15 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
             stats.accumulate(batch_stats);
         }
 
-        // Preserve batches during the short Block Engine handoff. Connecting may be long-lived,
-        // so retain the existing drain behavior for that state.
-        if matches!(
-            decision,
-            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
-        ) && matches!(
-            bam_state,
-            BamConnectionState::DrainingBlockEngine | BamConnectionState::BlockEngineDrained
-        ) {
-            return Ok(stats);
-        }
-
         match decision {
+            // Preserve batches during the short Block Engine handoff. Connecting may be
+            // long-lived, so retain the existing drain behavior for that state.
+            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
+                if matches!(
+                    bam_state,
+                    BamConnectionState::DrainingBlockEngine
+                        | BamConnectionState::BlockEngineDrained
+                ) => {}
             BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold => loop {
                 let batch = match self.parsed_batch_receiver.try_recv() {
                     Ok(batch) => batch,
