@@ -388,6 +388,7 @@ mod tests {
                 .map(|_| vec![VersionedTransaction::default()])
                 .collect(),
             mixins: (0..num_batches).map(|_| Hash::default()).collect(),
+            reschedule_on_sad_handover: true,
         }
     }
 

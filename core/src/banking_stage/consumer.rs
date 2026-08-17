@@ -488,8 +488,11 @@ impl Consumer {
                     EntryBytesReserveError::ExceedsSlotLimit => PohRecorderError::MaxHeightReached,
                 });
         let (record_transactions_summary, record_us) = measure_us!(reserved_bytes.map(|_| {
-            self.transaction_recorder
-                .record_transactions(bank.bank_id(), processed_transactions)
+            self.transaction_recorder.record_transactions(
+                bank.bank_id(),
+                processed_transactions,
+                !revert_on_error,
+            )
         }));
         execute_and_commit_timings.record_us = record_us;
 
@@ -771,8 +774,9 @@ mod tests {
         account
     }
 
-    #[test]
-    fn test_bank_process_and_record_transactions() {
+    #[test_case(false; "ordinary")]
+    #[test_case(true; "revert_on_error")]
+    fn test_bank_process_and_record_transactions(revert_on_error: bool) {
         let TestFrame {
             mint_keypair,
             bank,
@@ -793,7 +797,7 @@ mod tests {
             &bank,
             &transactions,
             &BundleAccountLocker::default(),
-            false,
+            revert_on_error,
         );
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -816,6 +820,7 @@ mod tests {
 
         let record = record_receiver.drain().next().unwrap();
         assert_eq!(record.bank_id, bank.bank_id());
+        assert_eq!(record.reschedule_on_sad_handover, !revert_on_error);
         assert_eq!(record.transaction_batches.len(), 1);
         let transaction_batch = record.transaction_batches[0].clone();
         assert_eq!(transaction_batch.len(), 1);

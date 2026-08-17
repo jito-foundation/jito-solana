@@ -697,6 +697,7 @@ impl BankingStage {
                             finished_work_receiver,
                             bam_dependencies.outbound_sender.clone(),
                             bam_scheduler_bank_forks.clone(),
+                            bam_shared_leader_state.clone(),
                         );
                         let receive_and_buffer = BamReceiveAndBuffer::new(
                             bam_scheduler_exit.clone(),
@@ -1451,19 +1452,21 @@ mod tests {
             )),
         ];
 
-        let summary = recorder.record_transactions(bank.bank_id(), txs.clone());
+        let summary = recorder.record_transactions(bank.bank_id(), txs.clone(), true);
         assert!(summary.result.is_ok());
+        let record = record_receiver.try_recv().unwrap();
         assert_eq!(
-            record_receiver.try_recv().unwrap().transaction_batches,
-            vec![txs.clone()]
+            record.transaction_batches.as_slice(),
+            std::slice::from_ref(&txs)
         );
+        assert!(record.reschedule_on_sad_handover);
         assert!(record_receiver.try_recv().is_err());
 
         // Once bank is set to a new bank (setting bank id + 1 in record_transactions),
         // record_transactions should throw MaxHeightReached
         let next_bank_id = bank.bank_id() + 1;
         let RecordTransactionsSummary { result, .. } =
-            recorder.record_transactions(next_bank_id, txs);
+            recorder.record_transactions(next_bank_id, txs, true);
         assert_matches!(result, Err(PohRecorderError::MaxHeightReached));
         // Should receive nothing from PohRecorder b/c record failed
         assert!(record_receiver.try_recv().is_err());

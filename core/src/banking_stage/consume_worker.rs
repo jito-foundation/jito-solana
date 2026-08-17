@@ -18,6 +18,7 @@ use {
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
     std::{
+        marker::PhantomData,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -31,8 +32,14 @@ use {
 pub enum ConsumeWorkerError<Tx> {
     #[error("Failed to receive work from scheduler: {0}")]
     Recv(#[from] TryRecvError),
-    #[error("Failed to send finalized consume work to scheduler: {0}")]
-    Send(#[from] SendError<FinishedConsumeWork<Tx>>),
+    #[error("Scheduler channel disconnected")]
+    Send(PhantomData<Tx>),
+}
+
+impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError<Tx> {
+    fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
+        Self::Send(PhantomData)
+    }
 }
 
 enum ProcessingStatus<Tx> {

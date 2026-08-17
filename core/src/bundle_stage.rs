@@ -576,7 +576,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) {
-        match decision_maker.make_consume_or_forward_decision() {
+        match decision_maker.make_atomic_consume_or_forward_decision() {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
             BufferedPacketsDecision::Consume(bank) => {
@@ -669,7 +669,7 @@ impl BundleStage {
         loop {
             // Always ensure the window is filled with bundles, breaking out when the bundle deque is full or no more bundles are available to pop
             while bundles.len() < BUNDLE_WINDOW_SIZE.get() {
-                let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
+                let Some(bundle) = bundle_storage.pop_bundle(bank.slot(), bank.bank_id()) else {
                     break;
                 };
 
