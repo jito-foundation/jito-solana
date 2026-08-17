@@ -1044,6 +1044,7 @@ pub fn execute(
             vote_history_storage: validator_config.vote_history_storage.clone(),
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
+            enable_scheduler_bindings: validator_config.enable_scheduler_bindings,
             bam_url: validator_config.bam_url.clone(),
         },
     );

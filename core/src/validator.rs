@@ -816,6 +816,10 @@ impl Validator {
         xdp_transmit_setup: Option<XdpTransmitSetup>,
         exit: Arc<AtomicBool>,
     ) -> Result<Self> {
+        if config.enable_scheduler_bindings && config.bam_url.load().is_some() {
+            return Err(anyhow!("BAM conflicts with external scheduler bindings"));
+        }
+
         #[cfg(debug_assertions)]
         const DEBUG_ASSERTION_STATUS: &str = "enabled";
         #[cfg(not(debug_assertions))]
