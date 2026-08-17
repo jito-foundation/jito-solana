@@ -740,13 +740,24 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let is_bam_enabled = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire))
-            == BamConnectionState::Connected;
+        let bam_state = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire));
 
         // Receive all stats
         let mut stats = ReceivingStats::default();
         while let Ok(batch_stats) = self.recv_stats_receiver.try_recv() {
             stats.accumulate(batch_stats);
+        }
+
+        // Preserve batches during the short Block Engine handoff. Connecting may be long-lived,
+        // so retain the existing drain behavior for that state.
+        if matches!(
+            decision,
+            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
+        ) && matches!(
+            bam_state,
+            BamConnectionState::DrainingBlockEngine | BamConnectionState::BlockEngineDrained
+        ) {
+            return Ok(stats);
         }
 
         match decision {
@@ -761,7 +772,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 };
 
                 // If BAM is not enabled, drain the channel
-                if !is_bam_enabled {
+                if bam_state != BamConnectionState::Connected {
                     stats.num_dropped_without_parsing += batch.txns_max_age.len();
                     continue;
                 }
@@ -786,7 +797,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                     stats.num_dropped_on_capacity += 1;
                     self.send_container_full_txn_batch_result(seq_id);
                     continue;
-                };
+                }
                 self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
             },
             BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Forward => {
@@ -1033,7 +1044,7 @@ mod tests {
             },
         },
         ahash::HashSetExt,
-        crossbeam_channel::{Receiver, unbounded},
+        crossbeam_channel::unbounded,
         jito_protos::proto::bam_types::AtomicTxnBatch,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
@@ -1045,7 +1056,6 @@ mod tests {
         solana_system_transaction::transfer,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
         std::sync::atomic::AtomicU8,
-        test_case::test_case,
     };
 
     fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
@@ -1164,52 +1174,65 @@ mod tests {
         (results, stats)
     }
 
-    #[test_case(setup_bam_receive_and_buffer; "testcase-bam")]
-    fn test_receive_and_buffer_simple_transfer<R: ReceiveAndBuffer>(
-        setup_receive_and_buffer: impl FnOnce(
-            Receiver<MultipleAtomicTxnBatch>,
-            Arc<RwLock<BankForks>>,
-            HashSet<Pubkey>,
-        ) -> (
-            Arc<AtomicBool>,
-            R,
-            R::Container,
-            tokio::sync::mpsc::Receiver<BamOutboundMessage>,
-        ),
-    ) {
+    #[test]
+    fn test_receive_and_buffer_simple_transfer_across_bam_handoff() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (exit, mut receive_and_buffer, mut container, _response_sender) =
-            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
+        let (exit, mut receive_and_buffer, mut container, _response_receiver) =
+            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
+        let bam_enabled = receive_and_buffer.bam_enabled.clone();
+        bam_enabled.store(
+            BamConnectionState::DrainingBlockEngine as u8,
+            Ordering::Release,
+        );
         let transaction = transfer(
             &mint_keypair,
             &Pubkey::new_unique(),
             1,
             bank_forks.read().unwrap().root_bank().last_blockhash(),
         );
-        let data = bincode::serialize(&transaction).expect("serializes");
-        let bundle = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: data.into(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
         sender
             .send(MultipleAtomicTxnBatch {
-                batches: vec![bundle],
+                batches: vec![AtomicTxnBatch {
+                    seq_id: 1,
+                    packets: vec![Packet {
+                        data: wincode::serialize(&transaction).unwrap().into(),
+                        meta: None,
+                    }],
+                    max_schedule_slot: Slot::MAX,
+                }],
             })
             .unwrap();
 
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(30) {
-            let ReceivingStats { num_received, .. } = receive_and_buffer
+        loop {
+            if receive_and_buffer
                 .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
-                .unwrap();
-            if num_received > 0 {
+                .unwrap()
+                .num_received
+                > 0
+            {
                 break;
             }
+            assert!(start.elapsed() < Duration::from_secs(30));
+        }
+        assert!(container.is_empty());
+
+        bam_enabled.store(
+            BamConnectionState::BlockEngineDrained as u8,
+            Ordering::Release,
+        );
+        receive_and_buffer
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert!(container.is_empty());
+
+        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Release);
+        let start = Instant::now();
+        while container.is_empty() && start.elapsed() < Duration::from_secs(30) {
+            receive_and_buffer
+                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+                .unwrap();
         }
 
         verify_container(&mut container, 1);
