@@ -23,6 +23,7 @@ use {
     arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvTimeoutError},
     smallvec::SmallVec,
+    solana_account::ReadableAccount,
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -594,6 +595,11 @@ impl BundleStage {
         let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
 
         if bank.slot() != *last_tip_update_slot {
+            if !Self::tip_programs_available(bank, tip_manager) {
+                bundle_stage_metrics.increment_tip_programs_error(1);
+                return;
+            }
+
             if Self::handle_tip_programs(
                 bank,
                 bundle_account_locker,
@@ -687,6 +693,18 @@ impl BundleStage {
                 .is_empty(),
             "bundle account write locks should be empty"
         );
+    }
+
+    fn tip_programs_available(bank: &Bank, tip_manager: &TipManager) -> bool {
+        [
+            tip_manager.tip_payment_program_id(),
+            tip_manager.tip_distribution_program_id(),
+        ]
+        .into_iter()
+        .all(|program_id| {
+            bank.get_account(&program_id)
+                .is_some_and(|account| account.executable())
+        })
     }
 
     fn handle_tip_programs(
@@ -1023,6 +1041,10 @@ mod tests {
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
             Arc::new(leader_keypair.insecure_clone()),
             SocketAddrSpace::Unspecified,
+        ));
+        assert!(!BundleStage::tip_programs_available(
+            &bank,
+            &TipManager::new(TipManagerConfig::default())
         ));
 
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
