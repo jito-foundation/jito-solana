@@ -467,6 +467,7 @@ fn main() {
             tower_storage: tower_storage.clone(),
             vote_history_storage: vote_history_storage.clone(),
             rpc_to_plugin_manager_sender,
+            enable_scheduler_bindings: genesis.enable_scheduler_bindings,
             bam_url: genesis.bam_url.clone(),
         },
     );
