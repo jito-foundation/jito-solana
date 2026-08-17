@@ -1503,6 +1503,35 @@ mod test {
         rpc_client.get_health().expect("health");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn scheduler_bindings_prevent_bam_runtime_activation() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let ledger = tempfile::tempdir().unwrap();
+        let mut genesis = TestValidatorGenesis::default_for_tests();
+        genesis.ledger_path(ledger.path());
+        genesis.enable_scheduler_bindings = true;
+        let (_test_validator, _payer) = genesis.start();
+
+        genesis.bam_url.store(Arc::new(Some(format!(
+            "http://{}",
+            listener.local_addr().unwrap()
+        ))));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok(_) => panic!("BAM connected while external scheduler bindings were enabled"),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to accept BAM connection: {err}"),
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn nonblocking_get_health() {
         let (test_validator, _payer) = TestValidatorGenesis::default_for_tests()
