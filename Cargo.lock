@@ -11538,6 +11538,7 @@ dependencies = [
  "solana-transaction",
  "solana-validator-exit",
  "solana-vote-interface",
+ "tempfile",
  "tokio",
 ]
 
