@@ -497,13 +497,15 @@ mod tests {
             create_genesis_config_with_leader,
         },
         solana_poh::{
-            poh_recorder::PohRecorderError, record_channels::record_channels,
+            poh_recorder::PohRecorderError,
+            record_channels::{RecordReceiver, record_channels},
             transaction_recorder::TransactionRecorder,
         },
         solana_pubkey::{Pubkey, new_rand},
         solana_runtime::{
             bank::{Bank, NewBankOptions, entry_bytes_budget::EntryBytesReserveError},
             prioritization_fee_cache::PrioritizationFeeCache,
+            vote_sender_types::ReplayVoteReceiver,
         },
         solana_runtime_transaction::{
             runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
@@ -526,6 +528,20 @@ mod tests {
         txs.into_iter()
             .map(RuntimeTransaction::from_transaction_for_tests)
             .collect()
+    }
+
+    fn new_test_consumer(bank: &Bank) -> (BundleConsumer, RecordReceiver, ReplayVoteReceiver) {
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(bank.bank_id());
+        let (replay_vote_sender, replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
+        );
+        let consumer =
+            BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
+        (consumer, record_receiver, replay_vote_receiver)
     }
 
     #[test]
@@ -581,18 +597,7 @@ mod tests {
             genesis_config.hash(),
         )]);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -650,16 +655,7 @@ mod tests {
             },
         );
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let output = consumer.process_and_record_aged_transactions(
             &bank,
@@ -700,18 +696,7 @@ mod tests {
             genesis_config.hash(),
         )]);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -759,18 +744,7 @@ mod tests {
             transfer(&Keypair::new(), &new_rand(), 1, genesis_config.hash()), // bad tx
         ]);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -831,18 +805,7 @@ mod tests {
             transfer(&kp2, &new_rand(), 1, genesis_config.hash()),
         ]);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -919,16 +882,7 @@ mod tests {
         let mint_balance = bank.get_balance(&mint_keypair.pubkey());
         let block_cost = bank.read_cost_tracker().unwrap().block_cost();
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        record_receiver.restart(bank.bank_id());
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer =
-            BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
+        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let max_ages = [MaxAge::MAX; TEST_BUNDLE_LEN];
         let ProcessTransactionBatchOutput {
@@ -1037,18 +991,7 @@ mod tests {
             ),
         );
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1104,18 +1047,7 @@ mod tests {
             genesis_config.hash(),
         )]);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1186,18 +1118,7 @@ mod tests {
         )]);
         let batch = bank.prepare_sanitized_batch(&tx);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1246,18 +1167,7 @@ mod tests {
             transfer(&kp1, &kp2.pubkey(), 10, genesis_config.hash()),
         ]);
 
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
+        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
