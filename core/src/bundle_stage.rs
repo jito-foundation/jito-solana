@@ -3,6 +3,7 @@
 
 use {
     crate::{
+        bam_dependencies::BamConnectionState,
         banking_stage::{
             committer::{CommitTransactionDetails, Committer},
             consume_worker::ConsumeWorkerMetrics,
@@ -40,7 +41,7 @@ use {
         ops::Deref,
         sync::{
             Arc, RwLock,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -342,6 +343,7 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        bam_enabled: Arc<AtomicU8>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
@@ -358,6 +360,7 @@ impl BundleStage {
             tip_manager,
             bundle_account_locker,
             block_builder_fee_info,
+            bam_enabled,
             prioritization_fee_cache,
             blacklisted_accounts,
         )
@@ -381,6 +384,7 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        bam_enabled: Arc<AtomicU8>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
@@ -409,6 +413,7 @@ impl BundleStage {
                     bundle_account_locker,
                     tip_manager,
                     block_builder_fee_info,
+                    bam_enabled,
                     cluster_info,
                 );
             })
@@ -428,6 +433,7 @@ impl BundleStage {
         bundle_account_locker: BundleAccountLocker,
         tip_manager: TipManager,
         block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        bam_enabled: Arc<AtomicU8>,
         cluster_info: Arc<ClusterInfo>,
     ) {
         let mut last_metrics_update = Instant::now();
@@ -437,10 +443,13 @@ impl BundleStage {
         let consume_worker_metrics = ConsumeWorkerMetrics::new(10_000);
 
         let mut last_tip_update_slot = Slot::MAX;
-
         while !exit.load(Ordering::Relaxed) {
-            if bundle_storage.unprocessed_bundles_len() > 0
-                || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
+            let block_engine_processing =
+                Self::block_engine_processing_enabled(&bam_enabled, &mut bundle_storage);
+
+            if block_engine_processing
+                && (bundle_storage.unprocessed_bundles_len() > 0
+                    || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD)
             {
                 let (_, process_buffered_packets_time_us) =
                     measure_us!(Self::process_buffered_bundles(
@@ -471,6 +480,9 @@ impl BundleStage {
             ) {
                 break;
             }
+            if !block_engine_processing {
+                bundle_storage.clear();
+            }
             let elapsed = start.elapsed();
 
             bundle_stage_metrics
@@ -487,6 +499,23 @@ impl BundleStage {
 
             bundle_stage_metrics.maybe_report(20);
         }
+    }
+
+    fn block_engine_processing_enabled(
+        bam_enabled: &AtomicU8,
+        bundle_storage: &mut BundleStorage,
+    ) -> bool {
+        if bam_enabled.load(Ordering::Acquire) <= BamConnectionState::Connecting as u8 {
+            return true;
+        }
+        bundle_storage.clear();
+        let _ = bam_enabled.compare_exchange(
+            BamConnectionState::DrainingBlockEngine as u8,
+            BamConnectionState::BlockEngineDrained as u8,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+        false
     }
 
     fn receive_and_buffer_bundles(
@@ -920,6 +949,7 @@ mod tests {
         solana_cluster_type::ClusterType,
         solana_entry::entry_or_marker::EntryOrMarker,
         solana_fee_calculator::{DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, FeeRateGovernor},
+        solana_genesis_config::GenesisConfig,
         solana_gossip::contact_info::ContactInfo,
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
@@ -988,6 +1018,73 @@ mod tests {
     }
 
     #[test]
+    fn test_bam_handoff_clears_block_engine_bundles_before_connected() {
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let mut bundle_storage = BundleStorage::with_capacity(2);
+        let bam_enabled = AtomicU8::new(BamConnectionState::Disconnected as u8);
+        let insert_bundle = |storage: &mut BundleStorage| {
+            storage
+                .insert_bundle(
+                    VerifiedPacketBundle::new(PacketBatch::from(vec![
+                        BytesPacket::from_data(test_tx()).unwrap(),
+                    ])),
+                    &bank,
+                    &bank,
+                    &HashSet::default(),
+                )
+                .unwrap();
+        };
+
+        for _ in 0..2 {
+            insert_bundle(&mut bundle_storage);
+        }
+        let retryable_bundle = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        bundle_storage.retry_bundle(retryable_bundle);
+
+        std::thread::scope(|scope| {
+            let manager = scope.spawn(|| {
+                bam_enabled.store(
+                    BamConnectionState::DrainingBlockEngine as u8,
+                    Ordering::Release,
+                );
+                let start = Instant::now();
+                while bam_enabled.load(Ordering::Acquire)
+                    != BamConnectionState::BlockEngineDrained as u8
+                {
+                    assert!(start.elapsed() < Duration::from_secs(1));
+                    std::thread::yield_now();
+                }
+                bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Release);
+            });
+
+            while bam_enabled.load(Ordering::Acquire)
+                != BamConnectionState::DrainingBlockEngine as u8
+            {
+                std::thread::yield_now();
+            }
+            assert_eq!(bundle_storage.unprocessed_bundles_len(), 1);
+            assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 1);
+            let block_engine_processing =
+                BundleStage::block_engine_processing_enabled(&bam_enabled, &mut bundle_storage);
+            assert!(!block_engine_processing);
+
+            // A stream response received during this iteration must also be discarded.
+            insert_bundle(&mut bundle_storage);
+            if !block_engine_processing {
+                bundle_storage.clear();
+            }
+            manager.join().unwrap();
+        });
+
+        assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
+        assert_eq!(
+            bam_enabled.load(Ordering::Acquire),
+            BamConnectionState::Connected as u8
+        );
+    }
+
+    #[test]
     fn test_tip_programs_initialized_with_no_bundles() {
         agave_logger::setup();
         let TestFixture {
@@ -1050,6 +1147,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
@@ -1188,6 +1286,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
@@ -1278,6 +1377,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
@@ -1394,6 +1494,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
@@ -1509,6 +1610,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );

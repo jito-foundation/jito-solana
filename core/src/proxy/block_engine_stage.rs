@@ -244,9 +244,7 @@ impl BlockEngineStage {
         local_block_engine_config: &BlockEngineConfig,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-            == BamConnectionState::Connected
-        {
+        if bam_enabled.load(Ordering::Acquire) > BamConnectionState::Connecting as u8 {
             tokio::time::sleep(Duration::from_millis(1000)).await;
             return Ok(());
         }
@@ -293,12 +291,6 @@ impl BlockEngineStage {
             "type" => "direct_global",
             ("count", 1, i64),
         );
-        if let Some(shredstream_socket) =
-            Self::resolve_shredstream_receiver_address(&global.shredstream_receiver_address)
-        {
-            // Direct leader-broadcast copies still go to shred_receiver_addresses.
-            shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
-        }
         let backend_endpoint = Self::get_endpoint(global.block_engine_url.as_str())?;
 
         datapoint_info!(
@@ -316,6 +308,8 @@ impl BlockEngineStage {
             banking_packet_sender,
             exit,
             block_builder_fee_info,
+            shredstream_receiver_address,
+            Self::resolve_shredstream_receiver_address(&global.shredstream_receiver_address),
             &Self::CONNECTION_TIMEOUT,
             bam_enabled,
         )
@@ -325,7 +319,7 @@ impl BlockEngineStage {
             datapoint_info!(
                 "block_engine_stage-connect",
                 "type" => "closed_connection",
-                ("url", endpoint.uri().to_string(), String),
+                ("url", backend_endpoint.uri().to_string(), String),
                 ("count", 1, i64),
             )
         })
@@ -379,25 +373,15 @@ impl BlockEngineStage {
         };
 
         // try connecting to best block engine
-        let mut attempted = false;
-        let mut backend_endpoint = endpoint.clone();
         let endpoint_count = candidates.len();
-        for (block_engine_url, (maybe_shredstream_socket, latency_us)) in candidates
-            .into_iter()
-            .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
-        {
-            if block_engine_url != local_block_engine_config.block_engine_url {
-                info!(
-                    "Selected best Block Engine url: {block_engine_url}, Shredstream socket: \
-                     {maybe_shredstream_socket:?}, rtt: ({:?})",
-                    Duration::from_micros(latency_us)
-                );
-                backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
-            }
-            if let Some(shredstream_socket) = maybe_shredstream_socket {
-                shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
-            }
-            attempted = true;
+        for candidate in Self::rank_candidate_endpoints(candidates) {
+            let (block_engine_url, backend_endpoint, maybe_shredstream_socket, latency_us) =
+                candidate?;
+            info!(
+                "Trying Block Engine url: {block_engine_url}, Shredstream socket: \
+                 {maybe_shredstream_socket:?}, rtt: ({:?})",
+                Duration::from_micros(latency_us)
+            );
             let connect_start = Instant::now();
             match Self::connect_auth_and_stream(
                 &backend_endpoint,
@@ -409,6 +393,8 @@ impl BlockEngineStage {
                 banking_packet_sender,
                 exit,
                 block_builder_fee_info,
+                shredstream_receiver_address,
+                maybe_shredstream_socket,
                 &Self::CONNECTION_TIMEOUT,
                 bam_enabled,
             )
@@ -452,22 +438,18 @@ impl BlockEngineStage {
                 }
             }
         }
-        if !attempted {
-            return Err(ProxyError::BlockEngineEndpointError(
-                "autoconfig failed: no endpoints available after gRPC RTT ranking".to_string(),
-            ));
-        }
         Err(ProxyError::BlockEngineEndpointError(format!(
             "autoconfig failed: all {endpoint_count} candidate endpoints failed to connect",
         )))
     }
 
     fn map_bam_enabled(bam_enabled: &Arc<AtomicU8>, err: ProxyError) -> ProxyError {
-        match BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed)) {
+        match BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire)) {
             BamConnectionState::Disconnected => err,
-            BamConnectionState::Connecting | BamConnectionState::Connected => {
-                ProxyError::BamEnabled
-            }
+            BamConnectionState::Connecting
+            | BamConnectionState::DrainingBlockEngine
+            | BamConnectionState::BlockEngineDrained
+            | BamConnectionState::Connected => ProxyError::BamEnabled,
         }
     }
 
@@ -482,6 +464,8 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        maybe_shredstream_socket: Option<SocketAddr>,
         connection_timeout: &Duration,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
@@ -531,6 +515,8 @@ impl BlockEngineStage {
             banking_packet_sender,
             exit,
             block_builder_fee_info,
+            shredstream_receiver_address,
+            maybe_shredstream_socket,
             auth_client,
             access_token,
             refresh_token,
@@ -558,6 +544,25 @@ impl BlockEngineStage {
                 ))
             },
         )
+    }
+
+    fn rank_candidate_endpoints(
+        candidates: ahash::HashMap<String, (Option<SocketAddr>, u64)>,
+    ) -> impl Iterator<Item = Result<(String, Endpoint, Option<SocketAddr>, u64), ProxyError>> {
+        candidates
+            .into_iter()
+            .sorted_unstable_by_key(|(_url, (_shredstream_socket, latency_us))| *latency_us)
+            .map(
+                |(block_engine_url, (maybe_shredstream_socket, latency_us))| {
+                    let backend_endpoint = Self::get_endpoint(&block_engine_url)?;
+                    Ok((
+                        block_engine_url,
+                        backend_endpoint,
+                        maybe_shredstream_socket,
+                        latency_us,
+                    ))
+                },
+            )
     }
 
     async fn probe_grpc_rtt_us(block_engine_url: &str) -> Result<u64, ProbeError> {
@@ -733,6 +738,8 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        maybe_shredstream_socket: Option<SocketAddr>,
         auth_client: AuthServiceClient<Channel>,
         access_token: Arc<ArcSwap<Token>>,
         refresh_token: Token,
@@ -786,6 +793,10 @@ impl BlockEngineStage {
             bam_enabled,
         )
         .await?;
+
+        // Keep the Block Engine connection and its Shredstream destination in sync. Failed
+        // connection setup must not publish a candidate's destination.
+        shredstream_receiver_address.store(Arc::new(maybe_shredstream_socket));
 
         Self::consume_bundle_and_packet_stream(
             client,
@@ -845,9 +856,7 @@ impl BlockEngineStage {
         info!("connected to packet and bundle stream");
 
         while !exit.load(Ordering::Relaxed) {
-            if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-                == BamConnectionState::Connected
-            {
+            if bam_enabled.load(Ordering::Acquire) > BamConnectionState::Connecting as u8 {
                 info!("bam enabled, exiting block engine stage");
                 return Ok(());
             }
@@ -1103,5 +1112,46 @@ mod tests {
         assert!(!BlockEngineStage::is_valid_block_engine_config(&config(
             "not a valid url"
         )));
+    }
+
+    #[test]
+    fn autoconfig_ranking_preserves_candidate_endpoint_and_shredstream() {
+        let first_url = "https://localhost:1111";
+        let configured_url = "https://localhost:2222";
+        let first_shredstream = "127.0.0.1:1111".parse().unwrap();
+        let configured_shredstream = "127.0.0.1:2222".parse().unwrap();
+        let candidates = ahash::HashMap::from_iter([
+            (first_url.to_string(), (Some(first_shredstream), 1)),
+            (
+                configured_url.to_string(),
+                (Some(configured_shredstream), 2),
+            ),
+        ]);
+
+        let ranked = BlockEngineStage::rank_candidate_endpoints(candidates)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let attempts = ranked
+            .iter()
+            .map(|(url, endpoint, shredstream, _latency_us)| {
+                (
+                    url.as_str(),
+                    endpoint.uri().authority().unwrap().as_str(),
+                    *shredstream,
+                )
+            })
+            .collect_vec();
+
+        assert_eq!(
+            attempts,
+            [
+                (first_url, "localhost:1111", Some(first_shredstream)),
+                (
+                    configured_url,
+                    "localhost:2222",
+                    Some(configured_shredstream),
+                ),
+            ]
+        );
     }
 }

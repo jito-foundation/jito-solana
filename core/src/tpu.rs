@@ -133,7 +133,7 @@ pub struct Tpu {
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
     bundle_sigverify_stage: BundleSigverifyStage,
-    bam_manager: BamManager,
+    bam_manager: Option<BamManager>,
 }
 
 impl Tpu {
@@ -417,18 +417,23 @@ impl Tpu {
         };
         let (bam_batch_sender, bam_batch_receiver) = bounded(100_000);
         let (bam_outbound_sender, bam_outbound_receiver) = mpsc::channel(100_000);
+        let bam_block_builder_fee_info =
+            Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default()));
         let bam_dependencies = BamDependencies {
             bam_enabled: bam_enabled.clone(),
             batch_sender: bam_batch_sender,
             batch_receiver: bam_batch_receiver,
             outbound_sender: bam_outbound_sender,
             cluster_info: cluster_info.clone(),
-            block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+            block_builder_fee_info: bam_block_builder_fee_info.clone(),
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bank_forks: bank_forks.clone(),
             bam_tpu_info,
             bam_shred_receiver_addresses: bam_shred_receiver_addresses.clone(),
         };
+        // Scheduler bindings are immutable for the lifetime of the TPU. Exclude the BAM runtime
+        // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
+        let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -451,11 +456,11 @@ impl Tpu {
             Some(TipProcessingDependencies {
                 tip_manager: tip_manager.clone(),
                 last_tip_updated_slot: Arc::new(Mutex::new(0)),
-                block_builder_fee_info: bam_dependencies.block_builder_fee_info.clone(),
+                block_builder_fee_info: bam_block_builder_fee_info,
                 cluster_info: cluster_info.clone(),
                 bundle_account_locker: bundle_account_locker.clone(),
             }),
-            Some(bam_dependencies.clone()),
+            bam_dependencies.clone(),
         );
 
         #[cfg(unix)]
@@ -489,18 +494,21 @@ impl Tpu {
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
+            bam_enabled,
             prioritization_fee_cache.clone(),
             filter_keys.iter().copied().collect::<AHashSet<_>>(),
         );
 
-        let bam_manager = BamManager::new(
-            exit.clone(),
-            bam_url,
-            bam_dependencies,
-            bam_outbound_receiver,
-            poh_recorder.clone(),
-            key_notifiers.clone(),
-        );
+        let bam_manager = bam_dependencies.map(|bam_dependencies| {
+            BamManager::new(
+                exit.clone(),
+                bam_url,
+                bam_dependencies,
+                bam_outbound_receiver,
+                poh_recorder.clone(),
+                key_notifiers.clone(),
+            )
+        });
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -578,7 +586,7 @@ impl Tpu {
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
-            self.bam_manager.join(),
+            self.bam_manager.map_or(Ok(()), BamManager::join),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
