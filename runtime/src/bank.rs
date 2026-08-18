@@ -241,6 +241,8 @@ mod bundle_simulation;
 mod check_transactions;
 pub mod entry_bytes_budget;
 mod fee_distribution;
+#[cfg(test)]
+mod jito_tests;
 mod metrics;
 pub(crate) mod partitioned_epoch_rewards;
 mod recent_blockhashes_account;
