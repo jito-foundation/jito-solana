@@ -362,12 +362,13 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
-        let process_transaction_batch_output = consumer.process_and_record_transactions(
-            bank,
-            transactions,
-            bundle_account_locker,
-            false,
-        );
+        let process_transaction_batch_output = consumer
+            .process_and_record_transactions_with_policy(
+                bank,
+                transactions,
+                Some(bundle_account_locker),
+                false,
+            );
 
         let ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,
