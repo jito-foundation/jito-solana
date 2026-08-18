@@ -219,6 +219,11 @@ impl BundleStageLoopMetrics {
                     i64
                 ),
                 (
+                    "cost_model_buffered_bundles_count",
+                    self.cost_model_buffered_bundles_count.0 as i64,
+                    i64
+                ),
+                (
                     "num_bundles_dropped",
                     self.num_bundles_dropped.0 as i64,
                     i64
