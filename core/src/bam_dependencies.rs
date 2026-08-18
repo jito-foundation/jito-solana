@@ -26,14 +26,18 @@ pub enum BamOutboundMessage {
 pub enum BamConnectionState {
     Disconnected = 0,
     Connecting = 1,
-    Connected = 2,
+    DrainingBlockEngine = 2,
+    BlockEngineDrained = 3,
+    Connected = 4,
 }
 
 impl BamConnectionState {
     pub fn from_u8(state: u8) -> Self {
         match state {
             1 => Self::Connecting,
-            2 => Self::Connected,
+            2 => Self::DrainingBlockEngine,
+            3 => Self::BlockEngineDrained,
+            4 => Self::Connected,
             _ => Self::Disconnected,
         }
     }
@@ -41,7 +45,7 @@ impl BamConnectionState {
 
 #[derive(Clone)]
 pub struct BamDependencies {
-    /// 0 = disconnected, 1 = connecting, 2 = connected
+    /// Also carries the internal Block Engine drain state during BAM cutover.
     pub bam_enabled: Arc<AtomicU8>,
 
     pub batch_sender: crossbeam_channel::Sender<bam_types::MultipleAtomicTxnBatch>,

@@ -256,7 +256,7 @@ impl FetchStageTpuStateMachine {
     }
 
     fn is_bam_connected(&self) -> bool {
-        BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+        BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire))
             == BamConnectionState::Connected
     }
 
