@@ -341,7 +341,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             &environments,
             false,
             false,
-            true,
         );
 
         Self {
@@ -965,7 +964,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 program_runtime_environment_for_execution,
                 increment_usage_counter,
                 count_hits_and_misses,
-                true,
             );
             count_hits_and_misses = false;
             let task_waiter = Arc::clone(&global_program_cache.loading_task_waiter);
@@ -1047,7 +1045,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 upcoming_environment,
                 false, // increment_usage_counter
                 false, // count_hits_and_misses
-                true,  // replenish_program_cache (cooperative)
             )
             // Unlock again because load_program_with_pubkey() might take a while.
         };
@@ -1091,7 +1088,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
     ) {
         {
             let global_program_cache = self.global_program_cache.read().unwrap();
-            global_program_cache.extract(
+            global_program_cache.extract_with_replenish(
                 &mut missing_programs,
                 program_cache_for_tx_batch,
                 program_runtime_environments_for_execution,
@@ -2248,7 +2245,6 @@ mod tests {
                 }],
                 &mut loaded_programs_for_tx_batch,
                 &program_runtime_environment,
-                true,
                 true,
                 true,
             );
