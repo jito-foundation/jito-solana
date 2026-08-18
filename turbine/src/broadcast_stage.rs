@@ -638,52 +638,52 @@ pub fn broadcast_shreds(
         next_broadcast_leader_pubkey(leader_schedule_cache, &working_bank, &my_pubkey, slot)
     };
 
-    // Each shred goes to its turbine-tree broadcast peer and, when applicable, the next leader.
-    let packet_capacity = shreds.len().saturating_mul(2 + external_addrs.len());
-    let mut all_packets = Vec::with_capacity(packet_capacity);
-    // Turbine tree destinations depend on the slot (cluster_nodes cache is keyed by slot),
-    // matching upstream's per-slot `chunk_by` behavior.
-    for (slot, slot_shreds) in shreds.iter().chunk_by(|shred| shred.slot()).into_iter() {
-        let cluster_nodes = cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
-        update_peer_stats(&cluster_nodes, last_datapoint_submit);
-        let maybe_next_leader_udp = find_next_leader(slot).and_then(|leader| {
-            cluster_info
-                .lookup_contact_info(&leader, |node| {
-                    node.tvu(Protocol::UDP)
-                        .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr))
-                })
-                .flatten()
-        });
-
-        for shred in slot_shreds {
-            let key = shred.id();
-            let maybe_standard_broadcast_peer = cluster_nodes
-                .get_broadcast_peer(&key)
-                .and_then(|peer| peer.tvu(Protocol::UDP))
-                .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr));
-            // only send to next leader if not standard broadcast peer
-            let maybe_next_leader =
-                maybe_next_leader_udp.filter(|addr| Some(*addr) != maybe_standard_broadcast_peer);
-            for tvu_addr in [maybe_next_leader, maybe_standard_broadcast_peer]
-                .into_iter()
-                .flatten()
-            {
-                all_packets.push((shred.payload(), tvu_addr));
-            }
-        }
-    }
+    let mut packets: Vec<_> = shreds
+        .iter()
+        .chunk_by(|shred| shred.slot())
+        .into_iter()
+        .flat_map(|(slot, shreds)| {
+            let cluster_nodes =
+                cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
+            update_peer_stats(&cluster_nodes, last_datapoint_submit);
+            let maybe_next_leader_udp = find_next_leader(slot).and_then(|leader| {
+                cluster_info
+                    .lookup_contact_info(&leader, |node| {
+                        node.tvu(Protocol::UDP)
+                            .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr))
+                    })
+                    .flatten()
+            });
+            shreds.flat_map(move |shred| {
+                let key = shred.id();
+                let maybe_standard_broadcast_peer = cluster_nodes
+                    .get_broadcast_peer(&key)
+                    .and_then(|ci| ci.tvu(Protocol::UDP))
+                    .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr));
+                // only send to next leader if not standard broadcast peer
+                let maybe_next_leader = maybe_next_leader_udp
+                    .filter(|addr| Some(*addr) != maybe_standard_broadcast_peer);
+                [maybe_next_leader, maybe_standard_broadcast_peer]
+                    .into_iter()
+                    .filter_map(move |tvu_addr: Option<SocketAddr>| {
+                        tvu_addr.map(|addr| (shred.payload(), addr))
+                    })
+            })
+        })
+        .collect();
 
     // Mirror this validator's own broadcast shreds to external receivers
     // (shredstream, `--shred-receiver-address`, BAM, and multicast), avoiding duplicates when
     // addresses overlap. External addresses are not part of the turbine tree and use either
     // shred_receiver_socket (UDP) or XDP routing independent of --bind-address.
-    let external_packets_start = all_packets.len();
+    packets.reserve(shreds.len().saturating_mul(external_addrs.len()));
+    let external_packets_start = packets.len();
     for &addr in external_addrs.iter() {
         for shred in shreds {
-            all_packets.push((shred.payload(), addr));
+            packets.push((shred.payload(), addr));
         }
     }
-    let (main_packets, external_packets) = all_packets.split_at(external_packets_start);
+    let (main_packets, external_packets) = packets.split_at(external_packets_start);
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
@@ -722,7 +722,7 @@ pub fn broadcast_shreds(
             // The XDP Router resolves the correct interface and next-hop per destination
             // from the kernel routing table.
             // `.copied()` copies only `(&Payload, SocketAddr)`; `payload.bytes.clone()` is refcount-only.
-            for (idx, (payload, addr)) in all_packets.iter().copied().enumerate() {
+            for (idx, (payload, addr)) in packets.iter().copied().enumerate() {
                 if let Err(e) = s.try_send(idx, addr, payload.bytes.clone()) {
                     log::warn!("xdp channel full: {e:?}");
                     transmit_stats.dropped_packets_xdp += 1;
@@ -734,7 +734,7 @@ pub fn broadcast_shreds(
         }
     }
 
-    transmit_stats.total_packets += all_packets.len();
+    transmit_stats.total_packets += packets.len();
     result
 }
 impl<T> From<crossbeam_channel::SendError<T>> for Error {
