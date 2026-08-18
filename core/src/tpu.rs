@@ -494,6 +494,7 @@ impl Tpu {
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
+            bam_enabled,
             prioritization_fee_cache.clone(),
             filter_keys.iter().copied().collect::<AHashSet<_>>(),
         );
