@@ -654,7 +654,6 @@ mod bam_manager_tests {
     ) -> (BamDependencies, mpsc::Receiver<BamOutboundMessage>) {
         let (batch_tx, batch_rx) = crossbeam_channel::unbounded();
         let (outbound_tx, outbound_rx) = mpsc::channel(100_000);
-
         let dependencies = BamDependencies {
             bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             batch_sender: batch_tx,
@@ -670,13 +669,31 @@ mod bam_manager_tests {
         (dependencies, outbound_rx)
     }
 
-    fn bam_is_connected(bam_enabled: &Arc<AtomicU8>) -> bool {
+    fn bam_is_connected(bam_enabled: &AtomicU8) -> bool {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
             == BamConnectionState::Connected
     }
 
-    fn bam_state(bam_enabled: &Arc<AtomicU8>) -> BamConnectionState {
+    fn bam_state(bam_enabled: &AtomicU8) -> BamConnectionState {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+    }
+
+    async fn wait_for_bam_connection(bam_enabled: &AtomicU8) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(15) {
+            // These tests omit BundleStage, so acknowledge its side of the cutover.
+            let _ = bam_enabled.compare_exchange(
+                BamConnectionState::DrainingBlockEngine as u8,
+                BamConnectionState::BlockEngineDrained as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if bam_is_connected(bam_enabled) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("BAM did not connect");
     }
 
     #[allow(clippy::type_complexity)]
@@ -728,15 +745,7 @@ mod bam_manager_tests {
             identity_notifiers,
         );
 
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(15) {
-            if bam_is_connected(&bam_enabled) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        assert!(bam_is_connected(&bam_enabled), "bam_enabled should be true");
+        wait_for_bam_connection(&bam_enabled).await;
 
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
@@ -770,14 +779,7 @@ mod bam_manager_tests {
             identity_notifiers,
         );
 
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(15) {
-            if bam_is_connected(&bam_enabled) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(bam_is_connected(&bam_enabled));
+        wait_for_bam_connection(&bam_enabled).await;
 
         server.send_heartbeats.store(false, Ordering::Relaxed);
 
@@ -860,23 +862,13 @@ mod bam_manager_tests {
             identity_notifiers,
         );
 
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(15) {
-            if bam_is_connected(&bam_enabled) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(bam_is_connected(&bam_enabled));
+        wait_for_bam_connection(&bam_enabled).await;
 
         bam_url.store(Arc::new(Some(format!("http://{}", server2.addr))));
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        assert!(
-            bam_is_connected(&bam_enabled),
-            "bam_enabled should be true after URL change"
-        );
+        wait_for_bam_connection(&bam_enabled).await;
 
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
@@ -910,14 +902,7 @@ mod bam_manager_tests {
             identity_notifiers.clone(),
         );
 
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(15) {
-            if bam_is_connected(&bam_enabled) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(bam_is_connected(&bam_enabled));
+        wait_for_bam_connection(&bam_enabled).await;
 
         let new_identity = Keypair::new();
         {
@@ -946,17 +931,7 @@ mod bam_manager_tests {
 
         cluster_info.set_keypair(Arc::new(new_identity));
 
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(15) {
-            if bam_is_connected(&bam_enabled) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(
-            bam_is_connected(&bam_enabled),
-            "bam_enabled should reconnect after cluster_info reflects the new identity"
-        );
+        wait_for_bam_connection(&bam_enabled).await;
 
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
@@ -991,21 +966,19 @@ mod bam_manager_tests {
             identity_notifiers,
         );
 
+        wait_for_bam_connection(&bam_enabled).await;
+        assert_eq!(block_builder_fee_info.load().block_builder_commission, 10);
+
+        server.config.lock().unwrap().builder_commission = 20;
         let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(15) {
-            if bam_is_connected(&bam_enabled) {
-                break;
-            }
+        while start.elapsed() < Duration::from_secs(5)
+            && block_builder_fee_info.load().block_builder_commission != 20
+        {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let fee_info = block_builder_fee_info.load();
-        assert_eq!(fee_info.block_builder_commission, 10);
+        assert_eq!(block_builder_fee_info.load().block_builder_commission, 20);
 
         exit.store(true, Ordering::Relaxed);
-        drop(fee_info);
         poh_service.join().unwrap();
     }
 }
