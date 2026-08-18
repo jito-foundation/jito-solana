@@ -8,6 +8,7 @@ use {
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
     solana_signer::Signer,
     std::{sync::Arc, time::Duration},
     tokio::time::timeout,
@@ -17,6 +18,52 @@ use {
         transport::{Channel, Endpoint},
     },
 };
+
+pub(crate) struct AuthRefreshState {
+    auth_client: AuthServiceClient<Channel>,
+    access_token: Arc<ArcSwap<Token>>,
+    refresh_token: Token,
+    identity: Pubkey,
+}
+
+impl AuthRefreshState {
+    pub(crate) fn access_token(&self) -> Arc<ArcSwap<Token>> {
+        self.access_token.clone()
+    }
+
+    pub(crate) async fn maybe_refresh(
+        &mut self,
+        cluster_info: &Arc<ClusterInfo>,
+        connection_timeout: &Duration,
+        refresh_within_s: u64,
+    ) -> crate::proxy::Result<(bool, bool)> {
+        if cluster_info.id() != self.identity {
+            return Err(ProxyError::AuthenticationConnectionError(
+                "validator identity changed".to_string(),
+            ));
+        }
+
+        let (new_access_token, new_refresh_token) = maybe_refresh_auth_tokens(
+            &mut self.auth_client,
+            &self.access_token,
+            &self.refresh_token,
+            cluster_info,
+            connection_timeout,
+            refresh_within_s,
+        )
+        .await?;
+
+        let access_token_refreshed = new_access_token.is_some();
+        if let Some(new_access_token) = new_access_token {
+            self.access_token.store(Arc::new(new_access_token));
+        }
+        let refresh_token_refreshed = new_refresh_token.is_some();
+        if let Some(new_refresh_token) = new_refresh_token {
+            self.refresh_token = new_refresh_token;
+        }
+        Ok((access_token_refreshed, refresh_token_refreshed))
+    }
+}
 
 /// Interceptor responsible for adding the access token to request headers.
 pub(crate) struct AuthInterceptor {
@@ -47,7 +94,7 @@ pub(crate) async fn auth_client_from_endpoint(
     endpoint: &Endpoint,
     connection_timeout: &Duration,
     keypair: &Keypair,
-) -> crate::proxy::Result<(AuthServiceClient<Channel>, Arc<ArcSwap<Token>>, Token)> {
+) -> crate::proxy::Result<AuthRefreshState> {
     let mut auth_client = AuthServiceClient::new(
         timeout(*connection_timeout, endpoint.connect())
             .await
@@ -64,11 +111,12 @@ pub(crate) async fn auth_client_from_endpoint(
     )
     .await
     .map_err(|_| ProxyError::AuthenticationTimeout)??;
-    Ok((
+    Ok(AuthRefreshState {
         auth_client,
-        Arc::new(ArcSwap::from_pointee(access_token)),
+        access_token: Arc::new(ArcSwap::from_pointee(access_token)),
         refresh_token,
-    ))
+        identity: keypair.pubkey(),
+    })
 }
 
 /// Generates an auth challenge then generates and returns validated auth tokens.
