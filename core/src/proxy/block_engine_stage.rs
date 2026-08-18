@@ -12,7 +12,7 @@ use {
         proto_packet_to_packet,
         proxy::{
             ProxyError,
-            auth::{AuthInterceptor, auth_client_from_endpoint, maybe_refresh_auth_tokens},
+            auth::{AuthInterceptor, AuthRefreshState, auth_client_from_endpoint},
             endpoint_from_url, sanitize_status_message_for_influx,
         },
     },
@@ -20,18 +20,13 @@ use {
     arc_swap::ArcSwap,
     crossbeam_channel::Sender,
     itertools::Itertools,
-    jito_protos::proto::{
-        auth::{Token, auth_service_client::AuthServiceClient},
-        block_engine::{
-            self, BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
-            block_engine_validator_client::BlockEngineValidatorClient,
-        },
+    jito_protos::proto::block_engine::{
+        self, BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
+        block_engine_validator_client::BlockEngineValidatorClient,
     },
     solana_gossip::cluster_info::ClusterInfo,
-    solana_keypair::Keypair,
     solana_perf::packet::{BytesPacket, PacketBatch},
     solana_pubkey::Pubkey,
-    solana_signer::Signer,
     std::{
         collections::hash_map::Entry,
         net::{SocketAddr, ToSocketAddrs},
@@ -473,7 +468,7 @@ impl BlockEngineStage {
         let keypair = cluster_info.keypair().clone();
 
         debug!("connecting to auth: {}", backend_endpoint.uri());
-        let (auth_client, access_token, refresh_token) =
+        let auth_refresh_state =
             auth_client_from_endpoint(backend_endpoint, connection_timeout, keypair.as_ref())
                 .await
                 .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
@@ -498,7 +493,7 @@ impl BlockEngineStage {
             })?;
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
             block_engine_channel,
-            AuthInterceptor::new(access_token.clone()),
+            AuthInterceptor::new(auth_refresh_state.access_token()),
         );
         datapoint_info!(
             "block_engine_stage-connected",
@@ -517,11 +512,8 @@ impl BlockEngineStage {
             block_builder_fee_info,
             shredstream_receiver_address,
             maybe_shredstream_socket,
-            auth_client,
-            access_token,
-            refresh_token,
+            auth_refresh_state,
             connection_timeout,
-            keypair,
             cluster_info,
             &backend_url,
             bam_enabled,
@@ -740,11 +732,8 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         maybe_shredstream_socket: Option<SocketAddr>,
-        auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<ArcSwap<Token>>,
-        refresh_token: Token,
+        auth_refresh_state: AuthRefreshState,
         connection_timeout: &Duration,
-        keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicU8>,
@@ -808,10 +797,7 @@ impl BlockEngineStage {
             banking_packet_sender,
             exit,
             block_builder_fee_info,
-            auth_client,
-            access_token,
-            refresh_token,
-            keypair,
+            auth_refresh_state,
             cluster_info,
             connection_timeout,
             block_engine_url,
@@ -834,10 +820,7 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
-        mut auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<ArcSwap<Token>>,
-        mut refresh_token: Token,
-        keypair: Arc<Keypair>,
+        mut auth_refresh_state: AuthRefreshState,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
         block_engine_url: &str,
@@ -880,24 +863,16 @@ impl BlockEngineStage {
                     block_engine_stats.report();
                     block_engine_stats = BlockEngineStageStats::default();
 
-                    if cluster_info.id() != keypair.pubkey() {
-                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
-                    }
-
                     if global_config.load().as_ref() != local_config {
                         return Err(ProxyError::BlockEngineConfigChanged);
                     }
 
-                    let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
-                        &access_token,
-                        &refresh_token,
-                        cluster_info,
-                        connection_timeout,
-                        refresh_within_s,
-                    ).await
-                    .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+                    let (access_token_refreshed, refresh_token_refreshed) = auth_refresh_state
+                        .maybe_refresh(cluster_info, connection_timeout, refresh_within_s)
+                        .await
+                        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
-                    if let Some(new_token) = maybe_new_access {
+                    if access_token_refreshed {
                         num_refresh_access_token += 1;
                         datapoint_info!(
                             "block_engine_stage-refresh_access_token",
@@ -905,16 +880,14 @@ impl BlockEngineStage {
                             ("count", num_refresh_access_token, i64),
                         );
 
-                        access_token.store(Arc::new(new_token));
                     }
-                    if let Some(new_token) = maybe_new_refresh {
+                    if refresh_token_refreshed {
                         num_full_refreshes += 1;
                         datapoint_info!(
                             "block_engine_stage-tokens_generated",
                             ("url", &block_engine_url, String),
                             ("count", num_full_refreshes, i64),
                         );
-                        refresh_token = new_token;
                     }
                 }
                 _ = maintenance_tick.tick() => {
