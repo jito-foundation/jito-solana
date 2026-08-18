@@ -207,16 +207,16 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     /// Best-effort per-slot tip-program maintenance for batches that touch tip accounts.
     ///
     /// Returns `true` when tip deps are disabled, no tip account is touched, tips were already
-    /// updated for this slot, or the best-effort upkeep path reaches the end.
+    /// updated for this bank, or the best-effort upkeep path reaches the end.
     /// Bundle-construction errors from init/crank bundle creation are non-fatal (crank errors are
-    /// logged), and this path still sets `last_tip_updated_slot = bank.slot()`.
+    /// logged), and this path still records the bank as updated.
     ///
     /// Returns `false` when required upkeep transactions fail to commit, or when block-builder
     /// info is unavailable.
     fn maybe_run_tip_programs(&self, bank: &Arc<Bank>, txs: &[impl TransactionWithMeta]) -> bool {
         let Some(TipProcessingDependencies {
             tip_manager,
-            last_tip_updated_slot,
+            last_tip_updated_bank,
             block_builder_fee_info,
             cluster_info,
             bundle_account_locker,
@@ -235,8 +235,8 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return true;
         }
 
-        let mut last_tip_updated_slot_guard = last_tip_updated_slot.lock().unwrap();
-        if bank.slot() == *last_tip_updated_slot_guard {
+        let mut last_tip_updated_bank_guard = last_tip_updated_bank.lock().unwrap();
+        if *last_tip_updated_bank_guard == Some((bank.slot(), bank.bank_id())) {
             return true;
         }
 
@@ -293,7 +293,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        *last_tip_updated_slot_guard = bank.slot();
+        *last_tip_updated_bank_guard = Some((bank.slot(), bank.bank_id()));
         true
     }
 
@@ -3327,7 +3327,7 @@ mod tests {
                         commission_bps: 0,
                     },
                 }),
-                last_tip_updated_slot: Arc::new(Mutex::new(0)),
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
                 block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                     block_builder: mint_keypair.pubkey(),
                     block_builder_commission: 0,

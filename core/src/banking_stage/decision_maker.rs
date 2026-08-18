@@ -59,12 +59,12 @@ impl DecisionMaker {
         require_atomic_bank: bool,
     ) -> BufferedPacketsDecision {
         let state = self.shared_leader_state.load();
-        if require_atomic_bank && !state.atomic_batches_enabled() {
-            return BufferedPacketsDecision::Hold;
-        }
-
         if let Some(working_bank) = state.working_bank() {
-            BufferedPacketsDecision::Consume(working_bank.clone())
+            if require_atomic_bank && !state.atomic_batches_enabled() {
+                BufferedPacketsDecision::Hold
+            } else {
+                BufferedPacketsDecision::Consume(working_bank.clone())
+            }
         } else if let Some(leader_first_tick_height) = state.leader_first_tick_height() {
             let current_tick_height = state.tick_height();
             let ticks_until_leader = leader_first_tick_height.saturating_sub(current_tick_height);
@@ -117,6 +117,13 @@ mod tests {
         // No active bank, no leader first tick height.
         assert_matches!(
             decision_maker.make_consume_or_forward_decision(),
+            BufferedPacketsDecision::Forward
+        );
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            None, 0, None, None, false,
+        )));
+        assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
             BufferedPacketsDecision::Forward
         );
 

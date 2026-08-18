@@ -1121,7 +1121,9 @@ mod tests {
         for _ in 0..2 {
             insert_bundle(&mut bundle_storage);
         }
-        let retryable_bundle = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        let retryable_bundle = bundle_storage
+            .pop_bundle(bank.slot(), bank.bank_id())
+            .unwrap();
         bundle_storage.retry_bundle(retryable_bundle);
 
         std::thread::scope(|scope| {

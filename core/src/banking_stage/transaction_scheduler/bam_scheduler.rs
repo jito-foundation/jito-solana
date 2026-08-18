@@ -63,6 +63,14 @@ fn passthrough_priority(
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
 
+// Sized from 30 days of mainnet data ending 2026-08-18. Atomic-only ClickHouse counts of distinct
+// `(source, seq_id)` batches per validator-slot had p99=149, p99.9=236, 99.94% <=256, and max=540.
+// The full-slot count conservatively upper-bounds the pre-ParentReady subset stored here.
+// Mainnet-validator Influx `bam_connection-metrics.bundle_received` active 25 ms samples, which
+// also include non-atomic batches, had p99=183, p99.9=272, 99.86% <=256, and max=881. Thus 256
+// keeps the atomic p99.9 inline in 4 KiB while rarer bursts spill safely.
+const DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY: usize = 256;
+
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
@@ -81,7 +89,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
-    deferred_atomic_batches: SmallVec<[TransactionPriorityId; 8]>,
+    deferred_atomic_batches:
+        SmallVec<[TransactionPriorityId; DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY]>,
 
     extra_checks_enabled: bool,
     bank_forks: Arc<RwLock<BankForks>>,

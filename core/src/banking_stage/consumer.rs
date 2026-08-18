@@ -12,6 +12,7 @@ use {
     arc_swap::ArcSwap,
     smallvec::SmallVec,
     solana_accounts_db::accounts::TransactionAccountLocksIterator,
+    solana_clock::{BankId, Slot},
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
     solana_poh::{
@@ -115,7 +116,7 @@ pub struct LeaderProcessedTransactionCounts {
 #[derive(Clone)]
 pub struct TipProcessingDependencies {
     pub tip_manager: TipManager,
-    pub last_tip_updated_slot: Arc<Mutex<u64>>,
+    pub last_tip_updated_bank: Arc<Mutex<Option<(Slot, BankId)>>>,
     pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
     pub cluster_info: Arc<ClusterInfo>,
     pub bundle_account_locker: BundleAccountLocker,
