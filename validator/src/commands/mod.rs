@@ -4,6 +4,7 @@ pub mod block_engine;
 pub mod blockstore;
 pub mod contact_info;
 pub mod exit;
+pub mod jito_args;
 pub mod manage_block_production;
 pub mod monitor;
 pub mod plugin;
