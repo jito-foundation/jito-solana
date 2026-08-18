@@ -13,7 +13,7 @@ use {
     solana_account::ReadableAccount,
     solana_accounts_db::{
         account_storage_entry::AccountStorageEntry,
-        accounts_db::{AccountsDb, GetUniqueAccountsResult, UpdateIndexThreadSelection},
+        accounts_db::{AccountsDb, GetUniqueAccountsResult},
         storable_accounts::StorableAccountsBySlot,
     },
     solana_clock::Slot,
@@ -324,11 +324,8 @@ impl<'a> SnapshotMinimizer<'a> {
             let storable_accounts =
                 StorableAccountsBySlot::new(slot, &accounts, self.accounts_db());
 
-            self.accounts_db().store_accounts_for_shrink(
-                storable_accounts,
-                new_storage,
-                UpdateIndexThreadSelection::Inline,
-            );
+            self.accounts_db()
+                .store_accounts_for_shrink(storable_accounts, new_storage);
 
             new_storage.flush().unwrap();
         }
