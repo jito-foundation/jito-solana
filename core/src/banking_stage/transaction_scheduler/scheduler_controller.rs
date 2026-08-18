@@ -622,7 +622,7 @@ where
     }
 
     fn scheduling_enabled(&self) -> bool {
-        let bam_connected = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+        let bam_connected = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire))
             == BamConnectionState::Connected;
         self.bam_controller == bam_connected
     }
