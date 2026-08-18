@@ -169,17 +169,19 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
-        let output = self.consumer.process_and_record_aged_transactions(
-            bank,
-            &work.transactions,
-            &work.max_ages,
-            ExecutionFlags {
-                drop_on_failure: work.revert_on_error,
-                all_or_nothing: work.revert_on_error,
-            },
-            None, // bundle account locker checked in scheduler
-            work.revert_on_error,
-        );
+        let output = self
+            .consumer
+            .process_and_record_aged_transactions_with_policy(
+                bank,
+                &work.transactions,
+                &work.max_ages,
+                ExecutionFlags {
+                    drop_on_failure: work.revert_on_error,
+                    all_or_nothing: work.revert_on_error,
+                },
+                None, // bundle account locker checked in scheduler
+                work.revert_on_error,
+            );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
@@ -237,10 +239,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         let initialize_tip_programs_bundle =
             tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
         if let Ok(init_bundle) = initialize_tip_programs_bundle {
-            let result = self.consumer.process_and_record_transactions(
+            let result = self.consumer.process_and_record_transactions_with_policy(
                 bank,
                 &init_bundle,
-                bundle_account_locker,
+                Some(bundle_account_locker),
                 true,
             );
             if result
@@ -262,10 +264,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         }
         match tip_manager.get_tip_programs_crank_bundle(bank, &keypair, &block_builder_fee_info) {
             Ok(tip_crank_bundle) => {
-                let result = self.consumer.process_and_record_transactions(
+                let result = self.consumer.process_and_record_transactions_with_policy(
                     bank,
                     &tip_crank_bundle,
-                    bundle_account_locker,
+                    Some(bundle_account_locker),
                     true,
                 );
                 if result
@@ -666,14 +668,16 @@ pub(crate) mod external {
                     return Ok(false);
                 }
 
-                let output = self.consumer.process_and_record_aged_transactions(
-                    bank,
-                    &transactions,
-                    &max_ages,
-                    execution_flags,
-                    Some(&self.bundle_account_locker),
-                    false,
-                );
+                let output = self
+                    .consumer
+                    .process_and_record_aged_transactions_with_policy(
+                        bank,
+                        &transactions,
+                        &max_ages,
+                        execution_flags,
+                        Some(&self.bundle_account_locker),
+                        false,
+                    );
 
                 self.metrics.update_for_consume(&output);
                 self.metrics.has_data.store(true, Ordering::Relaxed);
