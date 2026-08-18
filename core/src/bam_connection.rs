@@ -51,7 +51,8 @@ const NETWORK_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTBOUND_CHANNEL_CAPACITY: usize = 100_000;
 const MAX_OUTBOUND_RESULT_BATCH_SIZE: usize = 24;
 const VALIDATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const METRICS_AND_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(25);
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(25);
+const METRICS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 const REFRESH_CONFIG_INTERVAL: Duration = Duration::from_secs(1);
 const WAIT_SLEEP_DURATION: Duration = Duration::from_millis(10);
 const CHILD_TASK_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
@@ -138,9 +139,10 @@ impl BamConnection {
         let mut last_heartbeat = None;
         let mut heartbeat_interval = interval(VALIDATOR_HEARTBEAT_INTERVAL);
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut metrics_and_health_check_interval = interval(METRICS_AND_HEALTH_CHECK_INTERVAL);
-        metrics_and_health_check_interval
-            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut health_check_interval = interval(HEALTH_CHECK_INTERVAL);
+        health_check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut metrics_report_interval = interval(METRICS_REPORT_INTERVAL);
+        metrics_report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // Create auth proof
         let Some(auth_proof) = Self::prepare_auth_proof(&mut validator_client, cluster_info).await
@@ -179,14 +181,14 @@ impl BamConnection {
                     }));
                     metrics.heartbeat_sent += 1;
                 }
-                _ = metrics_and_health_check_interval.tick() => {
-                    let is_healthy_now = last_heartbeat.is_some_and(|t: Instant| t.elapsed() < MAX_DURATION_BETWEEN_NODE_HEARTBEATS);
-                    is_healthy.store(is_healthy_now, Relaxed);
-                    if !is_healthy_now {
-                        metrics.unhealthy_connection_count += 1;
-                    }
-
-                    metrics.report();
+                _ = health_check_interval.tick() => {
+                    is_healthy.store(
+                        last_heartbeat.is_some_and(|t: Instant| t.elapsed() < MAX_DURATION_BETWEEN_NODE_HEARTBEATS),
+                        Relaxed,
+                    );
+                }
+                _ = metrics_report_interval.tick() => {
+                    metrics.report(is_healthy.load(Relaxed));
                 }
                 inbound = inbound_stream.message() => {
                     let inbound = match inbound {
@@ -494,8 +496,6 @@ struct BamConnectionMetrics {
     heartbeat_received: u64,
     builder_config_received: Arc<AtomicU64>,
 
-    unhealthy_connection_count: u64,
-
     leaderstate_sent: u64,
     bundleresult_sent: u64,
     heartbeat_sent: u64,
@@ -504,23 +504,7 @@ struct BamConnectionMetrics {
 }
 
 impl BamConnectionMetrics {
-    fn has_data(&self) -> bool {
-        self.bundle_received > 0
-            || self.bundle_forward_to_scheduler_fail > 0
-            || self.heartbeat_received > 0
-            || self.builder_config_received.load(Relaxed) > 0
-            || self.unhealthy_connection_count > 0
-            || self.leaderstate_sent > 0
-            || self.bundleresult_sent > 0
-            || self.heartbeat_sent > 0
-            || self.outbound_sent > 0
-            || self.outbound_fail > 0
-    }
-
-    fn report(&mut self) {
-        if !self.has_data() {
-            return;
-        }
+    fn report(&mut self, connection_healthy: bool) {
         datapoint_info!(
             "bam_connection-metrics",
             ("bundle_received", self.bundle_received, i64),
@@ -535,11 +519,7 @@ impl BamConnectionMetrics {
                 self.builder_config_received.swap(0, Relaxed),
                 i64
             ),
-            (
-                "unhealthy_connection_count",
-                self.unhealthy_connection_count,
-                i64
-            ),
+            ("connection_healthy", connection_healthy, bool),
             ("leaderstate_sent", self.leaderstate_sent, i64),
             ("bundleresult_sent", self.bundleresult_sent, i64),
             ("heartbeat_sent", self.heartbeat_sent, i64),
@@ -549,7 +529,6 @@ impl BamConnectionMetrics {
         self.bundle_received = 0;
         self.bundle_forward_to_scheduler_fail = 0;
         self.heartbeat_received = 0;
-        self.unhealthy_connection_count = 0;
         self.leaderstate_sent = 0;
         self.bundleresult_sent = 0;
         self.heartbeat_sent = 0;
