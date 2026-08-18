@@ -10,7 +10,7 @@
 
 use {
     crate::rpc_subscriptions::RpcSubscriptions,
-    crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender},
+    crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender, unbounded},
     solana_clock::{BankId, Slot},
     solana_hash::Hash,
     solana_rpc_client_api::response::{SlotTransactionStats, SlotUpdate},
@@ -98,20 +98,25 @@ pub struct BankNotificationSender {
 }
 
 impl BankNotificationSender {
-    /// Send every notification to `tx`.
-    pub fn new(tx: Sender<BankNotificationWithDependencyWork>) -> Self {
-        Self { tx, filter: None }
+    /// Create a subscriber that receives every notification.
+    pub fn channel() -> (Self, BankNotificationReceiver) {
+        Self::new_channel(None)
     }
 
-    /// Send only notifications accepted by `filter` to `tx`.
-    pub fn new_with_filter<F: BankNotificationFilter>(
-        tx: Sender<BankNotificationWithDependencyWork>,
+    /// Create a subscriber that receives only notifications accepted by `filter`.
+    pub fn channel_with_filter<F: BankNotificationFilter>(
         filter: F,
-    ) -> Self {
-        Self {
-            tx,
-            filter: Some(Box::new(filter)),
-        }
+    ) -> (Self, BankNotificationReceiver) {
+        Self::new_channel(Some(Box::new(filter)))
+    }
+
+    fn new_channel(
+        filter: Option<Box<dyn BankNotificationFilter>>,
+    ) -> (Self, BankNotificationReceiver) {
+        // All subscriber channels are unbounded so sending to one subscriber cannot block
+        // consensus-critical producers or delay notification delivery to other subscribers.
+        let (tx, rx) = unbounded();
+        (Self { tx, filter }, rx)
     }
 
     pub fn should_forward(&self, notification: &BankNotification) -> bool {
@@ -601,6 +606,12 @@ mod tests {
                 .collect(),
             oldest_parent,
         )
+    }
+
+    #[test]
+    fn test_bank_notification_subscriber_channels_are_unbounded() {
+        let (sender, _receiver) = BankNotificationSender::channel();
+        assert_eq!(sender.tx.capacity(), None);
     }
 
     #[test]

@@ -1303,7 +1303,8 @@ impl Validator {
                     .rpc_pubsub()
                     .map(|addr| socket_addr_space.check(&addr))
             );
-            let (bank_notification_sender, bank_notification_receiver) = unbounded();
+            let (bank_notification_sender, bank_notification_receiver) =
+                BankNotificationSender::channel();
             let confirmed_bank_subscribers = if !bank_notification_senders.is_empty() {
                 Some(Arc::new(RwLock::new(bank_notification_senders)))
             } else {
@@ -1415,9 +1416,7 @@ impl Validator {
                     dependency_tracker.clone(),
                 ));
             let bank_notification_sender_config = Some(BankNotificationSenderConfig {
-                sender: BankNotificationBroadcaster::new(vec![BankNotificationSender::new(
-                    bank_notification_sender,
-                )]),
+                sender: BankNotificationBroadcaster::new(vec![bank_notification_sender]),
                 should_send_parents: geyser_plugin_service.is_some(),
                 dependency_tracker,
             });
