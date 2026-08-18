@@ -1037,145 +1037,6 @@ fn test_clean_reclaim_tombstones_zero_lamport_single_ref() {
     );
 }
 
-#[test]
-fn test_remove_zero_lamport_single_ref_accounts_after_shrink() {
-    for pass in 0..3 {
-        let accounts =
-            AccountsDb::new_for_tests_with_config(Vec::new(), DEFAULT_ACCOUNTS_DB_CONFIG);
-        let pubkey_zero = Pubkey::from([1; 32]);
-        let pubkey2 = Pubkey::from([2; 32]);
-        let account = AccountSharedData::new(1, 0, AccountSharedData::default().owner());
-        let zero_lamport_account =
-            AccountSharedData::new(0, 0, AccountSharedData::default().owner());
-        let slot = 1;
-        store_rooted_nonzero_accounts(&accounts, slot, [&pubkey_zero]);
-        let slot = slot + 1;
-
-        accounts.store_for_tests((
-            slot,
-            [(&pubkey_zero, &zero_lamport_account), (&pubkey2, &account)].as_slice(),
-        ));
-
-        // Root and flush without clean (as during an RPC scan), which upserts the
-        // zero-lamport account into the index instead of tombstoning it
-        accounts.add_root(slot);
-        accounts.flush_rooted_accounts_cache_without_clean();
-
-        // Purge the superseded slot 1 entry directly, leaving pubkey_zero as the
-        // in-index zero-lamport single-ref entry this shrink path handles (a full
-        // clean would convert it to a tombstone)
-        let _ = accounts.purge_keys_exact([(pubkey_zero, slot - 1)]);
-
-        if pass > 0 {
-            // store in write cache
-            accounts
-                .store_for_tests((slot + 1, [(&pubkey_zero, &zero_lamport_account)].as_slice()));
-            if pass == 2 {
-                // This test pass can be removed if all scenarios where flush_write_cache doesn't clean are eliminated.
-                // Currently, flush_write_cache doesn't clean if there is an ongoing RPC scan
-                // add root and flush without clean (causing ref count to increase)
-                accounts.add_root(slot + 1);
-                accounts.flush_rooted_accounts_cache_without_clean();
-            }
-        }
-
-        accounts.accounts_index.get_and_then(&pubkey_zero, |entry| {
-            let expected_ref_count = if pass < 2 { 1 } else { 2 };
-            assert_eq!(entry.unwrap().ref_count(), expected_ref_count, "{pass}");
-            // The index holds only flushed writes: one entry at `slot` for passes 0 and 1,
-            // and a second at `slot + 1` for pass 2.
-            let expected_slot_list = if pass < 2 { 1 } else { 2 };
-            assert_eq!(entry.unwrap().slot_list_lock_read_len(), expected_slot_list);
-            (false, ())
-        });
-        accounts.accounts_index.get_and_then(&pubkey2, |entry| {
-            assert!(entry.is_some());
-            (false, ())
-        });
-
-        let zero_lamport_single_ref_pubkeys = if pass < 2 { vec![&pubkey_zero] } else { vec![] };
-        accounts.remove_zero_lamport_single_ref_accounts_after_shrink(
-            &zero_lamport_single_ref_pubkeys,
-            slot,
-            &ShrinkStats::default(),
-        );
-
-        accounts.accounts_index.get_and_then(&pubkey_zero, |entry| {
-            match pass {
-                0 => {
-                    // should not exist in index at all
-                    assert!(entry.is_none(), "{pass}");
-                }
-                1 => {
-                    // The single-ref entry at `slot` is removed; pass 1's cache-only write at
-                    // `slot + 1` stays in the write cache.
-                    assert!(entry.is_none(), "{pass}");
-                    assert!(
-                        accounts
-                            .accounts_cache
-                            .load(slot + 1, &pubkey_zero)
-                            .is_some()
-                    );
-                }
-                2 => {
-                    // alive in both slot, slot + 1
-                    assert_eq!(entry.unwrap().slot_list_lock_read_len(), 2);
-
-                    let slots = entry
-                        .unwrap()
-                        .slot_list_read_lock()
-                        .iter()
-                        .map(|(s, _)| s)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    assert_eq!(slots, vec![slot, slot + 1]);
-                    let expected_ref_count = 2;
-                    assert_eq!(
-                        entry.map(|e| e.ref_count()),
-                        Some(expected_ref_count),
-                        "{pass}"
-                    );
-                }
-                _ => {
-                    unreachable!("Shouldn't reach here.")
-                }
-            }
-            (false, ())
-        });
-
-        accounts.accounts_index.get_and_then(&pubkey2, |entry| {
-            assert!(entry.is_some(), "{pass}");
-            (false, ())
-        });
-
-        if pass == 2 {
-            // Partially purge pubkey_zero: remove only the entry at `slot`, leaving the
-            // entry at `slot + 1` alive. The ref count must drop by exactly the number
-            // of removed slot list entries.
-            let reclaims = accounts.purge_keys_exact([(pubkey_zero, slot)]);
-            assert_eq!(
-                reclaims
-                    .iter()
-                    .map(|(reclaimed_slot, _)| *reclaimed_slot)
-                    .collect::<Vec<_>>(),
-                vec![slot]
-            );
-            accounts.accounts_index.get_and_then(&pubkey_zero, |entry| {
-                assert_eq!(entry.unwrap().ref_count(), 1);
-                let slots = entry
-                    .unwrap()
-                    .slot_list_read_lock()
-                    .iter()
-                    .map(|(s, _)| s)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                assert_eq!(slots, vec![slot + 1]);
-                (false, ())
-            });
-        }
-    }
-}
-
 /// A pubkey whose account has died must stay dead when a storage holding a clean-reclaimed
 /// older version of it is later shrunk.
 #[test]
@@ -1361,15 +1222,15 @@ fn test_shrink_carries_or_purges_flush_tombstone() {
     }
 }
 
-/// Ensure that `shrink` converts a not-yet-purgeable zero lamport single ref account into a
-/// tombstone in the new storage
+/// Ensure that `shrink` keeps a not-yet-purgeable zero lamport single ref account alive, and
+/// that `clean` converts it into a tombstone in the shrunk storage afterward
 #[test]
-fn test_shrink_converts_zero_lamport_single_ref_account_to_tombstone() {
+fn test_clean_converts_zero_lamport_single_ref_account_to_tombstone_after_shrink() {
     let accounts_db = AccountsDb::new_for_tests_with_config(Vec::new(), DEFAULT_ACCOUNTS_DB_CONFIG);
     let slot0 = 0;
     let slot1 = slot0 + 1;
-    // latest full snapshot must be older than the slot(s) we plan to shrink,
-    // otherwise zero lamport single ref accounts will be purged
+    // the latest full snapshot is older than slot1, so the zero lamport
+    // single ref account is not yet purgeable
     accounts_db.set_latest_full_snapshot_slot(slot0);
 
     let obsolete_pubkey = Pubkey::new_unique();
@@ -1390,7 +1251,8 @@ fn test_shrink_converts_zero_lamport_single_ref_account_to_tombstone() {
     let accounts_to_write = [
         // an account that is made obsolete below; shrink drops it entirely
         (&obsolete_pubkey, &open_account),
-        // a zero lamport single ref account; shrink *should* convert it to a tombstone
+        // a zero lamport single ref account; shrink keeps it alive, then clean
+        // converts it to a tombstone
         (&zero_lamport_single_ref_pubkey, &closed_account),
         // a zero lamport multi ref account; multi ref means it stays alive, not tombstoned
         (&zero_lamport_multi_ref_pubkey, &closed_account),
@@ -1434,10 +1296,14 @@ fn test_shrink_converts_zero_lamport_single_ref_account_to_tombstone() {
 
     // ensure ids are different, to indicate shrink ran
     assert_ne!(new_storage1.id(), storage1.id());
-    // ensure there are three accounts in the storage now, removing the obsolete one: the
-    // alive account, the zero-lamport multi-ref account, and the zero-lamport single-ref account
-    // carried forward as a tombstone
+    // ensure there are exactly three accounts in the storage now, removing the obsolete one
     assert_eq!(new_storage1.count(), 3);
+
+    // shrink kept the zero lamport single ref account's index entry; clean has not run yet
+    assert!(accounts_db.contains(&zero_lamport_single_ref_pubkey));
+
+    // Clean converts the zero lamport single ref account into a tombstone
+    accounts_db.clean_accounts_for_tests();
 
     // the zero lamport single ref account is dropped from the index now that it is a tombstone
     assert!(!accounts_db.contains(&zero_lamport_single_ref_pubkey));
@@ -5866,8 +5732,6 @@ fn test_shrink_collect_simple() {
                                     vec![]
                                 };
 
-                            // a zero-lamport single-ref account is removed from the index by shrink
-                            // and carried forward as a tombstone, so it is not rewritten as alive
                             let expected_alive_accounts = if alive {
                                 pubkeys[..normal_account_count]
                                     .iter()
@@ -5905,9 +5769,6 @@ fn test_shrink_collect_simple() {
                                     .collect::<Vec<_>>(),
                                 expected_alive_accounts
                             );
-                            // Tombstoned-at-flush accounts are not in the index, so shrink's index
-                            // scan finds no zero-lamport single-ref accounts.
-                            assert!(shrink_collect.zero_lamport_single_ref_pubkeys.is_empty());
                             assert_eq!(
                                 shrink_collect
                                     .tombstones_to_carry_forward
@@ -5938,10 +5799,6 @@ fn test_shrink_collect_simple() {
 
                             assert_eq!(shrink_collect.written_bytes, expected_written_bytes);
                             assert_eq!(shrink_collect.total_starting_accounts, account_count);
-                            assert_eq!(
-                                shrink_collect.all_are_zero_lamports,
-                                expected_alive_accounts.is_empty()
-                            );
                         }
                     }
                 }

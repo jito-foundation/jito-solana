@@ -756,7 +756,7 @@ impl AccountsDb {
             }
 
             self.remove_old_stores_shrink(
-                &shrink_collect,
+                slot,
                 &self.shrink_ancient_stats.shrink_stats,
                 shrink_in_progress,
                 true,
@@ -986,7 +986,7 @@ struct AccountsToCombine<'a> {
     /// all the rest of alive accounts that can move slots and should be combined
     /// This includes all accounts with ref_count = 1 from the slots in 'accounts_keep_slots'.
     /// There is one entry here for each storage we are processing. Even if all accounts are in 'accounts_keep_slots'.
-    accounts_to_combine: Vec<ShrinkCollect<'a, ShrinkCollectAliveSeparatedByRefs<'a>>>,
+    accounts_to_combine: Vec<ShrinkCollect<ShrinkCollectAliveSeparatedByRefs<'a>>>,
     /// slots that contain alive accounts that can move into ANY other ancient slot
     /// these slots will NOT be in 'accounts_keep_slots'
     /// Some of these slots will have ancient append vecs created at them to contain everything in 'accounts_to_combine'
