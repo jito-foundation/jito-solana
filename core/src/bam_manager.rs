@@ -3,7 +3,7 @@
 /// - Sends leader state to BAM
 /// - Updates TPU config
 /// - Updates block builder fee info
-/// - Sets `bam_enabled` flag that is used everywhere
+/// - Coordinates the switch between Block Engine bundle processing and BAM
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
@@ -125,8 +125,7 @@ impl BamManager {
 
         let mut current_connection = None;
         let mut outbound_receiver = Some(outbound_receiver);
-        let mut cached_builder_config = None;
-        let mut cached_builder_config_version = 0;
+        let mut builder_config_version = 0;
         let mut last_observed_bam_url = bam_url.load_full();
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
@@ -154,10 +153,8 @@ impl BamManager {
                         &new_identity,
                         &dependencies,
                         &exit,
-                        &mut cached_builder_config,
                         true,
                     ) {
-                        cached_builder_config_version = 0;
                         continue;
                     }
 
@@ -176,8 +173,8 @@ impl BamManager {
 
                     dependencies
                         .bam_enabled
-                        .store(BamConnectionState::Connecting as u8, Ordering::Relaxed);
-                    cached_builder_config_version = 0;
+                        .store(BamConnectionState::Connecting as u8, Ordering::Release);
+                    builder_config_version = 0;
                     let result = runtime.block_on(BamConnection::try_init(
                         url.clone(),
                         dependencies.cluster_info.clone(),
@@ -204,8 +201,6 @@ impl BamManager {
                              {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and will \
                              retry",
                         );
-                        cached_builder_config = None;
-                        cached_builder_config_version = 0;
                         Self::set_bam_disconnected(&dependencies);
                         outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
@@ -213,29 +208,16 @@ impl BamManager {
                     }
 
                     info!("BAM connection established");
-                    if let Some(builder_config) =
-                        connection.get_latest_config_if_changed(&mut cached_builder_config_version)
-                    {
-                        Self::update_tpu_config(&builder_config, &dependencies);
-                        Self::update_shred_socks_config(&builder_config, &dependencies);
-                        Self::update_block_engine_key_and_commission(
-                            &builder_config,
-                            &dependencies.block_builder_fee_info,
-                        );
-                        Self::update_bam_recipient_and_commission(
-                            &builder_config,
-                            &dependencies.bam_node_pubkey,
-                        );
-                        cached_builder_config = Some(builder_config);
-                    }
+                    dependencies.bam_enabled.store(
+                        BamConnectionState::DrainingBlockEngine as u8,
+                        Ordering::Release,
+                    );
 
                     connection
                 }
             };
 
             let disconnect = if !connection.is_healthy() {
-                cached_builder_config = None;
-                cached_builder_config_version = 0;
                 Self::set_bam_disconnected(&dependencies);
                 warn!("BAM connection unhealthy");
                 true
@@ -244,17 +226,13 @@ impl BamManager {
                 &new_identity,
                 &dependencies,
                 &exit,
-                &mut cached_builder_config,
                 false,
             ) {
-                cached_builder_config_version = 0;
                 true
             } else {
                 if configured_bam_url.as_deref() == Some(connection.url()) {
                     false
                 } else {
-                    cached_builder_config = None;
-                    cached_builder_config_version = 0;
                     Self::set_bam_disconnected(&dependencies);
                     true
                 }
@@ -265,32 +243,21 @@ impl BamManager {
                 continue;
             }
 
-            // Check if block builder info has changed
-            if let Some(builder_config) =
-                connection.get_latest_config_if_changed(&mut cached_builder_config_version)
-                && Some(&builder_config) != cached_builder_config.as_ref()
+            let bam_state =
+                BamConnectionState::from_u8(dependencies.bam_enabled.load(Ordering::Acquire));
+            if matches!(
+                bam_state,
+                BamConnectionState::BlockEngineDrained | BamConnectionState::Connected
+            ) && let Some(builder_config) =
+                connection.get_latest_config_if_changed(&mut builder_config_version)
             {
-                Self::update_tpu_config(&builder_config, &dependencies);
-                Self::update_shred_socks_config(&builder_config, &dependencies);
-                Self::update_block_engine_key_and_commission(
-                    &builder_config,
-                    &dependencies.block_builder_fee_info,
-                );
-                Self::update_bam_recipient_and_commission(
-                    &builder_config,
-                    &dependencies.bam_node_pubkey,
-                );
-                cached_builder_config = Some(builder_config);
+                Self::apply_builder_config(&builder_config, &dependencies);
+                if bam_state == BamConnectionState::BlockEngineDrained {
+                    dependencies
+                        .bam_enabled
+                        .store(BamConnectionState::Connected as u8, Ordering::Release);
+                }
             }
-            let bam_state = if cached_builder_config.is_some() {
-                BamConnectionState::Connected
-            } else {
-                BamConnectionState::Connecting
-            };
-            dependencies
-                .bam_enabled
-                .store(bam_state as u8, Ordering::Relaxed);
-
             // Send leader state if we are in a leader slot
             if let Some(bank) = shared_leader_state.load().working_bank()
                 && !bank.is_frozen()
@@ -319,14 +286,12 @@ impl BamManager {
         new_identity: &ArcSwap<Option<Pubkey>>,
         dependencies: &BamDependencies,
         exit: &AtomicBool,
-        cached_builder_config: &mut Option<ConfigResponse>,
         wait_for_identity: bool,
     ) -> bool {
         if !identity_changed.swap(false, Ordering::AcqRel) {
             return false;
         }
 
-        *cached_builder_config = None;
         Self::set_bam_disconnected(dependencies);
 
         // When we are still holding a live connection, disconnect first and wait in the
@@ -377,6 +342,13 @@ impl BamManager {
         )))
     }
 
+    fn apply_builder_config(config: &ConfigResponse, dependencies: &BamDependencies) {
+        Self::update_tpu_config(config, dependencies);
+        Self::update_shred_socks_config(config, dependencies);
+        Self::update_block_engine_key_and_commission(config, &dependencies.block_builder_fee_info);
+        Self::update_bam_recipient_and_commission(config, &dependencies.bam_node_pubkey);
+    }
+
     fn update_tpu_config(config: &ConfigResponse, dependencies: &BamDependencies) {
         let Some(tpu_info) = config.bam_config.as_ref() else {
             return;
@@ -397,7 +369,7 @@ impl BamManager {
     fn set_bam_disconnected(dependencies: &BamDependencies) {
         dependencies
             .bam_enabled
-            .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+            .store(BamConnectionState::Disconnected as u8, Ordering::Release);
         Self::clear_bam_shred_receiver_addresses(dependencies);
     }
 
