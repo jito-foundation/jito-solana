@@ -665,7 +665,7 @@ fn default_local_cluster_step(parallel: u64) -> buildkite::Step {
                     String::from("queue"),
                     String::from("default"),
                 )])),
-                timeout_in_minutes: Some(15),
+                timeout_in_minutes: Some(30),
                 retry: Some(HashMap::from([(
                     String::from("automatic"),
                     String::from("true"),
