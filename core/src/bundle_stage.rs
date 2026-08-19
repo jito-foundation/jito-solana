@@ -623,7 +623,7 @@ impl BundleStage {
         let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
 
         if bank.slot() != *last_tip_update_slot {
-            if Self::handle_tip_programs(
+            match Self::handle_tip_programs(
                 bank,
                 bundle_account_locker,
                 consumer,
@@ -631,15 +631,24 @@ impl BundleStage {
                 cluster_info,
                 block_builder_fee_info,
                 consume_worker_metrics,
-            )
-            .is_err()
-            {
-                bundle_stage_metrics.increment_tip_programs_error(1);
-                error!("tip programs error, not processing bundles");
-                return;
+            ) {
+                Ok(()) => {
+                    *last_tip_update_slot = bank.slot();
+                }
+                Err(BundleExecutionError::ErrorRetryable) => {
+                    bundle_stage_metrics.increment_tip_programs_error(1);
+                    error!("tip programs error, not processing bundles");
+                    return;
+                }
+                Err(err) => {
+                    // Instruction failures and missing accounts will not succeed on retry
+                    // in this slot. Advance so we do not tight-loop every 10ms poll.
+                    bundle_stage_metrics.increment_tip_programs_error(1);
+                    error!("tip programs error, not processing bundles: {err:?}");
+                    *last_tip_update_slot = bank.slot();
+                    return;
+                }
             }
-
-            *last_tip_update_slot = bank.slot();
         }
 
         // This loop shall:
@@ -727,6 +736,15 @@ impl BundleStage {
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) -> BundleExecutionResult<()> {
+        // Tip programs fund PDAs with Rent::get().minimum_balance(). When rent is
+        // free (local-cluster), that is 0 lamports and accounts-db drops the
+        // accounts, so init/crank can never succeed. Skip instead of retrying
+        // doomed work every poll.
+        if bank.rent_collector().rent.minimum_balance(0) == 0 {
+            debug!("skipping tip program init/crank because rent is free");
+            return Ok(());
+        }
+
         let keypair = cluster_info.keypair();
 
         Self::handle_initialize_tip_programs(
@@ -1151,9 +1169,9 @@ mod tests {
 
     #[test]
     fn test_tip_program_accounts_dropped_when_genesis_rent_is_free() {
-        // Local-cluster genesis historically used Rent::free() + zero fees. Tip
-        // program init then creates 0-lamport PDAs, which accounts-db drops, so
-        // BundleStage's follow-up crank fails with AccountMissing every poll.
+        // Local-cluster genesis uses Rent::free() + zero fees. Tip program init
+        // then creates 0-lamport PDAs, which accounts-db drops, so crank fails
+        // with AccountMissing. BundleStage skips init/crank in that environment.
         let TestFixture {
             genesis_config_info,
             leader_keypair,

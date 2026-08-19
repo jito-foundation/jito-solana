@@ -341,11 +341,6 @@ impl LocalCluster {
             mint_account.lamports -= additional_validator_funding;
         }
 
-        // Tip programs create PDAs with Rent::get().minimum_balance(). Rent::free()
-        // (the genesis helper default) yields 0-lamport accounts, which accounts-db
-        // drops. BundleStage then fails crank with AccountMissing every 10ms poll.
-        genesis_config.rent = Rent::default();
-
         genesis_config.accounts.extend(
             config
                 .additional_accounts
