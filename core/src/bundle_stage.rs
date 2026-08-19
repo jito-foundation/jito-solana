@@ -967,9 +967,16 @@ mod tests {
         solana_program_binaries::{jito_tip_distribution, jito_tip_payment, spl_programs},
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
+        solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
+        solana_svm::{
+            transaction_commit_result::TransactionCommitResultExtensions,
+            transaction_processor::ExecutionRecordingConfig,
+        },
+        solana_svm_timings::ExecuteTimings,
         solana_system_transaction::transfer,
         solana_time_utils::timestamp,
+        solana_transaction::sanitized::SanitizedTransaction,
         solana_vote_interface::state::vote_state_v4::VoteStateV4,
     };
 
@@ -979,11 +986,25 @@ mod tests {
     }
 
     fn create_genesis_config(mint_sol: u64) -> TestFixture {
+        create_genesis_config_with_rent(
+            mint_sol,
+            Rent::default(),
+            FeeRateGovernor {
+                // Initialize with a non-zero fee
+                lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
+                ..FeeRateGovernor::default()
+            },
+        )
+    }
+
+    fn create_genesis_config_with_rent(
+        mint_sol: u64,
+        rent: Rent,
+        fee_rate_governor: FeeRateGovernor,
+    ) -> TestFixture {
         let mint_keypair = Keypair::new();
         let leader_keypair = Keypair::new();
         let voting_keypair = Keypair::new();
-
-        let rent = Rent::default();
 
         let mut genesis_config = create_genesis_config_with_leader_ex(
             mint_sol * LAMPORTS_PER_SOL,
@@ -994,12 +1015,8 @@ mod tests {
             None,
             rent.minimum_balance(VoteStateV4::size_of()) + (LAMPORTS_PER_SOL * 1_000_000),
             LAMPORTS_PER_SOL * 1_000_000,
-            FeeRateGovernor {
-                // Initialize with a non-zero fee
-                lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
-                ..FeeRateGovernor::default()
-            },
-            rent.clone(), // most tests don't expect rent
+            fee_rate_governor,
+            rent.clone(),
             ClusterType::Development,
             &FeatureSet::all_enabled(),
             spl_programs(&rent),
@@ -1015,6 +1032,54 @@ mod tests {
             },
             leader_keypair,
         }
+    }
+
+    fn execute_tip_program_maintenance(
+        bank: &Bank,
+        leader_keypair: &Keypair,
+        vote_account: Pubkey,
+    ) -> (
+        bool,
+        bool,
+        crate::tip_manager::Result<SmallVec<[RuntimeTransaction<SanitizedTransaction>; 2]>>,
+    ) {
+        let tip_manager = TipManager::new(TipManagerConfig {
+            tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+            tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: leader_keypair.pubkey(),
+                vote_account,
+                commission_bps: 10,
+            },
+        });
+
+        let init_txs = tip_manager
+            .get_initialize_tip_programs_bundle(bank, leader_keypair)
+            .unwrap();
+        let batch = bank.prepare_sanitized_batch(&init_txs);
+        let (results, _) = bank.load_execute_and_commit_transactions(
+            &batch,
+            ExecutionRecordingConfig::new_single_setting(true),
+            &mut ExecuteTimings::default(),
+            None,
+        );
+        drop(batch);
+
+        let init_executed_ok = results.iter().all(|r| r.was_executed_successfully());
+        assert!(init_executed_ok, "tip program init failed: {results:?}");
+        let config_account_exists = bank
+            .get_account(&tip_manager.tip_payment_config_pubkey())
+            .is_some();
+        let crank = tip_manager.get_tip_programs_crank_bundle(
+            bank,
+            leader_keypair,
+            &BlockBuilderFeeInfo {
+                block_builder: leader_keypair.pubkey(),
+                block_builder_commission: 0,
+            },
+        );
+
+        (init_executed_ok, config_account_exists, crank)
     }
 
     #[test]
@@ -1081,6 +1146,70 @@ mod tests {
         assert_eq!(
             bam_enabled.load(Ordering::Acquire),
             BamConnectionState::Connected as u8
+        );
+    }
+
+    #[test]
+    fn test_tip_program_accounts_dropped_when_genesis_rent_is_free() {
+        // Local-cluster genesis historically used Rent::free() + zero fees. Tip
+        // program init then creates 0-lamport PDAs, which accounts-db drops, so
+        // BundleStage's follow-up crank fails with AccountMissing every poll.
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config_with_rent(2, Rent::free(), FeeRateGovernor::new(0, 0));
+        let (bank, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+        let bank = bank_forks.read().unwrap().working_bank();
+
+        let (init_committed_ok, config_account_exists, crank) = execute_tip_program_maintenance(
+            &bank,
+            &leader_keypair,
+            genesis_config_info.voting_keypair.pubkey(),
+        );
+
+        assert!(init_committed_ok, "init transactions should commit");
+        assert!(
+            !config_account_exists,
+            "0-lamport tip-payment config must not persist under Rent::free()"
+        );
+        assert!(
+            matches!(
+                crank,
+                Err(crate::tip_manager::TipManagerError::AccountMissing)
+            ),
+            "crank must fail after the config PDA is dropped: {crank:?}"
+        );
+    }
+
+    #[test]
+    fn test_tip_program_accounts_persist_with_default_rent_and_zero_fees() {
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config_with_rent(2, Rent::default(), FeeRateGovernor::new(0, 0));
+        let (bank, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+        let bank = bank_forks.read().unwrap().working_bank();
+
+        let (init_committed_ok, config_account_exists, crank) = execute_tip_program_maintenance(
+            &bank,
+            &leader_keypair,
+            genesis_config_info.voting_keypair.pubkey(),
+        );
+
+        assert!(init_committed_ok, "init transactions should commit");
+        assert!(
+            config_account_exists,
+            "tip-payment config must persist when genesis rent is non-zero"
+        );
+        assert!(
+            crank.is_ok(),
+            "crank should build after a persisted init: {crank:?}"
         );
     }
 
