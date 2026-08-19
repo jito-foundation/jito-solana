@@ -639,7 +639,7 @@ impl BankingStage {
         }
 
         // Both block production methods currently route to the greedy scheduler.
-        let scheduler = GreedyScheduler::new(
+        let scheduler = GreedyScheduler::new_with_bundle_locker(
             work_senders,
             finished_work_receiver,
             GreedySchedulerConfig::default(),
