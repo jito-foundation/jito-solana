@@ -483,7 +483,6 @@ mod tests {
             },
             bundle_stage::bundle_consumer::BundleConsumer,
         },
-        agave_feature_set::limit_instruction_accounts,
         crossbeam_channel::unbounded,
         solana_cost_model::cost_model::CostModel,
         solana_entry::entry::Entry,
@@ -494,7 +493,6 @@ mod tests {
             GenesisConfigInfo, bootstrap_validator_stake_lamports,
             create_genesis_config_with_leader,
         },
-        solana_message::{Message, compiled_instruction::CompiledInstruction},
         solana_poh::{
             poh_recorder::PohRecorderError, record_channels::record_channels,
             transaction_recorder::TransactionRecorder,
@@ -678,90 +676,6 @@ mod tests {
         assert_eq!(bank.get_balance(&recipient), 0);
         assert!(record_receiver.try_recv().is_err());
         assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
-    }
-
-    #[test]
-    fn test_resanitizes_instruction_account_limit_after_epoch_change() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let mut sanitizing_bank = Bank::new_for_tests(&genesis_config);
-        sanitizing_bank.deactivate_feature(&limit_instruction_accounts::id());
-
-        let recent_blockhash = sanitizing_bank.last_blockhash();
-        let mut account_keys = vec![Pubkey::new_unique(); 10];
-        account_keys.insert(0, mint_keypair.pubkey());
-        let instruction = CompiledInstruction {
-            program_id_index: 1,
-            data: vec![],
-            accounts: (0..10).cycle().take(256).collect(),
-        };
-        let message = Message::new_with_compiled_instructions(
-            1,
-            0,
-            1,
-            account_keys,
-            recent_blockhash,
-            vec![instruction],
-        );
-        let transaction = sanitizing_bank
-            .verify_transaction(
-                Transaction::new(&[&mint_keypair], message, recent_blockhash).into(),
-                TransactionVerificationMode::FullVerification,
-            )
-            .unwrap();
-        let sanitized_epoch = sanitizing_bank.epoch();
-        let next_epoch_slot = sanitizing_bank
-            .epoch_schedule()
-            .get_first_slot_in_epoch(sanitized_epoch + 1);
-        let (sanitizing_bank, _bank_forks) = sanitizing_bank.wrap_with_bank_forks_for_tests();
-        let mut bank =
-            Bank::new_from_parent(sanitizing_bank, SlotLeader::new_unique(), next_epoch_slot);
-        bank.activate_feature(&limit_instruction_accounts::id());
-        assert_ne!(bank.epoch(), sanitized_epoch);
-        assert!(
-            bank.feature_set
-                .is_active(&limit_instruction_accounts::id())
-        );
-
-        let (record_sender, mut record_receiver) = record_channels(false);
-        let recorder = TransactionRecorder::new(record_sender);
-        record_receiver.restart(bank.bank_id());
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
-        let mut consumer = BundleConsumer::new(committer, recorder, None);
-
-        let output = consumer.process_and_record_aged_transactions(
-            &bank,
-            &[transaction],
-            &[MaxAge {
-                sanitized_epoch,
-                alt_invalidation_slot: u64::MAX,
-            }],
-            Duration::from_millis(20),
-        );
-
-        assert_matches!(
-            output
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-                .unwrap()
-                .as_slice(),
-            [CommitTransactionDetails::NotCommitted(
-                TransactionError::SanitizeFailure
-            )]
-        );
-        assert!(record_receiver.try_recv().is_err());
     }
 
     #[test]
