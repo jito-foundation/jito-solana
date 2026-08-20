@@ -176,6 +176,7 @@ pull_request_rules:
       - base != v4.0
       - base != v4.1
       - base != v4.2
+      - base != v4.3
     actions:
       close:
         message: "`{{base}}` is end-of-life and no longer accepts changes."
