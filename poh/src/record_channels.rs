@@ -451,8 +451,16 @@ mod tests {
     pub(super) fn test_record(bank_id: BankId, num_transactions: usize) -> Record {
         Record {
             bank_id,
+<<<<<<< HEAD
             transactions: vec![VersionedTransaction::default(); num_transactions],
             mixin: Hash::default(),
+=======
+            transaction_batches: (0..num_batches)
+                .map(|_| vec![VersionedTransaction::default()])
+                .collect(),
+            mixins: (0..num_batches).map(|_| Hash::default()).collect(),
+            reschedule_on_sad_handover: true,
+>>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
         }
     }
 

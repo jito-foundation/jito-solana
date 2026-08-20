@@ -1445,6 +1445,7 @@ mod tests {
             finished_work_receiver,
             response_sender,
             bank_forks.clone(),
+            shared_leader_state.clone(),
         );
 
         let mut scheduler_controller = SchedulerController::new(

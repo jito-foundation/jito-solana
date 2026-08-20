@@ -379,10 +379,12 @@ impl BundleConsumer {
 
         let (recording_result, starting_transaction_index, record_us) = match reservation {
             Ok(()) => {
-                let (summary, record_us) = measure_us!(
-                    self.transaction_recorder
-                        .record_transactions(bank.bank_id(), processed_transactions)
-                );
+                let (summary, record_us) =
+                    measure_us!(self.transaction_recorder.record_transactions(
+                        bank.bank_id(),
+                        processed_transactions,
+                        false
+                    ));
                 execute_and_commit_timings.record_transactions_timings =
                     RecordTransactionsTimings {
                         processing_results_to_transactions_us: Saturating(
@@ -958,7 +960,15 @@ mod tests {
             )));
             let record = record_receiver.try_recv().unwrap();
             assert_eq!(record.bank_id, bank.bank_id());
+<<<<<<< HEAD
             assert_eq!(record.transactions, entries[0].transactions);
+=======
+            assert!(!record.reschedule_on_sad_handover);
+            assert_eq!(
+                record.transaction_batches,
+                vec![entries[0].transactions.clone()]
+            );
+>>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
             assert!(record_receiver.try_recv().is_err());
             assert!(
                 recipients

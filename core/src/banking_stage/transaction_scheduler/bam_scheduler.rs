@@ -31,6 +31,7 @@ use {
     smallvec::SmallVec,
     solana_clock::{MAX_PROCESSING_AGE, Slot},
     solana_nohash_hasher::IntMap,
+    solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
     solana_runtime::bank_forks::BankForks,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -62,6 +63,14 @@ fn passthrough_priority(
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
 
+// Sized from 30 days of mainnet data ending 2026-08-18. Atomic-only ClickHouse counts of distinct
+// `(source, seq_id)` batches per validator-slot had p99=149, p99.9=236, 99.94% <=256, and max=540.
+// The full-slot count conservatively upper-bounds the pre-ParentReady subset stored here.
+// Mainnet-validator Influx `bam_connection-metrics.bundle_received` active 25 ms samples, which
+// also include non-atomic batches, had p99=183, p99.9=272, 99.86% <=256, and max=881. Thus 256
+// keeps the atomic p99.9 inline in 4 KiB while rarer bursts spill safely.
+const DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY: usize = 256;
+
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
@@ -80,9 +89,12 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
+    deferred_atomic_batches:
+        SmallVec<[TransactionPriorityId; DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY]>,
 
     extra_checks_enabled: bool,
     bank_forks: Arc<RwLock<BankForks>>,
+    shared_leader_state: SharedLeaderState,
 }
 
 // A structure to hold information about inflight batches.
@@ -101,6 +113,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
+        shared_leader_state: SharedLeaderState,
     ) -> Self {
         Self {
             consume_work_sender,
@@ -116,8 +129,10 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             last_schedule_time: Instant::now(),
             slot: None,
             reusable_consume_work: Vec::new(),
+            deferred_atomic_batches: SmallVec::new(),
             extra_checks_enabled: true,
             bank_forks,
+            shared_leader_state,
         }
     }
 
@@ -143,15 +158,22 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         };
 
         let working_bank = self.bank_forks.read().unwrap().working_bank();
+        let atomic_batches_enabled = self.shared_leader_state.load().atomic_batches_enabled();
+        self.deferred_atomic_batches.clear();
 
         while let Some(next_batch_id) = container.pop() {
-            let Some((batch_ids, _, max_schedule_slot, seq_id)) =
+            let Some((batch_ids, revert_on_error, max_schedule_slot, seq_id)) =
                 container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
                 container.remove_by_id(next_batch_id.id);
                 continue;
             };
+
+            if revert_on_error && !atomic_batches_enabled {
+                self.deferred_atomic_batches.push(next_batch_id);
+                continue;
+            }
 
             if max_schedule_slot < slot {
                 // If the slot has changed, we cannot schedule this batch
@@ -204,6 +226,10 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 Self::get_transactions_account_access(txns.into_iter()),
             );
         }
+
+        // Atomic batches must wait until ParentReady confirms or replaces the provisional bank.
+        // Non-atomic batches can still be rescheduled after sad handover.
+        container.push_ids_into_queue(self.deferred_atomic_batches.drain(..));
     }
 
     fn send_to_workers(
@@ -819,6 +845,7 @@ mod tests {
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::Message,
+        solana_poh::poh_recorder::SharedLeaderState,
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, bank_forks::BankForks},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -853,6 +880,7 @@ mod tests {
             finished_consume_work_receiver,
             response_sender,
             bank_forks.clone(),
+            SharedLeaderState::new(0, None, None),
         );
         TestScheduler {
             scheduler,
