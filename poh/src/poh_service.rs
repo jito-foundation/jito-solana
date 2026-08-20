@@ -780,6 +780,7 @@ mod tests {
                 mixins: vec![Hash::new_unique()],
                 transaction_batches: vec![vec![VersionedTransaction::from(test_tx())]],
                 bank_id: bank.bank_id(),
+                reschedule_on_sad_handover: true,
             })
             .unwrap();
 
