@@ -414,7 +414,7 @@ impl From<generated::Message> for VersionedMessage {
             .map(Hash::new_from_array)
             .unwrap();
         let instructions = value.instructions.into_iter().map(|ix| ix.into()).collect();
-        let address_table_lookups = value
+        let address_table_lookups: Vec<MessageAddressTableLookup> = value
             .address_table_lookups
             .into_iter()
             .map(|lookup| lookup.into())
@@ -433,7 +433,7 @@ impl From<generated::Message> for VersionedMessage {
                 recent_blockhash,
                 instructions,
             })
-        } else if let Some(config) = config {
+        } else if let Some(config) = config.filter(|_| address_table_lookups.is_empty()) {
             Self::V1(v1::Message {
                 header,
                 config,
@@ -1358,28 +1358,76 @@ impl From<entries::Entry> for EntrySummary {
 mod test {
     use {super::*, enum_iterator::all};
 
-    #[test]
-    fn test_v1_transaction_round_trip_preserves_config() {
+    fn v1_transaction_with_config(config: v1::TransactionConfig) -> VersionedTransaction {
         let message = v1::Message::try_compile_with_config(
             &Pubkey::new_unique(),
             &[],
             Hash::new_from_array([42; HASH_BYTES]),
+            config,
+        )
+        .unwrap();
+
+        VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::V1(message),
+        }
+    }
+
+    #[test]
+    fn test_v1_transaction_round_trip_preserves_config() {
+        let transaction = v1_transaction_with_config(
             v1::TransactionConfig::empty()
                 .with_priority_fee(123)
                 .with_compute_unit_limit(456)
                 .with_loaded_accounts_data_size_limit(789)
                 .with_heap_size(32 * 1024),
-        )
-        .unwrap();
-        let transaction = VersionedTransaction {
-            signatures: vec![Signature::default()],
-            message: VersionedMessage::V1(message),
-        };
+        );
 
         let generated_transaction: generated::Transaction = transaction.clone().into();
         let round_tripped_transaction: VersionedTransaction = generated_transaction.into();
 
         assert_eq!(transaction, round_tripped_transaction);
+    }
+
+    #[test]
+    fn test_v1_transaction_round_trip_preserves_empty_config() {
+        let transaction = v1_transaction_with_config(v1::TransactionConfig::empty());
+
+        let generated_transaction: generated::Transaction = transaction.clone().into();
+        let round_tripped_transaction: VersionedTransaction = generated_transaction.into();
+
+        assert_eq!(transaction, round_tripped_transaction);
+    }
+
+    #[test]
+    fn test_message_with_config_and_lookups_decodes_as_v0() {
+        let expected_lookup = MessageAddressTableLookup {
+            account_key: Pubkey::new_unique(),
+            writable_indexes: vec![1],
+            readonly_indexes: vec![2],
+        };
+        let message = generated::Message {
+            header: Some(MessageHeader::default().into()),
+            account_keys: vec![],
+            recent_blockhash: Hash::new_from_array([42; HASH_BYTES]).to_bytes().into(),
+            instructions: vec![],
+            versioned: true,
+            address_table_lookups: vec![expected_lookup.clone().into()],
+            config: Some(generated::TransactionConfig::default()),
+        };
+
+        let decoded_message = VersionedMessage::from(message);
+
+        assert_eq!(
+            decoded_message,
+            VersionedMessage::V0(v0::Message {
+                header: MessageHeader::default(),
+                account_keys: vec![],
+                recent_blockhash: Hash::new_from_array([42; HASH_BYTES]),
+                instructions: vec![],
+                address_table_lookups: vec![expected_lookup],
+            })
+        );
     }
 
     #[test]
