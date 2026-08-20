@@ -457,7 +457,7 @@ impl Tpu {
             bundle_account_locker.clone(),
             Some(TipProcessingDependencies {
                 tip_manager: tip_manager.clone(),
-                last_tip_updated_slot: Arc::new(Mutex::new(0)),
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
                 block_builder_fee_info: bam_block_builder_fee_info,
                 cluster_info: cluster_info.clone(),
                 bundle_account_locker: bundle_account_locker.clone(),
