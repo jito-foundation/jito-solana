@@ -128,7 +128,7 @@ mod proto_packet_to_packet_tests {
 
     fn proto_with_len(len: usize) -> ProtoPacket {
         ProtoPacket {
-            data: vec![7u8; len],
+            data: vec![7u8; len].into(),
             meta: Some(ProtoMeta {
                 size: len as u64,
                 addr: "0.0.0.0".to_string(),

@@ -97,12 +97,14 @@ impl BundleSigverifyStage {
             num_bundles_received += workspace.len();
             num_packets_received += packet_count;
 
-            let enable_tx_v1 = sharable_banks
-                .working()
-                .feature_set
-                .snapshot()
-                .enable_tx_v1;
-            ed25519_verify(&thread_pool, &mut workspace, false, packet_count, enable_tx_v1);
+            let enable_tx_v1 = sharable_banks.working().feature_set.snapshot().enable_tx_v1;
+            ed25519_verify(
+                &thread_pool,
+                &mut workspace,
+                false,
+                packet_count,
+                enable_tx_v1,
+            );
 
             for bundle in workspace.drain(..) {
                 let num_packets_failed_sigverify_in_bundle = bundle
@@ -173,8 +175,8 @@ mod tests {
     };
 
     fn test_sharable_banks() -> SharableBanks {
-        let (_bank, bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&create_genesis_config(1).genesis_config);
+        let (genesis_config, _) = create_genesis_config(1);
+        let (_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
         bank_forks.read().unwrap().sharable_banks()
     }
 

@@ -1752,9 +1752,7 @@ mod tests {
         let serialized = (1usize..=64)
             .map(|n| {
                 let ixs: Vec<_> = (0..n)
-                    .map(|_| {
-                        system_instruction::transfer(&payer_pubkey, &Pubkey::new_unique(), 1)
-                    })
+                    .map(|_| system_instruction::transfer(&payer_pubkey, &Pubkey::new_unique(), 1))
                     .collect();
                 let message =
                     v1::Message::try_compile(&payer_pubkey, &ixs, recent_blockhash).unwrap();
