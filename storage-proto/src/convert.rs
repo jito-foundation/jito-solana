@@ -419,12 +419,26 @@ impl From<generated::Message> for VersionedMessage {
             .into_iter()
             .map(|lookup| lookup.into())
             .collect();
+        let config = value.config.map(|config| v1::TransactionConfig {
+            priority_fee: config.priority_fee,
+            compute_unit_limit: config.compute_unit_limit,
+            loaded_accounts_data_size_limit: config.loaded_accounts_data_size_limit,
+            heap_size: config.heap_size,
+        });
 
         if !value.versioned {
             Self::Legacy(LegacyMessage {
                 header,
                 account_keys,
                 recent_blockhash,
+                instructions,
+            })
+        } else if let Some(config) = config {
+            Self::V1(v1::Message {
+                header,
+                config,
+                lifetime_specifier: recent_blockhash,
+                account_keys,
                 instructions,
             })
         } else {
@@ -1343,6 +1357,30 @@ impl From<entries::Entry> for EntrySummary {
 #[cfg(test)]
 mod test {
     use {super::*, enum_iterator::all};
+
+    #[test]
+    fn test_v1_transaction_round_trip_preserves_config() {
+        let message = v1::Message::try_compile_with_config(
+            &Pubkey::new_unique(),
+            &[],
+            Hash::new_from_array([42; HASH_BYTES]),
+            v1::TransactionConfig::empty()
+                .with_priority_fee(123)
+                .with_compute_unit_limit(456)
+                .with_loaded_accounts_data_size_limit(789)
+                .with_heap_size(32 * 1024),
+        )
+        .unwrap();
+        let transaction = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::V1(message),
+        };
+
+        let generated_transaction: generated::Transaction = transaction.clone().into();
+        let round_tripped_transaction: VersionedTransaction = generated_transaction.into();
+
+        assert_eq!(transaction, round_tripped_transaction);
+    }
 
     #[test]
     fn test_reward_type_encode() {

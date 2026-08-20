@@ -87,7 +87,11 @@ const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
 // NOTE: last profiled at around 180ns
 pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPacket {
-    if p.data.len() > solana_message::v1::MAX_TRANSACTION_SIZE {
+    if p.data.len() > solana_message::v1::MAX_TRANSACTION_SIZE
+        || p.meta
+            .as_ref()
+            .is_some_and(|meta| usize::try_from(meta.size).map_or(true, |size| size > p.data.len()))
+    {
         let mut packet = BytesPacket::new(Bytes::new(), Meta::default());
         packet.meta_mut().set_discard(true);
         return packet;
@@ -149,6 +153,16 @@ mod proto_packet_to_packet_tests {
     #[test]
     fn packet_over_txv1_max_is_discarded() {
         let packet = proto_packet_to_packet(proto_with_len(10_000));
+        assert!(packet.meta().discard());
+    }
+
+    #[test]
+    fn packet_with_meta_size_larger_than_data_is_discarded() {
+        let mut proto = proto_with_len(1000);
+        proto.meta.as_mut().unwrap().size = 1001;
+
+        let packet = proto_packet_to_packet(proto);
+
         assert!(packet.meta().discard());
     }
 
