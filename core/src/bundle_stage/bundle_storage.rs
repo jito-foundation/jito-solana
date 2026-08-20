@@ -13,13 +13,9 @@ use {
     },
     ahash::HashSet,
     arrayvec::ArrayVec,
-<<<<<<< HEAD
-    solana_clock::Slot,
-    solana_perf::packet::bytes::Bytes,
-=======
     smallvec::SmallVec,
     solana_clock::{BankId, Slot},
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+    solana_perf::packet::bytes::Bytes,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_runtime_transaction::{
@@ -203,19 +199,8 @@ impl BundleStorage {
             return Err(BundleStorageError::ContainerFull);
         }
 
-<<<<<<< HEAD
-        let mut container_ids: Vec<usize> = Vec::with_capacity(batch.len());
-        let sanitize_config = sanitize_config();
-=======
         let mut container_ids = SmallVec::<[usize; 5]>::new();
-        let mut maybe_error = Ok(());
-        let sanitize_config = sanitize_config(
-            working_bank
-                .feature_set
-                .snapshot()
-                .limit_instruction_accounts,
-        );
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        let sanitize_config = sanitize_config();
         let transaction_account_lock_limit = working_bank
             .get_transaction_account_lock_limit()
             .min(root_bank.get_transaction_account_lock_limit());

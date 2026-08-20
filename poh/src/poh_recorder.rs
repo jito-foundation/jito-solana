@@ -114,16 +114,12 @@ pub struct Record {
 }
 
 impl Record {
-<<<<<<< HEAD
-    pub fn new(mixin: Hash, transactions: Vec<VersionedTransaction>, bank_id: BankId) -> Self {
-=======
     pub fn new(
-        mixins: Vec<Hash>,
-        transaction_batches: Vec<Vec<VersionedTransaction>>,
+        mixin: Hash,
+        transactions: Vec<VersionedTransaction>,
         bank_id: BankId,
         reschedule_on_sad_handover: bool,
     ) -> Self {
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
         Self {
             mixin,
             transactions,

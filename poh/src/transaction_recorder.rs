@@ -64,16 +64,8 @@ impl TransactionRecorder {
             let (hash, hash_us) = measure_us!(hash_transactions(&transactions));
             record_transactions_timings.hash_us = Saturating(hash_us);
 
-<<<<<<< HEAD
-            let (res, poh_record_us) = measure_us!(self.record(bank_id, hash, transactions));
-=======
-            let (res, poh_record_us) = measure_us!(self.record(
-                bank_id,
-                vec![hash],
-                vec![transactions],
-                reschedule_on_sad_handover,
-            ));
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+            let (res, poh_record_us) =
+                measure_us!(self.record(bank_id, hash, transactions, reschedule_on_sad_handover,));
             record_transactions_timings.poh_record_us = Saturating(poh_record_us);
 
             match res {
@@ -115,23 +107,15 @@ impl TransactionRecorder {
     pub fn record(
         &self,
         bank_id: BankId,
-<<<<<<< HEAD
         mixin: Hash,
         transactions: Vec<VersionedTransaction>,
-    ) -> Result<Option<usize>, RecordSenderError> {
-        self.record_sender
-            .try_send(Record::new(mixin, transactions, bank_id))
-=======
-        mixins: Vec<Hash>,
-        transaction_batches: Vec<Vec<VersionedTransaction>>,
         reschedule_on_sad_handover: bool,
     ) -> Result<Option<usize>, RecordSenderError> {
         self.record_sender.try_send(Record::new(
-            mixins,
-            transaction_batches,
+            mixin,
+            transactions,
             bank_id,
             reschedule_on_sad_handover,
         ))
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
     }
 }

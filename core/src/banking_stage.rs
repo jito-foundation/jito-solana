@@ -1482,15 +1482,7 @@ mod tests {
         let summary = recorder.record_transactions(bank.bank_id(), txs.clone(), true);
         assert!(summary.result.is_ok());
         let record = record_receiver.try_recv().unwrap();
-        assert_eq!(
-<<<<<<< HEAD
-            record_receiver.try_recv().unwrap().transactions,
-            txs.clone()
-=======
-            record.transaction_batches.as_slice(),
-            std::slice::from_ref(&txs)
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
-        );
+        assert_eq!(record.transactions, txs);
         assert!(record.reschedule_on_sad_handover);
         assert!(record_receiver.try_recv().is_err());
 

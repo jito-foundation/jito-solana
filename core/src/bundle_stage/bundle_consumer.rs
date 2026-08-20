@@ -960,15 +960,8 @@ mod tests {
             )));
             let record = record_receiver.try_recv().unwrap();
             assert_eq!(record.bank_id, bank.bank_id());
-<<<<<<< HEAD
-            assert_eq!(record.transactions, entries[0].transactions);
-=======
             assert!(!record.reschedule_on_sad_handover);
-            assert_eq!(
-                record.transaction_batches,
-                vec![entries[0].transactions.clone()]
-            );
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+            assert_eq!(record.transactions, entries[0].transactions);
             assert!(record_receiver.try_recv().is_err());
             assert!(
                 recipients

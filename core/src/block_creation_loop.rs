@@ -736,15 +736,8 @@ fn record_and_complete_block(
                 let record = msg.map_err(|_| PohRecorderError::ChannelDisconnected)?;
                 ctx.record_receiver.on_received_record();
 
-<<<<<<< HEAD
-                if optimistic_parent.is_some() {
-                    accumulated_txs.extend(record.transactions.iter().cloned());
-=======
                 if optimistic_parent.is_some() && record.reschedule_on_sad_handover {
-                    record.transaction_batches.iter().for_each(|batch| {
-                        accumulated_txs.extend(batch.iter().cloned());
-                    });
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+                    accumulated_txs.extend(record.transactions.iter().cloned());
                 }
 
                 ctx.poh_recorder.write().unwrap().record(
@@ -1077,17 +1070,10 @@ fn shutdown_and_drain_record_receiver(
     record_receiver.shutdown();
 
     for record in record_receiver.drain_after_shutdown() {
-<<<<<<< HEAD
-        if let Some(accumulated_txs) = accumulated_txs.as_deref_mut() {
-            accumulated_txs.extend(record.transactions.iter().cloned());
-=======
         if record.reschedule_on_sad_handover
             && let Some(accumulated_txs) = accumulated_txs.as_deref_mut()
         {
-            record.transaction_batches.iter().for_each(|batch| {
-                accumulated_txs.extend(batch.iter().cloned());
-            });
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+            accumulated_txs.extend(record.transactions.iter().cloned());
         }
 
         poh_recorder
@@ -1118,6 +1104,7 @@ fn start_leader_wait_for_parent_replay(
         slot,
         parent_slot,
         parent_hash,
+        atomic_batches_enabled,
         block_timer,
         0,
         ctx,
@@ -1128,6 +1115,7 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
     slot: Slot,
     parent_slot: Slot,
     parent_hash: Option<Hash>,
+    atomic_batches_enabled: bool,
     block_timer: Instant,
     entry_bytes_consumed: u64,
     ctx: &mut LeaderContext,
@@ -1158,11 +1146,14 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
             ));
         }
 
-<<<<<<< HEAD
-        match maybe_start_leader(slot, parent_slot, parent_hash, entry_bytes_consumed, ctx) {
-=======
-        match maybe_start_leader(slot, parent_slot, parent_hash, atomic_batches_enabled, ctx) {
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        match maybe_start_leader(
+            slot,
+            parent_slot,
+            parent_hash,
+            entry_bytes_consumed,
+            atomic_batches_enabled,
+            ctx,
+        ) {
             Ok(()) => {
                 slot_delay_start.stop();
                 let _ = ctx
@@ -1269,11 +1260,8 @@ fn maybe_start_leader(
     slot: Slot,
     parent_slot: Slot,
     parent_hash: Option<Hash>,
-<<<<<<< HEAD
     entry_bytes_consumed: u64,
-=======
     atomic_batches_enabled: bool,
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
     ctx: &mut LeaderContext,
 ) -> Result<(), StartLeaderError> {
     if ctx.bank_forks.read().unwrap().get(slot).is_some() {
@@ -1304,11 +1292,13 @@ fn maybe_start_leader(
     }
 
     // Create and insert the bank
-<<<<<<< HEAD
-    create_and_insert_leader_bank(slot, parent_bank, entry_bytes_consumed, ctx)
-=======
-    create_and_insert_leader_bank(slot, parent_bank, atomic_batches_enabled, ctx)
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+    create_and_insert_leader_bank(
+        slot,
+        parent_bank,
+        entry_bytes_consumed,
+        atomic_batches_enabled,
+        ctx,
+    )
 }
 
 /// Creates and inserts the leader bank `slot` of this window with
@@ -1316,11 +1306,8 @@ fn maybe_start_leader(
 fn create_and_insert_leader_bank(
     slot: Slot,
     parent_bank: Arc<Bank>,
-<<<<<<< HEAD
     entry_bytes_consumed: u64,
-=======
     atomic_batches_enabled: bool,
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
     ctx: &mut LeaderContext,
 ) -> Result<(), StartLeaderError> {
     let parent_slot = parent_bank.slot();
@@ -1501,13 +1488,10 @@ mod tests {
         },
         solana_poh_config::PohConfig,
         solana_runtime::{
-            bank::{Bank, test_utils},
-            bank_forks::BankForks,
-            genesis_utils::create_genesis_config_with_leader,
+            bank::Bank, bank_forks::BankForks, genesis_utils::create_genesis_config_with_leader,
             installed_scheduler_pool::BankWithScheduler,
         },
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-        solana_signer::Signer,
         solana_system_transaction as system_transaction,
         std::num::NonZeroUsize,
     };
@@ -1720,11 +1704,7 @@ mod tests {
             genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
 
-<<<<<<< HEAD
-        create_and_insert_leader_bank(1, root_bank.clone(), 0, &mut ctx).unwrap();
-=======
-        create_and_insert_leader_bank(1, root_bank.clone(), true, &mut ctx).unwrap();
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        create_and_insert_leader_bank(1, root_bank.clone(), 0, true, &mut ctx).unwrap();
         assert!(ctx.poh_recorder.read().unwrap().has_bank());
         assert!(ctx.bank_forks.read().unwrap().get(1).is_some());
 
@@ -1753,11 +1733,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap();
         });
-<<<<<<< HEAD
-        create_and_insert_leader_bank(1, root_bank, 0, &mut ctx).unwrap();
-=======
-        create_and_insert_leader_bank(1, root_bank, true, &mut ctx).unwrap();
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        create_and_insert_leader_bank(1, root_bank, 0, true, &mut ctx).unwrap();
         assert!(ctx.poh_recorder.read().unwrap().has_bank());
         assert!(ctx.bank_forks.read().unwrap().get(1).is_some());
 
@@ -1849,11 +1825,7 @@ mod tests {
             genesis_cert_block_marker,
         };
 
-<<<<<<< HEAD
-        let err = create_and_insert_leader_bank(2, parent_bank, 0, &mut ctx).unwrap_err();
-=======
-        let err = create_and_insert_leader_bank(2, parent_bank, true, &mut ctx).unwrap_err();
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        let err = create_and_insert_leader_bank(2, parent_bank, 0, true, &mut ctx).unwrap_err();
         assert!(matches!(
             err,
             StartLeaderError::PohRecorder(PohRecorderError::SendError(_))
@@ -1931,11 +1903,7 @@ mod tests {
             genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
 
-<<<<<<< HEAD
-        create_and_insert_leader_bank(1, root_bank, 0, &mut ctx).unwrap();
-=======
-        create_and_insert_leader_bank(1, root_bank, true, &mut ctx).unwrap();
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        create_and_insert_leader_bank(1, root_bank, 0, true, &mut ctx).unwrap();
         let bank_id = ctx.poh_recorder.read().unwrap().bank().unwrap().bank_id();
         record_sender
             .try_send(Record::new(
@@ -1994,7 +1962,6 @@ mod tests {
         let new_parent_bank_id = new_parent.bank_id();
 
         let optimistic_parent_hash = Hash::new_unique();
-<<<<<<< HEAD
         let optimistic_parent = if optimistic_parent_slot == new_parent_slot {
             Arc::new(Bank::new_from_parent(
                 root_bank.clone(),
@@ -2010,21 +1977,10 @@ mod tests {
             )
         };
         optimistic_parent.register_unique_recent_blockhash_for_test();
-=======
-        let optimistic_parent = Bank::new_from_parent_with_bank_forks(
-            &bank_forks,
-            root_bank.clone(),
-            SlotLeader::new_unique(),
-            optimistic_parent_slot,
-        );
-        let fork_payer = Keypair::new();
-        let ordinary_payer = Keypair::new();
-        test_utils::deposit(&optimistic_parent, &fork_payer.pubkey(), 1_000_000).unwrap();
-        test_utils::deposit(&optimistic_parent, &ordinary_payer.pubkey(), 1_000_000).unwrap();
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
         optimistic_parent.freeze();
         optimistic_parent.set_block_id(Some(optimistic_parent_hash));
         let optimistic_parent_bank_id = optimistic_parent.bank_id();
+        let optimistic_only_blockhash = optimistic_parent.last_blockhash();
         assert_ne!(optimistic_parent_bank_id, new_parent_bank_id);
         assert_ne!(
             optimistic_parent.last_blockhash(),
@@ -2088,8 +2044,7 @@ mod tests {
         };
 
         let leader_slot = 4;
-<<<<<<< HEAD
-        create_and_insert_leader_bank(leader_slot, optimistic_parent, 0, &mut ctx).unwrap();
+        create_and_insert_leader_bank(leader_slot, optimistic_parent, 0, false, &mut ctx).unwrap();
         let optimistic_bank = ctx.poh_recorder.read().unwrap().bank().unwrap();
         let optimistic_bank_id = optimistic_bank.bank_id();
         const ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER: u64 = 1_024;
@@ -2101,18 +2056,15 @@ mod tests {
             ctx.poh_recorder.read().unwrap().start_bank_id(),
             optimistic_parent_bank_id
         );
-=======
-        create_and_insert_leader_bank(leader_slot, optimistic_parent, false, &mut ctx).unwrap();
-        let optimistic_bank = ctx.poh_recorder.read().unwrap().bank().unwrap();
-        let optimistic_bank_id = optimistic_bank.bank_id();
         let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
         let optimistic_leader_state = shared_leader_state.load();
 
-        // Both atomic transactions are valid on the optimistic fork, while the second fee payer
-        // exists only there. The scheduler must hold them until ParentReady resolves the fork.
+        // Both atomic transactions are valid on the optimistic fork, while the second transaction's
+        // blockhash exists only there. The scheduler must hold them until ParentReady resolves the
+        // fork.
         let first_recipient = Pubkey::new_unique();
         let recent_blockhash = root_bank.last_blockhash();
-        let runtime_transfer = |payer, recipient| {
+        let runtime_transfer = |payer, recipient, recent_blockhash| {
             RuntimeTransaction::from_transaction_for_tests(system_transaction::transfer(
                 payer,
                 &recipient,
@@ -2121,8 +2073,12 @@ mod tests {
             ))
         };
         let txns_max_age = [
-            runtime_transfer(&genesis.mint_keypair, first_recipient),
-            runtime_transfer(&fork_payer, Pubkey::new_unique()),
+            runtime_transfer(&genesis.mint_keypair, first_recipient, recent_blockhash),
+            runtime_transfer(
+                &genesis.mint_keypair,
+                Pubkey::new_unique(),
+                optimistic_only_blockhash,
+            ),
         ]
         .into_iter()
         .map(|transaction| (transaction, MaxAge::MAX))
@@ -2134,7 +2090,11 @@ mod tests {
         container
             .insert_new_batch(
                 [(
-                    runtime_transfer(&ordinary_payer, Pubkey::new_unique()),
+                    runtime_transfer(
+                        &genesis.mint_keypair,
+                        Pubkey::new_unique(),
+                        recent_blockhash,
+                    ),
                     MaxAge::MAX,
                 )]
                 .into_iter()
@@ -2164,7 +2124,6 @@ mod tests {
         assert_eq!(container.queue_size(), 1);
         assert!(!consume_work_receiver.try_recv().unwrap().revert_on_error);
         assert!(response_receiver.try_recv().is_err());
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
 
         let accumulated_tx = versioned_transfer(1);
         let drained_tx = versioned_transfer(2);
@@ -2179,8 +2138,8 @@ mod tests {
             .unwrap();
         record_sender
             .try_send(Record::new(
-                vec![Hash::new_unique()],
-                vec![protected_txs],
+                Hash::new_unique(),
+                protected_txs,
                 optimistic_bank_id,
                 false,
             ))

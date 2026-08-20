@@ -820,14 +820,8 @@ mod tests {
 
         let record = record_receiver.drain().next().unwrap();
         assert_eq!(record.bank_id, bank.bank_id());
-<<<<<<< HEAD
-        assert_eq!(record.transactions.len(), 1);
-=======
         assert_eq!(record.reschedule_on_sad_handover, !revert_on_error);
-        assert_eq!(record.transaction_batches.len(), 1);
-        let transaction_batch = record.transaction_batches[0].clone();
-        assert_eq!(transaction_batch.len(), 1);
->>>>>>> 8a7713d0f7 (Fail closed atomic transactions on sad handover (#1545))
+        assert_eq!(record.transactions.len(), 1);
 
         let transactions = sanitize_transactions(vec![system_transaction::transfer(
             &mint_keypair,
