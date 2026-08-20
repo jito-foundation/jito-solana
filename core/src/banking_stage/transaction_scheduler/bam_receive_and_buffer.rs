@@ -26,8 +26,7 @@ use {
     },
     agave_transaction_view::{
         resolved_transaction_view::ResolvedTransactionView,
-        transaction_version::TransactionVersion,
-        transaction_view::{SanitizedTransactionView, UnsanitizedTransactionView},
+        transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
     ahash::HashSet,
     bytes::Bytes,
@@ -66,7 +65,21 @@ use {
 };
 
 type PrevalidationResult = Result<(usize, bool, u32, u64), (Reason, u32)>;
-type PacketVerificationResult = Option<(SanitizedTransactionView<Bytes>, bool)>;
+
+#[derive(Debug)]
+enum PacketVerificationResult {
+    Verified(SanitizedTransactionView<Bytes>, bool),
+    Oversized,
+    TxV1Disabled,
+    Failed,
+    Consumed,
+}
+
+impl PacketVerificationResult {
+    fn is_verified(&self) -> bool {
+        matches!(self, Self::Verified(_, _))
+    }
+}
 
 pub struct BamReceiveAndBuffer {
     bam_enabled: Arc<AtomicU8>,
@@ -215,7 +228,10 @@ impl BamReceiveAndBuffer {
                             &mut verification_results[verification_result_offset..batch_end];
                         verification_result_offset = batch_end;
 
-                        if let Some(index) = verified_batch.iter().position(Option::is_none) {
+                        if let Some(index) = verified_batch
+                            .iter()
+                            .position(|result| !result.is_verified())
+                        {
                             metrics
                                 .sigverify_metrics
                                 .increment_total_packets_verified(index);
@@ -354,9 +370,11 @@ impl BamReceiveAndBuffer {
         for (index, verified_packet) in verified_batch.iter_mut().enumerate() {
             // Load static runtime metadata from the view retained by sigverify.
             let sanitization_start = Instant::now();
-            let (view, is_simple_vote_transaction) = verified_packet
-                .take()
-                .expect("signature failures are handled before parsing");
+            let PacketVerificationResult::Verified(view, is_simple_vote_transaction) =
+                core::mem::replace(verified_packet, PacketVerificationResult::Consumed)
+            else {
+                unreachable!("signature failures are handled before parsing");
+            };
 
             let Ok(view) = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
                 view,
@@ -706,18 +724,24 @@ impl BamReceiveAndBuffer {
                 .par_iter_mut()
                 .map(|data| {
                     let data = core::mem::take(data);
-                    if data.len() > bam_packet_data_size_limit(&data, enable_tx_v1) {
-                        return None;
+                    if is_tx_v1_packet(&data) && !enable_tx_v1 {
+                        return PacketVerificationResult::TxV1Disabled;
                     }
-                    let view =
-                        SanitizedTransactionView::try_new_sanitized(data, &sanitize_config).ok()?;
+                    if data.len() > bam_packet_data_size_limit(&data, enable_tx_v1) {
+                        return PacketVerificationResult::Oversized;
+                    }
+                    let Ok(view) =
+                        SanitizedTransactionView::try_new_sanitized(data, &sanitize_config)
+                    else {
+                        return PacketVerificationResult::Failed;
+                    };
                     let (is_simple_vote_transaction, is_valid) =
                         verify_transaction_view(&view, false, enable_tx_v1);
                     if !is_valid {
-                        return None;
+                        return PacketVerificationResult::Failed;
                     }
 
-                    Some((view, is_simple_vote_transaction))
+                    PacketVerificationResult::Verified(view, is_simple_vote_transaction)
                 })
                 .collect_into_vec(verification_results);
         });
@@ -732,19 +756,30 @@ impl BamReceiveAndBuffer {
         metrics
             .sigverify_metrics
             .increment_total_verify_time(verify_packet_batch_time_us.as_us());
+        metrics.sigverify_metrics.increment_oversized_packets(
+            verification_results
+                .iter()
+                .filter(|result| matches!(result, PacketVerificationResult::Oversized))
+                .count(),
+        );
+        metrics.sigverify_metrics.increment_tx_v1_disabled_packets(
+            verification_results
+                .iter()
+                .filter(|result| matches!(result, PacketVerificationResult::TxV1Disabled))
+                .count(),
+        );
 
         stats
     }
 }
 
+fn is_tx_v1_packet(data: &[u8]) -> bool {
+    const V1_VERSION_BYTE: u8 = 128 | 1;
+    data.first() == Some(&V1_VERSION_BYTE)
+}
+
 fn bam_packet_data_size_limit(data: &[u8], enable_tx_v1: bool) -> usize {
-    if enable_tx_v1
-        && data.len() > PACKET_DATA_SIZE
-        && matches!(
-            UnsanitizedTransactionView::try_new_unsanitized(data).map(|view| view.version()),
-            Ok(TransactionVersion::V1)
-        )
-    {
+    if enable_tx_v1 && is_tx_v1_packet(data) {
         MAX_TRANSACTION_SIZE
     } else {
         PACKET_DATA_SIZE
@@ -954,6 +989,8 @@ struct SigverifyMetrics {
     pub total_verify_time_us: u64,
     pub total_packets_verified: usize,
     pub total_batches_verified: usize,
+    pub oversized_packets: usize,
+    pub tx_v1_disabled_packets: usize,
 }
 
 impl Default for SigverifyMetrics {
@@ -964,13 +1001,18 @@ impl Default for SigverifyMetrics {
             total_verify_time_us: 0,
             total_packets_verified: 0,
             total_batches_verified: 0,
+            oversized_packets: 0,
+            tx_v1_disabled_packets: 0,
         }
     }
 }
 
 impl SigverifyMetrics {
     pub fn report(&self) {
-        if self.total_packets_verified == 0 {
+        if self.total_packets_verified == 0
+            && self.oversized_packets == 0
+            && self.tx_v1_disabled_packets == 0
+        {
             return;
         }
 
@@ -979,6 +1021,8 @@ impl SigverifyMetrics {
             ("total_verify_time_us", self.total_verify_time_us, i64),
             ("total_packets_verified", self.total_packets_verified, i64),
             ("total_batches_verified", self.total_batches_verified, i64),
+            ("oversized", self.oversized_packets, i64),
+            ("tx_v1_disabled", self.tx_v1_disabled_packets, i64),
             (
                 "verify_batches_pp_us_p50",
                 self.verify_batches_pp_us_hist.percentile(50.0).unwrap_or(0),
@@ -1050,6 +1094,14 @@ impl SigverifyMetrics {
     pub fn increment_total_batches_verified(&mut self, count: usize) {
         self.total_batches_verified += count;
     }
+
+    pub fn increment_oversized_packets(&mut self, count: usize) {
+        self.oversized_packets += count;
+    }
+
+    pub fn increment_tx_v1_disabled_packets(&mut self, count: usize) {
+        self.tx_v1_disabled_packets += count;
+    }
 }
 
 #[cfg(test)]
@@ -1067,6 +1119,7 @@ mod tests {
         crossbeam_channel::unbounded,
         jito_protos::proto::bam_types::AtomicTxnBatch,
         solana_hash::Hash,
+        solana_instruction::Instruction,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::{Message, VersionedMessage, v1},
@@ -1074,7 +1127,6 @@ mod tests {
         solana_runtime::bank::Bank,
         solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
         solana_signer::Signer,
-        solana_system_interface::instruction as system_instruction,
         solana_system_transaction::transfer,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
         std::sync::atomic::AtomicU8,
@@ -1103,27 +1155,50 @@ mod tests {
         (bank_forks, mint_keypair)
     }
 
-    fn large_v1_transfer_transaction(payer: &Keypair, blockhash: Hash) -> VersionedTransaction {
-        (1..=64)
-            .find_map(|instruction_count| {
-                let instructions = std::iter::repeat_with(|| {
-                    system_instruction::transfer(&payer.pubkey(), &Pubkey::new_unique(), 1)
-                })
-                .take(instruction_count)
-                .collect::<Vec<_>>();
-                let message = v1::Message::try_compile(&payer.pubkey(), &instructions, blockhash)
+    fn v1_transaction_with_wire_size(
+        payer: &Keypair,
+        blockhash: Hash,
+        target_size: usize,
+    ) -> VersionedTransaction {
+        (0..=solana_message::v1::MAX_TRANSACTION_SIZE)
+            .find_map(|padding_len| {
+                let instruction = Instruction::new_with_bytes(
+                    solana_system_interface::program::id(),
+                    &vec![0; padding_len],
+                    vec![],
+                );
+                let message = v1::Message::try_compile(&payer.pubkey(), &[instruction], blockhash)
                     .expect("compile v1 message");
                 let transaction =
                     VersionedTransaction::try_new(VersionedMessage::V1(message), &[payer])
                         .expect("sign v1 transaction");
-                let wire_size = wincode::serialize(&transaction)
+                (wincode::serialize(&transaction)
                     .expect("serialize v1 transaction")
-                    .len();
-                (wire_size > PACKET_DATA_SIZE
-                    && wire_size <= solana_message::v1::MAX_TRANSACTION_SIZE)
+                    .len()
+                    == target_size)
                     .then_some(transaction)
             })
-            .expect("transaction between legacy packet and tx v1 limits")
+            .unwrap_or_else(|| panic!("v1 transaction with wire size {target_size}"))
+    }
+
+    fn large_v1_transfer_transaction(payer: &Keypair, blockhash: Hash) -> VersionedTransaction {
+        v1_transaction_with_wire_size(payer, blockhash, PACKET_DATA_SIZE + 1)
+    }
+
+    fn batch_with_packet_data(data: Bytes) -> AtomicTxnBatch {
+        AtomicTxnBatch {
+            seq_id: 1,
+            packets: vec![Packet { data, meta: None }],
+            max_schedule_slot: Slot::MAX,
+        }
+    }
+
+    fn batch_with_transaction(transaction: &VersionedTransaction) -> AtomicTxnBatch {
+        batch_with_packet_data(
+            wincode::serialize(transaction)
+                .expect("serialize transaction")
+                .into(),
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -1184,6 +1259,15 @@ mod tests {
         current_slot: Slot,
         metrics: &mut BamReceiveAndBufferMetrics,
     ) -> (Vec<TestVerifyResult>, ReceivingStats) {
+        run_batch_verify_with_tx_v1(batches, current_slot, false, metrics)
+    }
+
+    fn run_batch_verify_with_tx_v1(
+        batches: Vec<AtomicTxnBatch>,
+        current_slot: Slot,
+        enable_tx_v1: bool,
+        metrics: &mut BamReceiveAndBufferMetrics,
+    ) -> (Vec<TestVerifyResult>, ReceivingStats) {
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -1196,7 +1280,7 @@ mod tests {
             &thread_pool,
             &mut batches,
             current_slot,
-            false, // enable_tx_v1: tests run without the feature active
+            enable_tx_v1,
             metrics,
             &mut prevalidated,
             &mut packet_data,
@@ -1213,7 +1297,10 @@ mod tests {
                             .by_ref()
                             .take(packet_count)
                             .collect::<Vec<_>>();
-                        if let Some(index) = batch_results.iter().position(Option::is_none) {
+                        if let Some(index) = batch_results
+                            .iter()
+                            .position(|result| !result.is_verified())
+                        {
                             return Err((
                                 Reason::DeserializationError(
                                     jito_protos::proto::bam_types::DeserializationError {
@@ -1230,6 +1317,87 @@ mod tests {
             })
             .collect();
         (results, stats)
+    }
+
+    #[test]
+    fn test_bam_packet_data_size_limit_uses_v1_version_byte() {
+        let mut data = vec![0; PACKET_DATA_SIZE + 1];
+        data[0] = 128 | 1;
+
+        assert_eq!(
+            bam_packet_data_size_limit(&data, true),
+            solana_message::v1::MAX_TRANSACTION_SIZE
+        );
+        assert_eq!(bam_packet_data_size_limit(&data, false), PACKET_DATA_SIZE);
+    }
+
+    #[test]
+    fn test_batch_verify_tx_v1_size_boundaries() {
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let blockhash = bank_forks.read().unwrap().root_bank().last_blockhash();
+
+        for target_size in [
+            PACKET_DATA_SIZE,
+            PACKET_DATA_SIZE + 1,
+            solana_message::v1::MAX_TRANSACTION_SIZE,
+        ] {
+            let transaction = v1_transaction_with_wire_size(&mint_keypair, blockhash, target_size);
+            let mut metrics = BamReceiveAndBufferMetrics::default();
+            let (results, _batch_stats) = run_batch_verify_with_tx_v1(
+                vec![batch_with_transaction(&transaction)],
+                Slot::MAX,
+                true,
+                &mut metrics,
+            );
+            assert!(
+                results[0].is_ok(),
+                "v1 transaction at {target_size} bytes should verify"
+            );
+        }
+
+        let oversized =
+            v1_transaction_with_wire_size(&mint_keypair, blockhash, MAX_TRANSACTION_SIZE + 1);
+        let mut metrics = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify_with_tx_v1(
+            vec![batch_with_transaction(&oversized)],
+            Slot::MAX,
+            true,
+            &mut metrics,
+        );
+        assert!(results[0].is_err());
+        assert_eq!(metrics.sigverify_metrics.oversized_packets, 1);
+    }
+
+    #[test]
+    fn test_batch_verify_rejects_large_packets_without_tx_v1() {
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let blockhash = bank_forks.read().unwrap().root_bank().last_blockhash();
+        let large_v1 =
+            v1_transaction_with_wire_size(&mint_keypair, blockhash, PACKET_DATA_SIZE + 1);
+
+        let mut metrics = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify_with_tx_v1(
+            vec![batch_with_transaction(&large_v1)],
+            Slot::MAX,
+            false,
+            &mut metrics,
+        );
+        assert!(results[0].is_err());
+        assert_eq!(metrics.sigverify_metrics.tx_v1_disabled_packets, 1);
+    }
+
+    #[test]
+    fn test_batch_verify_rejects_non_v1_over_legacy_packet_limit() {
+        let mut metrics = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify_with_tx_v1(
+            vec![batch_with_packet_data(vec![0; PACKET_DATA_SIZE + 1].into())],
+            Slot::MAX,
+            true,
+            &mut metrics,
+        );
+
+        assert!(results[0].is_err());
+        assert_eq!(metrics.sigverify_metrics.oversized_packets, 1);
     }
 
     #[test]
