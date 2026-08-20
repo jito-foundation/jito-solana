@@ -830,7 +830,7 @@ impl BundleStage {
     ) -> BundleExecutionResult<()> {
         let block_builder_fee_info = block_builder_fee_info.load();
         if block_builder_fee_info.block_builder == Pubkey::default() {
-            return Err(BundleExecutionError::TipError);
+            return Err(BundleExecutionError::ErrorRetryable);
         }
         let crank_tip_program_transactions = tip_manager
             .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info)
@@ -1101,6 +1101,28 @@ mod tests {
         );
 
         (init_executed_ok, config_account_exists, crank)
+    }
+
+    #[test]
+    fn test_missing_block_builder_fee_info_is_retryable() {
+        let bank = Arc::new(Bank::new_for_tests(&GenesisConfig::default()));
+        let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(None, replay_vote_sender, None);
+        let mut consumer =
+            BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
+
+        let result = BundleStage::handle_crank_tip_programs(
+            &bank,
+            &BundleAccountLocker::default(),
+            &mut consumer,
+            &TipManager::new(TipManagerConfig::default()),
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+            &ConsumeWorkerMetrics::new(10_000),
+            &Keypair::new(),
+        );
+
+        assert_matches!(result, Err(BundleExecutionError::ErrorRetryable));
     }
 
     #[test]
