@@ -142,15 +142,15 @@ pub(crate) struct AliveAccounts<'a> {
     pub(crate) bytes: usize,
 }
 
-/// separate pubkeys into those with a single refcount and those with > 1 refcount
+/// separate alive accounts by whether a newer duplicate of the account exists
 #[derive(Debug)]
-pub(crate) struct ShrinkCollectAliveSeparatedByRefs<'a> {
-    /// accounts where ref_count = 1
-    pub(crate) one_ref: AliveAccounts<'a>,
-    /// account where ref_count > 1, but this slot contains the alive entry with the highest slot
-    pub(crate) many_refs_this_is_newest_alive: AliveAccounts<'a>,
-    /// account where ref_count > 1, and this slot is NOT the highest alive entry in the index for the pubkey
-    pub(crate) many_refs_old_alive: AliveAccounts<'a>,
+pub(crate) struct AliveAccountsSeparated<'a> {
+    /// can be packed into any slot
+    pub(crate) no_duplicates: AliveAccounts<'a>,
+    /// can only be packed into a slot >= this one
+    pub(crate) newest_duplicate: AliveAccounts<'a>,
+    /// must stay in this slot
+    pub(crate) not_newest_duplicate: AliveAccounts<'a>,
 }
 
 pub(crate) trait ShrinkCollector<'a>: Sync + Send {
@@ -199,18 +199,18 @@ impl<'a> ShrinkCollector<'a> for AliveAccounts<'a> {
     }
 }
 
-impl<'a> ShrinkCollector<'a> for ShrinkCollectAliveSeparatedByRefs<'a> {
+impl<'a> ShrinkCollector<'a> for AliveAccountsSeparated<'a> {
     fn collect(&mut self, other: Self) {
-        self.one_ref.collect(other.one_ref);
-        self.many_refs_this_is_newest_alive
-            .collect(other.many_refs_this_is_newest_alive);
-        self.many_refs_old_alive.collect(other.many_refs_old_alive);
+        self.no_duplicates.collect(other.no_duplicates);
+        self.newest_duplicate.collect(other.newest_duplicate);
+        self.not_newest_duplicate
+            .collect(other.not_newest_duplicate);
     }
     fn with_capacity(capacity: usize, slot: Slot) -> Self {
         Self {
-            one_ref: AliveAccounts::with_capacity(capacity, slot),
-            many_refs_this_is_newest_alive: AliveAccounts::with_capacity(0, slot),
-            many_refs_old_alive: AliveAccounts::with_capacity(0, slot),
+            no_duplicates: AliveAccounts::with_capacity(capacity, slot),
+            newest_duplicate: AliveAccounts::with_capacity(0, slot),
+            not_newest_duplicate: AliveAccounts::with_capacity(0, slot),
         }
     }
     fn add(
@@ -220,32 +220,32 @@ impl<'a> ShrinkCollector<'a> for ShrinkCollectAliveSeparatedByRefs<'a> {
         slot_list: &[(Slot, AccountInfo)],
     ) {
         let other = if ref_count == 1 {
-            &mut self.one_ref
+            &mut self.no_duplicates
         } else if slot_list.len() == 1
             || !slot_list
                 .iter()
-                .any(|(slot_list_slot, _info)| slot_list_slot > &self.many_refs_old_alive.slot)
+                .any(|(slot_list_slot, _info)| slot_list_slot > &self.not_newest_duplicate.slot)
         {
             // this entry is alive but is newer than any other slot in the index
-            &mut self.many_refs_this_is_newest_alive
+            &mut self.newest_duplicate
         } else {
             // This entry is alive but is older than at least one other slot in the index.
             // We would expect clean to get rid of the entry for THIS slot at some point, but clean hasn't done that yet.
-            &mut self.many_refs_old_alive
+            &mut self.not_newest_duplicate
         };
         other.add(ref_count, account, slot_list);
     }
     fn len(&self) -> usize {
-        self.one_ref
+        self.no_duplicates
             .len()
-            .saturating_add(self.many_refs_old_alive.len())
-            .saturating_add(self.many_refs_this_is_newest_alive.len())
+            .saturating_add(self.not_newest_duplicate.len())
+            .saturating_add(self.newest_duplicate.len())
     }
     fn alive_bytes(&self) -> usize {
-        self.one_ref
+        self.no_duplicates
             .alive_bytes()
-            .saturating_add(self.many_refs_old_alive.alive_bytes())
-            .saturating_add(self.many_refs_this_is_newest_alive.alive_bytes())
+            .saturating_add(self.not_newest_duplicate.alive_bytes())
+            .saturating_add(self.newest_duplicate.alive_bytes())
     }
     fn alive_accounts(&self) -> &Vec<&'a AccountFromStorage> {
         unimplemented!("illegal use");

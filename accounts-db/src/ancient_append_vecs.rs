@@ -9,8 +9,8 @@ use {
         account_storage::ShrinkInProgress,
         account_storage_entry::AccountStorageEntry,
         accounts_db::{
-            AccountFromStorage, AccountsDb, AliveAccounts, GetUniqueAccountsResult, ShrinkCollect,
-            ShrinkCollectAliveSeparatedByRefs,
+            AccountFromStorage, AccountsDb, AliveAccounts, AliveAccountsSeparated,
+            GetUniqueAccountsResult, ShrinkCollect,
             stats::{ShrinkAncientStats, SquashStatsSub},
         },
         active_stats::ActiveStatItem,
@@ -383,16 +383,16 @@ impl AccountsDb {
         self.shrink_ancient_stats.report();
     }
 
-    /// return false if `many_refs_newest` accounts cannot be moved into `target_slots_sorted`.
+    /// return false if `newest_duplicate` accounts cannot be moved into `target_slots_sorted`.
     /// The slot # would be violated.
-    /// accounts in `many_refs_newest` must be moved a slot >= each account's current slot.
+    /// accounts in `newest_duplicate` must be moved a slot >= each account's current slot.
     /// If that can be done, this fn returns true
-    fn many_ref_accounts_can_be_moved(
-        many_refs_newest: &[AliveAccounts<'_>],
+    fn newest_duplicate_can_be_moved(
+        newest_duplicate: &[AliveAccounts<'_>],
         target_slots_sorted: &[Slot],
         tuning: &PackedAncientStorageTuning,
     ) -> bool {
-        let alive_bytes = many_refs_newest
+        let alive_bytes = newest_duplicate
             .iter()
             .map(|alive| alive.bytes)
             .sum::<usize>();
@@ -409,7 +409,7 @@ impl AccountsDb {
             .saturating_sub(required_ideal_packed);
 
         let highest_slot = target_slots_sorted[i_last];
-        many_refs_newest
+        newest_duplicate
             .iter()
             .all(|many| many.slot <= highest_slot)
     }
@@ -452,23 +452,22 @@ impl AccountsDb {
         );
         metrics.unpackable_slots_count += accounts_to_combine.unpackable_slots_count;
 
-        let mut many_refs_newest = accounts_to_combine
+        let mut newest_duplicate = accounts_to_combine
             .accounts_to_combine
             .iter_mut()
             .filter_map(|alive| {
-                let newest_alive =
-                    std::mem::take(&mut alive.alive_accounts.many_refs_this_is_newest_alive);
+                let newest_alive = std::mem::take(&mut alive.alive_accounts.newest_duplicate);
                 (!newest_alive.accounts.is_empty()).then_some(newest_alive)
             })
             .collect::<Vec<_>>();
 
         // Sort highest slot to lowest slot. This way, we will put the multi ref accounts with the highest slots in the highest
         // packed slot.
-        many_refs_newest.sort_unstable_by_key(|b| cmp::Reverse(b.slot));
-        metrics.newest_alive_packed_count += many_refs_newest.len();
+        newest_duplicate.sort_unstable_by_key(|b| cmp::Reverse(b.slot));
+        metrics.newest_alive_packed_count += newest_duplicate.len();
 
-        if !Self::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        if !Self::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &accounts_to_combine.target_slots_sorted,
             &tuning,
         ) {
@@ -476,7 +475,7 @@ impl AccountsDb {
             log::info!(
                 "unable to ancient pack: highest available slot: {:?}, lowest required slot: {:?}",
                 accounts_to_combine.target_slots_sorted.last(),
-                many_refs_newest.last().map(|accounts| accounts.slot)
+                newest_duplicate.last().map(|accounts| accounts.slot)
             );
             return;
         }
@@ -494,11 +493,11 @@ impl AccountsDb {
         // pack the accounts with 1 ref or refs > 1 but the slot we're packing is the highest alive slot for the pubkey.
         // Note the `chain` below combining the 2 types of refs.
         let pack = PackedAncientStorage::pack(
-            many_refs_newest.iter().chain(
+            newest_duplicate.iter().chain(
                 accounts_to_combine
                     .accounts_to_combine
                     .iter()
-                    .map(|shrink_collect| &shrink_collect.alive_accounts.one_ref),
+                    .map(|shrink_collect| &shrink_collect.alive_accounts.no_duplicates),
             ),
             tuning.ideal_storage_size,
         );
@@ -693,7 +692,7 @@ impl AccountsDb {
         let mut write_ancient_accounts = write_ancient_accounts.into_inner().unwrap();
 
         // write new storages where contents were unable to move because ref_count > 1
-        self.write_ancient_accounts_to_same_slot_multiple_refs(
+        self.write_ancient_accounts_to_same_slot(
             accounts_to_combine.accounts_keep_slots.values(),
             &mut write_ancient_accounts,
         );
@@ -797,7 +796,7 @@ impl AccountsDb {
         let mut accounts_to_combine = accounts_per_storage
             .iter_mut()
             .map(|(info, unique_accounts)| {
-                self.shrink_collect::<ShrinkCollectAliveSeparatedByRefs<'_>>(
+                self.shrink_collect::<AliveAccountsSeparated<'_>>(
                     &info.storage,
                     unique_accounts,
                     &self.shrink_ancient_stats.shrink_stats,
@@ -810,7 +809,7 @@ impl AccountsDb {
             .map(|a| a.alive_total_bytes)
             .sum::<usize>();
 
-        let mut many_refs_old_alive_count = 0;
+        let mut not_newest_duplicate_count = 0;
 
         let mut remove = Vec::default();
         let mut last_slot = None;
@@ -826,16 +825,16 @@ impl AccountsDb {
             }
             last_slot = Some(shrink_collect.slot);
 
-            let many_refs_old_alive = &mut shrink_collect.alive_accounts.many_refs_old_alive;
+            let not_newest_duplicate = &mut shrink_collect.alive_accounts.not_newest_duplicate;
             if many_ref_slots == IncludeManyRefSlots::Skip
                 && !shrink_collect
                     .alive_accounts
-                    .many_refs_this_is_newest_alive
+                    .newest_duplicate
                     .accounts
                     .is_empty()
             {
                 let mut required_packed_slots = min_resulting_packed_slots;
-                if many_refs_old_alive.accounts.is_empty() {
+                if not_newest_duplicate.accounts.is_empty() {
                     // if THIS slot can be used as a target slot, then even if we have multi refs
                     // this is ok.
                     required_packed_slots = required_packed_slots.saturating_sub(1);
@@ -860,17 +859,17 @@ impl AccountsDb {
                 }
             }
 
-            if !many_refs_old_alive.accounts.is_empty() {
-                many_refs_old_alive_count += many_refs_old_alive.accounts.len();
-                many_refs_old_alive.accounts.iter().for_each(|account| {
+            if !not_newest_duplicate.accounts.is_empty() {
+                not_newest_duplicate_count += not_newest_duplicate.accounts.len();
+                not_newest_duplicate.accounts.iter().for_each(|account| {
                     // these accounts could indicate clean bugs or low memory conditions where we are forced to flush non-roots
                     log::info!(
                         "ancient append vec: found unpackable account: {}, {}",
-                        many_refs_old_alive.slot,
+                        not_newest_duplicate.slot,
                         account.pubkey()
                     );
                 });
-                // There are alive accounts with ref_count > 1, where the entry for the account in the index is NOT the highest slot. (`many_refs_old_alive`)
+                // There are alive accounts with a newer duplicate. (`not_newest_duplicate`)
                 // This means this account must remain IN this slot. There could be alive or dead references to this same account in any older slot.
                 // Moving it to a lower slot could move it before an alive or dead entry to this same account.
                 // Moving it to a higher slot could move it ahead of other slots where this account is also alive. We know a higher slot exists that contains this account.
@@ -878,10 +877,14 @@ impl AccountsDb {
                 // This would fail the invariant that the highest slot # where an account exists defines the most recent account.
                 // It could be a clean error or a transient condition that will resolve if we encounter this situation.
                 // The count of these accounts per call will be reported by metrics in `unpackable_slots_count`
-                if shrink_collect.alive_accounts.one_ref.accounts.is_empty()
+                if shrink_collect
+                    .alive_accounts
+                    .no_duplicates
+                    .accounts
+                    .is_empty()
                     && shrink_collect
                         .alive_accounts
-                        .many_refs_this_is_newest_alive
+                        .newest_duplicate
                         .accounts
                         .is_empty()
                 {
@@ -890,7 +893,7 @@ impl AccountsDb {
                     continue;
                 }
                 accounts_keep_slots
-                    .insert(shrink_collect.slot, std::mem::take(many_refs_old_alive));
+                    .insert(shrink_collect.slot, std::mem::take(not_newest_duplicate));
             } else {
                 // No alive accounts in this slot have a ref_count > 1. So, ALL alive accounts in this slot can be written to any other slot
                 // we find convenient. There is NO other instance of any account to conflict with.
@@ -910,7 +913,7 @@ impl AccountsDb {
             .fetch_add(accounts_keep_slots.len() as u64, Ordering::Relaxed);
         self.shrink_ancient_stats
             .many_refs_old_alive
-            .fetch_add(many_refs_old_alive_count as u64, Ordering::Relaxed);
+            .fetch_add(not_newest_duplicate_count as u64, Ordering::Relaxed);
         AccountsToCombine {
             accounts_to_combine,
             accounts_keep_slots,
@@ -949,7 +952,7 @@ impl AccountsDb {
     /// These accounts need to be rewritten in their same slot, Ideally with no other accounts in the slot.
     /// Other accounts would have ref_count = 1.
     /// ref_count = 1 accounts will be combined together with other slots into larger append vecs elsewhere.
-    fn write_ancient_accounts_to_same_slot_multiple_refs<'a, 'b: 'a>(
+    fn write_ancient_accounts_to_same_slot<'a, 'b: 'a>(
         &'b self,
         accounts_to_combine: impl Iterator<Item = &'a AliveAccounts<'a>>,
         write_ancient_accounts: &mut WriteAncientAccounts<'b>,
@@ -980,7 +983,7 @@ struct AccountsToCombine<'a> {
     /// all the rest of alive accounts that can move slots and should be combined
     /// This includes all accounts with ref_count = 1 from the slots in 'accounts_keep_slots'.
     /// There is one entry here for each storage we are processing. Even if all accounts are in 'accounts_keep_slots'.
-    accounts_to_combine: Vec<ShrinkCollect<ShrinkCollectAliveSeparatedByRefs<'a>>>,
+    accounts_to_combine: Vec<ShrinkCollect<AliveAccountsSeparated<'a>>>,
     /// slots that contain alive accounts that can move into ANY other ancient slot
     /// these slots will NOT be in 'accounts_keep_slots'
     /// Some of these slots will have ancient append vecs created at them to contain everything in 'accounts_to_combine'
@@ -1399,13 +1402,11 @@ mod tests {
     }
 
     #[test_case(ACCOUNTS_DB_CONFIG_APPEND_VEC)]
-    fn test_write_ancient_accounts_to_same_slot_multiple_refs_empty(
-        accounts_db_config: AccountsDbConfig,
-    ) {
+    fn test_write_ancient_accounts_to_same_slot_empty(accounts_db_config: AccountsDbConfig) {
         let db = AccountsDb::new_for_tests_with_config(Vec::new(), accounts_db_config);
         let (_storages, _slots, _infos) = get_sample_storages(&db, 0, None);
         let mut write_ancient_accounts = WriteAncientAccounts::default();
-        db.write_ancient_accounts_to_same_slot_multiple_refs(
+        db.write_ancient_accounts_to_same_slot(
             AccountsToCombine::default().accounts_keep_slots.values(),
             &mut write_ancient_accounts,
         );
@@ -2009,7 +2010,7 @@ mod tests {
                             } else {
                                 vec![]
                             };
-                            // all accounts should be in one_ref and all slots are available as target slots
+                            // all accounts should be in no_duplicates and all slots are available as target slots
                             assert_eq!(
                                 accounts_to_combine.target_slots_sorted,
                                 expected_target_slots_sorted,
@@ -2019,7 +2020,7 @@ mod tests {
                                 |shrink_collect| {
                                     shrink_collect
                                         .alive_accounts
-                                        .many_refs_old_alive
+                                        .not_newest_duplicate
                                         .accounts
                                         .is_empty()
                                 }
@@ -2027,14 +2028,18 @@ mod tests {
                             if two_refs {
                                 assert!(accounts_to_combine.accounts_to_combine.iter().all(
                                     |shrink_collect| {
-                                        shrink_collect.alive_accounts.one_ref.accounts.is_empty()
+                                        shrink_collect
+                                            .alive_accounts
+                                            .no_duplicates
+                                            .accounts
+                                            .is_empty()
                                     }
                                 ));
                                 assert!(accounts_to_combine.accounts_to_combine.iter().all(
                                     |shrink_collect| {
                                         !shrink_collect
                                             .alive_accounts
-                                            .many_refs_this_is_newest_alive
+                                            .newest_duplicate
                                             .accounts
                                             .is_empty()
                                     }
@@ -2042,14 +2047,18 @@ mod tests {
                             } else {
                                 assert!(accounts_to_combine.accounts_to_combine.iter().all(
                                     |shrink_collect| {
-                                        !shrink_collect.alive_accounts.one_ref.accounts.is_empty()
+                                        !shrink_collect
+                                            .alive_accounts
+                                            .no_duplicates
+                                            .accounts
+                                            .is_empty()
                                     }
                                 ));
                                 assert!(accounts_to_combine.accounts_to_combine.iter().all(
                                     |shrink_collect| {
                                         shrink_collect
                                             .alive_accounts
-                                            .many_refs_this_is_newest_alive
+                                            .newest_duplicate
                                             .accounts
                                             .is_empty()
                                     }
@@ -2074,7 +2083,7 @@ mod tests {
         // with 2 accounts
         // 1 with 1 ref
         // 1 with 2 refs (and the other ref is from a newer slot)
-        // So, the other alive ref will cause the account with 2 refs to be put into many_refs_old_alive and then accounts_keep_slots
+        // So, the newer duplicate will put this account into not_newest_duplicate and then accounts_keep_slots
         let db = AccountsDb::new_for_tests_with_config(Vec::new(), accounts_db_config.clone());
         let num_slots = 1;
         // creating 1 more sample slot/storage, but effectively act like 1 slot
@@ -2161,7 +2170,7 @@ mod tests {
             .first()
             .unwrap()
             .alive_accounts
-            .one_ref
+            .no_duplicates
             .accounts;
         let one_ref_accounts_account_shared_data = one_ref_accounts
             .iter()
@@ -2188,7 +2197,7 @@ mod tests {
                 .iter()
                 .all(|shrink_collect| shrink_collect
                     .alive_accounts
-                    .many_refs_this_is_newest_alive
+                    .newest_duplicate
                     .accounts
                     .is_empty())
         );
@@ -2200,7 +2209,7 @@ mod tests {
                 .iter()
                 .all(|shrink_collect| shrink_collect
                     .alive_accounts
-                    .many_refs_old_alive
+                    .not_newest_duplicate
                     .accounts
                     .is_empty())
         );
@@ -2312,7 +2321,7 @@ mod tests {
         );
         let slots_vec = slots.collect::<Vec<_>>();
         assert_eq!(accounts_to_combine.accounts_to_combine.len(), num_slots);
-        // all accounts should be in many_refs_this_is_newest_alive
+        // all accounts should be in newest_duplicate
         let mut accounts_keep = accounts_to_combine
             .accounts_keep_slots
             .keys()
@@ -2329,7 +2338,7 @@ mod tests {
                 .first()
                 .unwrap()
                 .alive_accounts
-                .many_refs_this_is_newest_alive
+                .newest_duplicate
                 .accounts
                 .iter()
                 .map(|meta| meta.pubkey())
@@ -2342,7 +2351,7 @@ mod tests {
             .first()
             .unwrap()
             .alive_accounts
-            .one_ref
+            .no_duplicates
             .accounts;
         let one_ref_accounts_account_shared_data = one_ref_accounts
             .iter()
@@ -2368,7 +2377,7 @@ mod tests {
                 .iter()
                 .all(|shrink_collect| !shrink_collect
                     .alive_accounts
-                    .many_refs_this_is_newest_alive
+                    .newest_duplicate
                     .accounts
                     .is_empty())
         );
@@ -3752,8 +3761,7 @@ mod tests {
                 let slot = 1;
                 let capacity = 0;
                 for i in 0..4usize {
-                    let mut alive_accounts =
-                        ShrinkCollectAliveSeparatedByRefs::with_capacity(capacity, slot);
+                    let mut alive_accounts = AliveAccountsSeparated::with_capacity(capacity, slot);
                     let lamports = 1;
 
                     match i {
@@ -3761,14 +3769,9 @@ mod tests {
                             // empty slot list (ignored anyway) because ref_count = 1
                             let slot_list = vec![];
                             alive_accounts.add(1, &account, &slot_list);
-                            assert!(!alive_accounts.one_ref.accounts.is_empty());
-                            assert!(alive_accounts.many_refs_old_alive.accounts.is_empty());
-                            assert!(
-                                alive_accounts
-                                    .many_refs_this_is_newest_alive
-                                    .accounts
-                                    .is_empty()
-                            );
+                            assert!(!alive_accounts.no_duplicates.accounts.is_empty());
+                            assert!(alive_accounts.not_newest_duplicate.accounts.is_empty());
+                            assert!(alive_accounts.newest_duplicate.accounts.is_empty());
                         }
                         1 => {
                             // non-empty slot list (but ignored) because slot_list = 1
@@ -3780,17 +3783,12 @@ mod tests {
                                 ),
                             )];
                             alive_accounts.add(2, &account, &slot_list);
-                            assert!(alive_accounts.one_ref.accounts.is_empty());
-                            assert!(alive_accounts.many_refs_old_alive.accounts.is_empty());
-                            assert!(
-                                !alive_accounts
-                                    .many_refs_this_is_newest_alive
-                                    .accounts
-                                    .is_empty()
-                            );
+                            assert!(alive_accounts.no_duplicates.accounts.is_empty());
+                            assert!(alive_accounts.not_newest_duplicate.accounts.is_empty());
+                            assert!(!alive_accounts.newest_duplicate.accounts.is_empty());
                         }
                         2 => {
-                            // multiple slot list, ref_count=2, this is NOT newest alive, so many_refs_old_alive
+                            // multiple slot list, this is not the newest, so not_newest_duplicate
                             let slot_list = vec![
                                 (
                                     slot,
@@ -3808,14 +3806,9 @@ mod tests {
                                 ),
                             ];
                             alive_accounts.add(2, &account, &slot_list);
-                            assert!(alive_accounts.one_ref.accounts.is_empty());
-                            assert!(!alive_accounts.many_refs_old_alive.accounts.is_empty());
-                            assert!(
-                                alive_accounts
-                                    .many_refs_this_is_newest_alive
-                                    .accounts
-                                    .is_empty()
-                            );
+                            assert!(alive_accounts.no_duplicates.accounts.is_empty());
+                            assert!(!alive_accounts.not_newest_duplicate.accounts.is_empty());
+                            assert!(alive_accounts.newest_duplicate.accounts.is_empty());
                         }
                         3 => {
                             // multiple slot list, ref_count=2, this is newest
@@ -3836,14 +3829,9 @@ mod tests {
                                 ),
                             ];
                             alive_accounts.add(2, &account, &slot_list);
-                            assert!(alive_accounts.one_ref.accounts.is_empty());
-                            assert!(alive_accounts.many_refs_old_alive.accounts.is_empty());
-                            assert!(
-                                !alive_accounts
-                                    .many_refs_this_is_newest_alive
-                                    .accounts
-                                    .is_empty()
-                            );
+                            assert!(alive_accounts.no_duplicates.accounts.is_empty());
+                            assert!(alive_accounts.not_newest_duplicate.accounts.is_empty());
+                            assert!(!alive_accounts.newest_duplicate.accounts.is_empty());
                         }
                         _ => {
                             panic!("unexpected");
@@ -3854,7 +3842,7 @@ mod tests {
     }
 
     #[test]
-    fn test_many_ref_accounts_can_be_moved() {
+    fn test_newest_duplicate_can_be_moved() {
         let tuning = PackedAncientStorageTuning {
             // only allow 10k slots old enough to be ancient
             max_ancient_slots: 10_000,
@@ -3865,58 +3853,58 @@ mod tests {
         };
 
         // nothing to move, so no problem fitting it
-        let many_refs_newest = vec![];
+        let newest_duplicate = vec![];
         let target_slots_sorted = vec![];
-        assert!(AccountsDb::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        assert!(AccountsDb::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &target_slots_sorted,
             &tuning
         ));
         // something to move, no target slots, so can't fit
         let slot = 1;
-        let many_refs_newest = vec![AliveAccounts {
+        let newest_duplicate = vec![AliveAccounts {
             bytes: 1,
             slot,
             accounts: Vec::default(),
         }];
-        assert!(!AccountsDb::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        assert!(!AccountsDb::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &target_slots_sorted,
             &tuning
         ));
 
         // something to move, 1 target slot, so can fit
         let target_slots_sorted = vec![slot];
-        assert!(AccountsDb::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        assert!(AccountsDb::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &target_slots_sorted,
             &tuning
         ));
 
         // too much to move to 1 target slot, so can't fit
-        let many_refs_newest = vec![AliveAccounts {
+        let newest_duplicate = vec![AliveAccounts {
             bytes: tuning.ideal_storage_size.get() as usize,
             slot,
             accounts: Vec::default(),
         }];
-        assert!(!AccountsDb::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        assert!(!AccountsDb::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &target_slots_sorted,
             &tuning
         ));
 
         // more than 1 slot to move, 2 target slots, so can fit
         let target_slots_sorted = vec![slot, slot + 1];
-        assert!(AccountsDb::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        assert!(AccountsDb::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &target_slots_sorted,
             &tuning
         ));
 
         // lowest target slot is below required slot
         let target_slots_sorted = vec![slot - 1, slot];
-        assert!(!AccountsDb::many_ref_accounts_can_be_moved(
-            &many_refs_newest,
+        assert!(!AccountsDb::newest_duplicate_can_be_moved(
+            &newest_duplicate,
             &target_slots_sorted,
             &tuning
         ));
