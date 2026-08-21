@@ -61,7 +61,7 @@ struct MockConfig {
 impl Default for MockConfig {
     fn default() -> Self {
         Self {
-            builder_pubkey: "11111111111111111111111111111111".to_string(),
+            builder_pubkey: solana_pubkey::Pubkey::new_unique().to_string(),
             builder_commission: 10,
             prio_fee_recipient: "22222222222222222222222222222222".to_string(),
             commission_bps: 100,
