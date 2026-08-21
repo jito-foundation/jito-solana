@@ -5,7 +5,7 @@ use {
     itertools::Itertools,
     rand::{Rng, rng},
     solana_account::ReadableAccount as _,
-    solana_clock::Epoch,
+    solana_clock::{BankId, Epoch, Slot},
     solana_perf::packet::bytes::Bytes,
     solana_pubkey::Pubkey,
     solana_runtime::{
@@ -51,6 +51,8 @@ pub struct VoteStorage {
     cached_epoch_authorized_voters: Arc<EpochAuthorizedVoters>,
     deprecate_legacy_vote_ixs: bool,
     current_epoch: Epoch,
+    /// Most recent leader bank observed by the vote worker.
+    last_bank: Option<(Slot, BankId)>,
 }
 
 impl VoteStorage {
@@ -68,6 +70,7 @@ impl VoteStorage {
             cached_epoch_authorized_voters,
             current_epoch: bank.epoch(),
             deprecate_legacy_vote_ixs: bank.feature_set.snapshot().deprecate_legacy_vote_ixs,
+            last_bank: Some((bank.slot(), bank.bank_id())),
         }
     }
 
@@ -90,6 +93,7 @@ impl VoteStorage {
             cached_epoch_authorized_voters: epoch_authorized_voters,
             current_epoch: 0,
             deprecate_legacy_vote_ixs: true,
+            last_bank: None,
         }
     }
 
@@ -138,16 +142,8 @@ impl VoteStorage {
     }
 
     pub fn drain_unprocessed(&mut self, bank: &Bank) -> Vec<SanitizedTransactionView<Bytes>> {
-        let slot_hashes = bank
-            .get_account(&sysvar::slot_hashes::id())
-            .and_then(|account| wincode::deserialize::<SlotHashes>(account.data()).ok());
-        if slot_hashes.is_none() {
-            error!(
-                "Slot hashes sysvar doesn't exist on bank {}. Including all votes without \
-                 filtering",
-                bank.slot()
-            );
-        }
+        self.restore_taken_votes_for_bank(bank);
+        let slot_hashes = Self::load_slot_hashes(bank);
 
         self.weighted_random_order_by_stake()
             .filter_map(|pubkey| {
@@ -157,19 +153,59 @@ impl VoteStorage {
                         if !Self::is_valid_for_our_fork(latest_vote, &slot_hashes) {
                             return None;
                         }
-                        latest_vote.take_vote().inspect(|_vote| {
-                            self.num_unprocessed_votes -= 1;
-                        })
+                        latest_vote
+                            .take_vote(bank.bank_id(), bank.slot())
+                            .inspect(|_vote| {
+                                self.num_unprocessed_votes -= 1;
+                            })
                     })
             })
             .collect_vec()
     }
 
+    /// Restores previously taken votes when the leader bank is replaced at the same slot.
+    pub(crate) fn restore_taken_votes_for_bank(&mut self, bank: &Bank) -> usize {
+        let bank_identity = (bank.slot(), bank.bank_id());
+        if self.last_bank == Some(bank_identity) {
+            return 0;
+        }
+        self.last_bank = Some(bank_identity);
+
+        if !self
+            .latest_vote_per_vote_pubkey
+            .values()
+            .any(LatestValidatorVote::has_retained_vote)
+        {
+            return 0;
+        }
+
+        let slot_hashes = Self::load_slot_hashes(bank);
+        let restored_vote_count = self
+            .latest_vote_per_vote_pubkey
+            .values_mut()
+            .map(|vote| {
+                let is_valid_for_fork = Self::is_valid_for_our_fork(vote, &slot_hashes);
+                usize::from(vote.restore_if_bank_replaced(
+                    bank.bank_id(),
+                    bank.slot(),
+                    is_valid_for_fork,
+                ))
+            })
+            .sum::<usize>();
+        self.num_unprocessed_votes += restored_vote_count;
+        restored_vote_count
+    }
+
+    /// Clears unprocessed votes while retaining taken vote bytes long enough to survive the
+    /// transient no-bank interval of a sad handover.
     pub fn clear(&mut self) {
         self.latest_vote_per_vote_pubkey
             .values_mut()
             .for_each(|vote| {
-                if vote.take_vote().is_some() {
+                // A sad handover has a brief no-bank interval in which the decision maker can
+                // return Forward. Keep taken vote bytes across that interval so a
+                // replacement bank for the same slot can restore them.
+                if vote.discard_unprocessed_vote() {
                     self.num_unprocessed_votes -= 1;
                 }
             });
@@ -356,6 +392,20 @@ impl VoteStorage {
             .unwrap_or(false)
     }
 
+    fn load_slot_hashes(bank: &Bank) -> Option<SlotHashes> {
+        let slot_hashes = bank
+            .get_account(&sysvar::slot_hashes::id())
+            .and_then(|account| wincode::deserialize::<SlotHashes>(account.data()).ok());
+        if slot_hashes.is_none() {
+            error!(
+                "Slot hashes sysvar doesn't exist on bank {}. Including all votes without \
+                 filtering",
+                bank.slot()
+            );
+        }
+        slot_hashes
+    }
+
     #[cfg(test)]
     pub fn get_latest_vote_slot(&self, pubkey: Pubkey) -> Option<solana_clock::Slot> {
         self.latest_vote_per_vote_pubkey
@@ -455,7 +505,17 @@ pub(crate) mod tests {
         keypairs: &ValidatorVoteKeypairs,
         timestamp: Option<UnixTimestamp>,
     ) -> BytesPacket {
+        packet_from_slots_with_hash(slots, keypairs, timestamp, Hash::default())
+    }
+
+    fn packet_from_slots_with_hash(
+        slots: Vec<(u64, u32)>,
+        keypairs: &ValidatorVoteKeypairs,
+        timestamp: Option<UnixTimestamp>,
+        vote_hash: Hash,
+    ) -> BytesPacket {
         let mut vote = TowerSync::from(slots);
+        vote.hash = vote_hash;
         vote.timestamp = timestamp;
         let vote_tx = new_tower_sync_transaction(
             vote,
@@ -544,6 +604,122 @@ pub(crate) mod tests {
 
         // All packets should remain in the transaction storage
         assert_eq!(1, vote_storage.len());
+    }
+
+    #[test]
+    fn test_network_duplicate_does_not_replenish_taken_vote() {
+        let keypair = ValidatorVoteKeypairs::new_rand();
+        let genesis_config =
+            genesis_utils::create_genesis_config_with_vote_accounts(100, &[&keypair], vec![200])
+                .genesis_config;
+        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let vote = packet_from_slots(vec![(0, 1)], &keypair, None);
+        let mut vote_storage = VoteStorage::new(&bank);
+        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote.clone()));
+        assert_eq!(1, vote_storage.len());
+
+        let drained = vote_storage.drain_unprocessed(&bank);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(vote_storage.len(), 0);
+
+        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote));
+        assert_eq!(vote_storage.len(), 0);
+    }
+
+    #[test]
+    fn test_restore_taken_vote_for_same_slot_replacement_bank() {
+        let keypair = ValidatorVoteKeypairs::new_rand();
+        let genesis_config =
+            genesis_utils::create_genesis_config_with_vote_accounts(100, &[&keypair], vec![200])
+                .genesis_config;
+        let (root_bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let bank_a = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        let bank_b = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        let bank_c = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        assert_eq!(bank_a.slot(), bank_b.slot());
+        assert_eq!(bank_b.slot(), bank_c.slot());
+        assert_ne!(bank_a.bank_id(), bank_b.bank_id());
+        assert_ne!(bank_b.bank_id(), bank_c.bank_id());
+
+        let vote = packet_from_slots_with_hash(vec![(0, 1)], &keypair, None, root_bank.hash());
+        let mut vote_storage = VoteStorage::new(&bank_a);
+        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote));
+
+        assert_eq!(vote_storage.drain_unprocessed(&bank_a).len(), 1);
+        assert_eq!(vote_storage.len(), 0);
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_a), 0);
+        vote_storage.clear();
+
+        // The transient Forward decision between clearing and recreating the leader bank must not
+        // discard the retained vote.
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_b), 1);
+        assert_eq!(vote_storage.len(), 1);
+        assert_eq!(vote_storage.drain_unprocessed(&bank_b).len(), 1);
+        assert_eq!(vote_storage.len(), 0);
+
+        // Repeated replacements of the same leader slot remain recoverable.
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_c), 1);
+        assert_eq!(vote_storage.len(), 1);
+    }
+
+    #[test]
+    fn test_taken_vote_is_not_restored_in_a_different_slot() {
+        let keypair = ValidatorVoteKeypairs::new_rand();
+        let genesis_config =
+            genesis_utils::create_genesis_config_with_vote_accounts(100, &[&keypair], vec![200])
+                .genesis_config;
+        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let next_bank =
+            Bank::new_from_parent(bank.clone(), SlotLeader::new_unique(), bank.slot() + 1);
+
+        let vote = packet_from_slots(vec![(0, 1)], &keypair, None);
+        let mut vote_storage = VoteStorage::new(&bank);
+        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote));
+        assert_eq!(vote_storage.drain_unprocessed(&bank).len(), 1);
+
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&next_bank), 0);
+        assert_eq!(vote_storage.len(), 0);
+    }
+
+    #[test]
+    fn test_newer_vote_supersedes_retained_vote_before_bank_replacement() {
+        let keypair = ValidatorVoteKeypairs::new_rand();
+        let genesis_config =
+            genesis_utils::create_genesis_config_with_vote_accounts(100, &[&keypair], vec![200])
+                .genesis_config;
+        let (root_bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let bank_a = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        let bank_b = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+
+        let mut vote_storage = VoteStorage::new(&bank_a);
+        vote_storage.insert_packet(
+            VoteSource::Tpu,
+            to_sanitized_view(packet_from_slots_with_hash(
+                vec![(0, 1)],
+                &keypair,
+                None,
+                root_bank.hash(),
+            )),
+        );
+        assert_eq!(vote_storage.drain_unprocessed(&bank_a).len(), 1);
+
+        vote_storage.insert_packet(
+            VoteSource::Tpu,
+            to_sanitized_view(packet_from_slots(vec![(0, 2), (1, 1)], &keypair, None)),
+        );
+        assert_eq!(vote_storage.len(), 1);
+        assert_eq!(
+            vote_storage.get_latest_vote_slot(keypair.vote_keypair.pubkey()),
+            Some(1)
+        );
+
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_b), 0);
+        assert_eq!(vote_storage.len(), 1);
+        assert_eq!(
+            vote_storage.get_latest_vote_slot(keypair.vote_keypair.pubkey()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -730,9 +906,9 @@ pub(crate) mod tests {
 
         // Drain all latest votes
         for packet in vote_storage.latest_vote_per_vote_pubkey.values_mut() {
-            packet.take_vote().inspect(|_vote| {
+            if packet.discard_unprocessed_vote() {
                 vote_storage.num_unprocessed_votes -= 1;
-            });
+            }
         }
         assert_eq!(0, vote_storage.len());
 
