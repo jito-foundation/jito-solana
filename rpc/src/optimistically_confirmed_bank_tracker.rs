@@ -10,7 +10,7 @@
 
 use {
     crate::rpc_subscriptions::RpcSubscriptions,
-    crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
+    crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender, unbounded},
     solana_clock::{BankId, Slot},
     solana_hash::Hash,
     solana_rpc_client_api::response::{SlotTransactionStats, SlotUpdate},
@@ -81,11 +81,126 @@ pub type BankNotificationWithDependencyWork = (
 );
 
 pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>;
-pub type BankNotificationSender = Sender<BankNotificationWithDependencyWork>;
+
+/// Decides whether a subscriber should receive a given bank notification.
+///
+/// This method runs synchronously on replay, gossip, and root-processing producer threads.
+/// Implementations must return quickly and must not perform blocking I/O, wait on contended locks,
+/// or do expensive work. A slow or blocking filter delays bank-notification production for every
+/// subscriber.
+pub trait BankNotificationFilter: Send + Sync + 'static {
+    fn should_forward(&self, notification: &BankNotification) -> bool;
+}
+
+pub struct BankNotificationSender {
+    tx: Sender<BankNotificationWithDependencyWork>,
+    filter: Option<Box<dyn BankNotificationFilter>>,
+}
+
+impl BankNotificationSender {
+    /// Create a subscriber that receives every notification.
+    pub fn channel() -> (Self, BankNotificationReceiver) {
+        Self::new_channel(None)
+    }
+
+    /// Create a subscriber that receives only notifications accepted by `filter`.
+    pub fn channel_with_filter<F: BankNotificationFilter>(
+        filter: F,
+    ) -> (Self, BankNotificationReceiver) {
+        Self::new_channel(Some(Box::new(filter)))
+    }
+
+    fn new_channel(
+        filter: Option<Box<dyn BankNotificationFilter>>,
+    ) -> (Self, BankNotificationReceiver) {
+        // All subscriber channels are unbounded so sending to one subscriber cannot block
+        // consensus-critical producers or delay notification delivery to other subscribers.
+        let (tx, rx) = unbounded();
+        (Self { tx, filter }, rx)
+    }
+
+    pub fn should_forward(&self, notification: &BankNotification) -> bool {
+        self.filter
+            .as_ref()
+            .is_none_or(|filter| filter.should_forward(notification))
+    }
+
+    /// Forward `notification` to this subscriber, returning whether it was delivered.
+    pub fn send_notification(&self, notification: BankNotificationWithDependencyWork) -> bool {
+        match self.tx.send(notification) {
+            Ok(()) => true,
+            Err(SendError(notification)) => {
+                warn!(
+                    "bank notification subscriber disconnected, dropping {:?}",
+                    notification.0
+                );
+                false
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for BankNotificationSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("BankNotificationSender")
+            .field("filtered", &self.filter.is_some())
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BankNotificationBroadcaster {
+    subscriber_senders: Arc<[BankNotificationSender]>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BankNotificationBroadcastError;
+
+impl BankNotificationBroadcaster {
+    pub fn new(subscriber_senders: Vec<BankNotificationSender>) -> Self {
+        Self {
+            subscriber_senders: subscriber_senders.into(),
+        }
+    }
+
+    /// Broadcasts a notification to each matching subscriber.
+    ///
+    /// Concurrent calls are not serialized across subscribers. Each subscriber's channel
+    /// preserves its own send order, but different subscribers may observe concurrent
+    /// notifications in different relative orders because their fan-out loops can interleave.
+    /// Consumers must not rely on a common global ordering across subscriber channels.
+    pub fn send(
+        &self,
+        notification: BankNotificationWithDependencyWork,
+    ) -> Result<(), BankNotificationBroadcastError> {
+        let mut connected_subscriber_count = 0;
+
+        for sender in self.subscriber_senders.iter() {
+            // Filter before cloning, so a rejected notification never clones the bank it carries.
+            // A subscriber that filters the notification out is still assumed connected, since its
+            // channel was never touched.
+            if !sender.should_forward(&notification.0) {
+                connected_subscriber_count += 1;
+                continue;
+            }
+
+            if sender.send_notification(notification.clone()) {
+                connected_subscriber_count += 1;
+            }
+        }
+
+        if connected_subscriber_count == 0 {
+            warn!("bank notification broadcast failed: no connected subscribers");
+            return Err(BankNotificationBroadcastError);
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct BankNotificationSenderConfig {
-    pub sender: BankNotificationSender,
+    pub sender: BankNotificationBroadcaster,
     pub should_send_parents: bool,
     pub dependency_tracker: Option<Arc<DependencyTracker>>,
 }
@@ -491,6 +606,12 @@ mod tests {
                 .collect(),
             oldest_parent,
         )
+    }
+
+    #[test]
+    fn test_bank_notification_subscriber_channels_are_unbounded() {
+        let (sender, _receiver) = BankNotificationSender::channel();
+        assert_eq!(sender.tx.capacity(), None);
     }
 
     #[test]
