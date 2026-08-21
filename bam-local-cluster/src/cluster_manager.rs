@@ -24,6 +24,7 @@ use {
     solana_runtime::{
         genesis_utils::{
             ValidatorVoteKeypairs, activate_feature, create_genesis_config_with_leader_ex,
+            deactivate_features,
         },
         stake_utils::create_stake_account,
     },
@@ -362,6 +363,18 @@ impl BamValidator {
     }
 }
 
+fn activate_configured_tx_v1_feature(genesis_config: &mut GenesisConfig, enable_tx_v1: bool) {
+    let tx_v1_feature = vec![agave_feature_set::enable_tx_v1::id()];
+    deactivate_features(genesis_config, &tx_v1_feature);
+
+    if enable_tx_v1 {
+        info!("Activating transaction v1 feature");
+        activate_feature(genesis_config, agave_feature_set::enable_tx_v1::id());
+    } else {
+        info!("Deactivating transaction v1 feature");
+    }
+}
+
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
     skip_last_validator: bool,
@@ -406,6 +419,7 @@ impl BamLocalCluster {
             // https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
             ClusterType::Development,
             config.hashes_per_tick,
+            config.enable_tx_v1,
         );
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
@@ -538,6 +552,7 @@ impl BamLocalCluster {
         stakes: Vec<u64>,
         cluster_type: ClusterType,
         hashes_per_tick: Option<u64>,
+        enable_tx_v1: bool,
     ) -> GenesisConfigInfo {
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
@@ -604,6 +619,7 @@ impl BamLocalCluster {
         );
 
         activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
+        activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
 
         let mut genesis_config_info = GenesisConfigInfo {
             genesis_config,
@@ -737,5 +753,37 @@ impl BamLocalCluster {
                 error!("Failed to kill validator {}: {}", validator.node_name, e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activate_configured_tx_v1_feature_adds_feature_account_to_genesis() {
+        let mut genesis_config = GenesisConfig::default();
+
+        activate_configured_tx_v1_feature(&mut genesis_config, true);
+
+        assert!(
+            genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::enable_tx_v1::id())
+        );
+    }
+
+    #[test]
+    fn activate_configured_tx_v1_feature_leaves_feature_inactive_when_disabled() {
+        let mut genesis_config = GenesisConfig::default();
+        activate_feature(&mut genesis_config, agave_feature_set::enable_tx_v1::id());
+
+        activate_configured_tx_v1_feature(&mut genesis_config, false);
+
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::enable_tx_v1::id())
+        );
     }
 }

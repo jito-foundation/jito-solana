@@ -45,6 +45,7 @@ Key configuration options:
 - `tip_payment_program_id` / `tip_distribution_program_id`: Tip manager programs
 - `faucet_address`: Faucet service for airdrops
 - `mint_sol`: Optional faucet genesis balance in SOL
+- `enable_tx_v1`: Optional transaction v1 genesis feature activation for BAM conformance tests
 - `ledger_base_directory`: Base directory for validator ledgers
 - `validator_build_path`: Build output directory (e.g., "target/debug" or "target/release") - required
 - `ledger_tool_build_path`: Builder output for ledger tool (e.g., "target/debug" or "target/release") - required
