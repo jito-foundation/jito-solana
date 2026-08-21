@@ -368,6 +368,7 @@ impl Tpu {
             unverified_bundle_receiver,
             verified_bundle_sender,
             exit.clone(),
+            bank_forks.read().unwrap().sharable_banks(),
         );
 
         let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
