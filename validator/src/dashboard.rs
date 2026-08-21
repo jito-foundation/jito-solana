@@ -289,7 +289,7 @@ async fn wait_for_validator_startup(
                 Ok(new_admin_client) => admin_client = Some(new_admin_client),
                 Err(err) => {
                     progress_bar.set_message(format!("Unable to connect to validator: {err}"));
-                    thread::sleep(refresh_interval);
+                    tokio::time::sleep(refresh_interval).await;
                     continue;
                 }
             }
@@ -330,7 +330,7 @@ async fn wait_for_validator_startup(
                 progress_bar.set_message(format!("Failed to get validator start progress: {err}"));
             }
         }
-        thread::sleep(refresh_interval);
+        tokio::time::sleep(refresh_interval).await;
     }
 }
 
