@@ -98,6 +98,10 @@ fn generate_private_pipeline() -> Result<buildkite::Pipeline> {
     pipeline.add_step(default_stable_sbf_step());
     pipeline.add_step(default_shuttle_step());
 
+    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
+
+    pipeline.add_step(default_audit_step());
+
     Ok(pipeline)
 }
 
@@ -139,6 +143,8 @@ fn generate_merge_queue_pipeline() -> Result<buildkite::Pipeline> {
     pipeline.add_step(default_sanity_step());
     pipeline.add_step(default_channel_info_divergence_step());
     pipeline.add_step(default_checks_step());
+    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
+    pipeline.add_step(default_audit_step());
     Ok(pipeline)
 }
 
@@ -330,6 +336,12 @@ async fn generate_pull_request_pipeline(
         pipeline.add_step(default_coverage_step(3));
     }
 
+    if flags.checks {
+        pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
+
+        pipeline.add_step(default_audit_step());
+    }
+
     Ok(pipeline)
 }
 
@@ -360,7 +372,12 @@ fn generate_full_pipeline() -> Result<buildkite::Pipeline> {
     pipeline.add_step(default_stable_sbf_step());
     pipeline.add_step(default_shuttle_step());
     pipeline.add_step(default_coverage_step(3));
-    pipeline.add_step(default_crate_publish_test_step());
+    // Jito does not publish workspace crates to crates.io.
+    // pipeline.add_step(default_crate_publish_test_step());
+
+    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
+
+    pipeline.add_step(default_audit_step());
 
     pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
 
@@ -411,6 +428,19 @@ fn default_checks_step() -> buildkite::Step {
         command: String::from("ci/docker-run-default-image.sh ci/test-checks.sh"),
         agents: Some(queue_agents()),
         timeout_in_minutes: Some(20),
+        ..Default::default()
+    })
+}
+
+fn default_audit_step() -> buildkite::Step {
+    buildkite::Step::Command(buildkite::CommandStep {
+        name: String::from("cargo audit"),
+        command: String::from("ci/docker-run-default-image.sh ci/do-audit.sh"),
+        agents: Some(HashMap::from([(
+            String::from("queue"),
+            String::from("default"),
+        )])),
+        timeout_in_minutes: Some(10),
         ..Default::default()
     })
 }
@@ -526,7 +556,7 @@ fn default_local_cluster_step(parallel: u64) -> buildkite::Step {
                      {parallel}"
                 ),
                 agents: Some(queue_agents()),
-                timeout_in_minutes: Some(15),
+                timeout_in_minutes: Some(30),
                 retry: Some(HashMap::from([(
                     String::from("automatic"),
                     String::from("true"),
@@ -625,15 +655,15 @@ fn default_coverage_step(parallel: u64) -> buildkite::Step {
     buildkite::Step::Group(group)
 }
 
-fn default_crate_publish_test_step() -> buildkite::Step {
-    buildkite::Step::Command(buildkite::CommandStep {
-        name: String::from("crate-publish-test"),
-        command: String::from("cargo xtask publish test"),
-        agents: Some(queue_agents()),
-        timeout_in_minutes: Some(45),
-        ..Default::default()
-    })
-}
+// fn default_crate_publish_test_step() -> buildkite::Step {
+//     buildkite::Step::Command(buildkite::CommandStep {
+//         name: String::from("crate-publish-test"),
+//         command: String::from("cargo xtask publish test"),
+//         agents: Some(queue_agents()),
+//         timeout_in_minutes: Some(45),
+//         ..Default::default()
+//     })
+// }
 
 fn default_trigger_secondary_step() -> buildkite::Step {
     buildkite::Step::Trigger(buildkite::TriggerStep {
