@@ -184,18 +184,20 @@ impl VoteWorker {
         }
     }
 
+    #[cfg_attr(test, qualifier_attr::qualifiers(pub(crate)))]
     fn consume_buffered_packets(
         &mut self,
         bank: &Bank,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
     ) {
+        let restored_vote_count = self.storage.restore_taken_votes_for_bank(bank);
         if self.storage.is_empty() {
             return;
         }
 
         let mut consumed_buffered_packets_count = 0;
-        let mut rebuffered_packet_count = 0;
+        let mut rebuffered_packet_count = restored_vote_count;
         let mut proc_start = Measure::start("consume_buffered_process");
         let num_packets_to_process = self.storage.len();
 

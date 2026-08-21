@@ -8,6 +8,7 @@ use {
     solana_packet::PACKET_DATA_SIZE,
     solana_perf::packet::bytes::Bytes,
     solana_pubkey::Pubkey,
+    solana_runtime_transaction::sanitize_config::sanitize_config,
     solana_vote_program::vote_instruction::VoteInstruction,
     thiserror::Error,
 };
@@ -25,6 +26,9 @@ pub struct LatestValidatorVote {
     vote_pubkey: Pubkey,
     authorized_voter_pubkey: Pubkey,
     vote: Option<SanitizedTransactionView<Bytes>>,
+    /// Serialized bytes retained so a taken vote can be replayed after a same-slot bank
+    /// replacement. `Bytes` clones are reference-counted and do not copy the payload.
+    taken_vote: Option<Bytes>,
     slot: Slot,
     hash: Hash,
     timestamp: Option<UnixTimestamp>,
@@ -84,6 +88,7 @@ impl LatestValidatorVote {
 
                 Ok(Self {
                     vote: Some(vote),
+                    taken_vote: None,
                     slot,
                     hash,
                     vote_pubkey,
@@ -145,7 +150,34 @@ impl LatestValidatorVote {
     }
 
     pub fn take_vote(&mut self) -> Option<SanitizedTransactionView<Bytes>> {
-        self.vote.take()
+        let vote = self.vote.take()?;
+        self.taken_vote = Some(vote.inner_data().clone());
+        Some(vote)
+    }
+
+    pub fn discard_unprocessed_vote(&mut self) -> bool {
+        self.vote.take().is_some()
+    }
+
+    pub fn has_retained_vote(&self) -> bool {
+        self.taken_vote.is_some()
+    }
+
+    /// Consumes a retained vote, restoring it only for a valid same-slot bank replacement.
+    pub fn restore_retained_vote(&mut self, is_valid_for_replacement: bool) -> bool {
+        let Some(taken_vote) = self.taken_vote.take() else {
+            return false;
+        };
+
+        if !is_valid_for_replacement {
+            return false;
+        }
+
+        self.vote = Some(
+            SanitizedTransactionView::try_new_sanitized(taken_vote, &sanitize_config())
+                .expect("retained sanitized vote must remain valid"),
+        );
+        true
     }
 }
 
@@ -237,5 +269,31 @@ mod tests {
 
         assert!(deserialized_packets[0].vote.is_some());
         assert!(deserialized_packets[1].vote.is_some());
+    }
+
+    #[test]
+    fn test_retained_vote_is_dropped_when_invalid_for_replacement_fork() {
+        let keypairs = ValidatorVoteKeypairs::new_rand();
+        let mut packet = BytesPacket::from_data(new_tower_sync_transaction(
+            TowerSync::from(vec![(0, 1)]),
+            Hash::new_unique(),
+            &keypairs.node_keypair,
+            &keypairs.vote_keypair,
+            &keypairs.vote_keypair,
+            None,
+        ))
+        .unwrap();
+        packet
+            .meta_mut()
+            .flags
+            .set(PacketFlags::SIMPLE_VOTE_TX, true);
+
+        let mut vote = LatestValidatorVote::new(packet.as_ref(), VoteSource::Tpu, true).unwrap();
+        assert!(vote.take_vote().is_some());
+        assert!(vote.has_retained_vote());
+
+        assert!(!vote.restore_retained_vote(false));
+        assert!(!vote.has_retained_vote());
+        assert!(vote.is_vote_taken());
     }
 }

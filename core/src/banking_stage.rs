@@ -79,6 +79,13 @@ mod latest_validator_vote_packet;
 pub(crate) mod leader_slot_timing_metrics;
 mod vote_packet_receiver;
 
+#[cfg(test)]
+pub(crate) use {
+    latest_validator_vote_packet::VoteSource,
+    vote_packet_receiver::VotePacketReceiver as TestVotePacketReceiver,
+    vote_worker::VoteWorker as TestVoteWorker,
+};
+
 pub mod scheduler_messages;
 
 pub mod transaction_scheduler;
