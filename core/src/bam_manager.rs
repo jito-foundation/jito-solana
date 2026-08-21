@@ -251,7 +251,18 @@ impl BamManager {
             ) && let Some(builder_config) =
                 connection.get_latest_config_if_changed(&mut builder_config_version)
             {
-                Self::apply_builder_config(&builder_config, &dependencies);
+                if !Self::apply_builder_config(&builder_config, &dependencies)
+                    && bam_state == BamConnectionState::BlockEngineDrained
+                {
+                    error!(
+                        "BAM initial builder config could not publish a fee snapshot; falling \
+                         back to Block Engine"
+                    );
+                    Self::set_bam_disconnected(&dependencies);
+                    outbound_receiver = Some(runtime.block_on(connection.shutdown()));
+                    std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                    continue;
+                }
                 if bam_state == BamConnectionState::BlockEngineDrained {
                     dependencies
                         .bam_enabled
@@ -342,11 +353,15 @@ impl BamManager {
         )))
     }
 
-    fn apply_builder_config(config: &ConfigResponse, dependencies: &BamDependencies) {
+    fn apply_builder_config(config: &ConfigResponse, dependencies: &BamDependencies) -> bool {
         Self::update_tpu_config(config, dependencies);
         Self::update_shred_socks_config(config, dependencies);
-        Self::update_block_engine_key_and_commission(config, &dependencies.block_builder_fee_info);
+        let block_builder_updated = Self::update_block_engine_key_and_commission(
+            config,
+            &dependencies.block_builder_fee_info,
+        );
         Self::update_bam_recipient_and_commission(config, &dependencies.bam_node_pubkey);
+        block_builder_updated
     }
 
     fn update_tpu_config(config: &ConfigResponse, dependencies: &BamDependencies) {
@@ -367,6 +382,13 @@ impl BamManager {
     }
 
     fn set_bam_disconnected(dependencies: &BamDependencies) {
+        // Require Block Engine to publish a fresh snapshot after any cutover or BAM session.
+        // Failed connection attempts leave the current Block Engine snapshot intact.
+        if dependencies.bam_enabled.load(Ordering::Acquire) > BamConnectionState::Connecting as u8 {
+            dependencies
+                .block_builder_fee_info
+                .store(Arc::new(BlockBuilderFeeInfo::default()));
+        }
         dependencies
             .bam_enabled
             .store(BamConnectionState::Disconnected as u8, Ordering::Release);
@@ -420,34 +442,36 @@ impl BamManager {
     fn update_block_engine_key_and_commission(
         config: &ConfigResponse,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
-    ) {
+    ) -> bool {
         let Some(builder_info) = config.block_engine_config.as_ref() else {
-            return;
+            return false;
         };
         if builder_info.builder_commission > 100 {
             error!("Block builder commission must be <= 100");
-            return;
+            return false;
         }
 
-        let pubkey = Pubkey::from_str(&builder_info.builder_pubkey).unwrap_or_else(|e| {
+        let Some(pubkey) = Pubkey::from_str(&builder_info.builder_pubkey)
+            .ok()
+            .filter(|pubkey| *pubkey != Pubkey::default())
+        else {
             error!(
-                "Failed to parse builder pubkey {}. Error: {e}",
+                "Invalid block builder pubkey: {}",
                 builder_info.builder_pubkey
             );
             datapoint_warn!(
                 "bam_manager-pubkey_error",
                 ("count", 1, i64),
                 ("pubkey", builder_info.builder_pubkey, String),
-                ("error", e.to_string(), String),
             );
-            <arc_swap::ArcSwapAny<Arc<BlockBuilderFeeInfo>>>::load(block_builder_fee_info)
-                .block_builder
-        });
+            return false;
+        };
 
         block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
             block_builder: pubkey,
             block_builder_commission: builder_info.builder_commission as u64,
         }));
+        true
     }
 
     fn update_bam_recipient_and_commission(
