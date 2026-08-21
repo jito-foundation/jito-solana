@@ -8,7 +8,10 @@ use {
             TransactionResult,
         },
     },
-    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+    crate::{
+        bam_dependencies::BamConnectionState,
+        banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+    },
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
@@ -218,6 +221,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             tip_manager,
             last_tip_updated_bank,
             block_builder_fee_info,
+            bam_enabled,
             cluster_info,
             bundle_account_locker,
         }) = &self.tip_processing_dependencies
@@ -232,6 +236,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .flat_map(|tx| tx.account_keys().iter())
             .any(|key| tip_accounts.contains(key))
         {
+            return true;
+        }
+
+        if bam_enabled.load(Ordering::Acquire) != BamConnectionState::Connected as u8 {
             return true;
         }
 
@@ -3216,7 +3224,10 @@ mod tests {
         solana_transaction_error::TransactionError,
         std::{
             collections::HashSet,
-            sync::{Mutex, RwLock, atomic::AtomicBool},
+            sync::{
+                Mutex, RwLock,
+                atomic::{AtomicBool, AtomicU8},
+            },
         },
     };
 
@@ -3311,6 +3322,7 @@ mod tests {
                     block_builder: mint_keypair.pubkey(),
                     block_builder_commission: 0,
                 })),
+                bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
                 cluster_info,
                 bundle_account_locker: BundleAccountLocker::default(),
             }),
@@ -3858,7 +3870,6 @@ mod tests {
         );
 
         let runtime_tx = RuntimeTransaction::from_transaction_for_tests(tx);
-
         consume_sender
             .send(ConsumeWork {
                 batch_id: TransactionBatchId::new(1),

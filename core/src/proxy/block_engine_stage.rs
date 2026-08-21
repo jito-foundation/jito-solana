@@ -1075,21 +1075,51 @@ impl BlockEngineStage {
             )
         })?
         .into_inner();
-        let block_builder_pubkey =
-            Pubkey::from_str(&block_builder_info.pubkey).unwrap_or_else(|_| {
-                datapoint_warn!(
-                    "block_engine_stage-block_builder_pubkey_parse_error",
-                    ("url", block_engine_url, String),
-                    ("pubkey", &block_builder_info.pubkey, String),
-                    ("count", 1, i64),
-                );
-                block_builder_fee_info.load().block_builder
-            });
-        block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
+        if block_builder_info.commission > 100 {
+            return Err(ProxyError::BlockEngineEndpointError(
+                "block builder commission must be <= 100".to_string(),
+            ));
+        }
+        let Ok(block_builder) = Pubkey::from_str(&block_builder_info.pubkey) else {
+            datapoint_warn!(
+                "block_engine_stage-block_builder_pubkey_parse_error",
+                ("url", block_engine_url, String),
+                ("pubkey", &block_builder_info.pubkey, String),
+                ("count", 1, i64),
+            );
+            return Err(ProxyError::BlockEngineEndpointError(
+                "invalid block builder pubkey".to_string(),
+            ));
+        };
+        if block_builder == Pubkey::default() {
+            return Err(ProxyError::BlockEngineEndpointError(
+                "missing block builder config".to_string(),
+            ));
+        }
+        let current = block_builder_fee_info.load();
+        if bam_enabled.load(Ordering::Acquire) > BamConnectionState::Connecting as u8 {
+            return Err(ProxyError::BamEnabled);
+        }
+        let new_fee_info = Arc::new(BlockBuilderFeeInfo {
+            block_builder,
             block_builder_commission: block_builder_info.commission,
-        }));
+        });
+        if !Self::try_publish_block_builder_fee_info(block_builder_fee_info, &current, new_fee_info)
+        {
+            return Err(ProxyError::BamEnabled);
+        }
         Ok(())
+    }
+
+    fn try_publish_block_builder_fee_info(
+        block_builder_fee_info: &ArcSwap<BlockBuilderFeeInfo>,
+        current: &Arc<BlockBuilderFeeInfo>,
+        new: Arc<BlockBuilderFeeInfo>,
+    ) -> bool {
+        Arc::ptr_eq(
+            &block_builder_fee_info.compare_and_swap(current, new),
+            current,
+        )
     }
 }
 
@@ -1153,5 +1183,20 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn stale_block_engine_fee_info_does_not_overwrite_bam() {
+        let fee_info = ArcSwap::from_pointee(BlockBuilderFeeInfo::default());
+        let stale = fee_info.load();
+        let bam = Arc::new(BlockBuilderFeeInfo::default());
+        fee_info.store(bam.clone());
+
+        assert!(!BlockEngineStage::try_publish_block_builder_fee_info(
+            &fee_info,
+            &stale,
+            Arc::new(BlockBuilderFeeInfo::default()),
+        ));
+        assert!(Arc::ptr_eq(&fee_info.load(), &bam));
     }
 }

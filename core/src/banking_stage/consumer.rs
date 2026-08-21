@@ -36,7 +36,7 @@ use {
     solana_vote::vote_parser,
     std::{
         num::Saturating,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, atomic::AtomicU8},
     },
 };
 
@@ -118,6 +118,7 @@ pub struct TipProcessingDependencies {
     pub tip_manager: TipManager,
     pub last_tip_updated_bank: Arc<Mutex<Option<(Slot, BankId)>>>,
     pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
+    pub bam_enabled: Arc<AtomicU8>,
     pub cluster_info: Arc<ClusterInfo>,
     pub bundle_account_locker: BundleAccountLocker,
 }
