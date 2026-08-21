@@ -111,7 +111,6 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
   --ignore RUSTSEC-2026-0104
 
-<<<<<<< HEAD
   # Crate:     crossbeam-epoch
   # Version:   0.9.5, 0.9.18
   # Title:     Invalid pointer dereference in fmt::Pointer impl for Atomic and Shared
@@ -120,7 +119,7 @@ default_cargo_audit_extra_args=(
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0204
   # Solution:  Upgrade to >=0.9.20
   --ignore RUSTSEC-2026-0204
-=======
+
   # Crate:     h2
   # Version:   0.4.13
   # Title:     h2 unbounded empty DATA frames
@@ -129,7 +128,6 @@ default_cargo_audit_extra_args=(
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0258
   # Solution:  Upgrade to >=0.4.16
   --ignore RUSTSEC-2026-0258
->>>>>>> b64857b54a (feat: support tx v1 in bam receive and buffer (#1552))
 
 )
 
