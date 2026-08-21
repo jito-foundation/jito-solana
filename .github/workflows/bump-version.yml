@@ -60,8 +60,9 @@ jobs:
         id: process
         env:
           BASE_REF: ${{ github.ref }}
+          LEVEL: ${{ inputs.level }}
         run: |
-          xtask bump-version ${{ inputs.level }}
+          xtask bump-version "$LEVEL"
 
           new_version="$(toml get --raw Cargo.toml workspace.package.version)"
 
