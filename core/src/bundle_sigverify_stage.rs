@@ -165,19 +165,69 @@ mod tests {
         super::*,
         crossbeam_channel::bounded,
         solana_genesis_config::create_genesis_config,
-        solana_keypair::Signature,
+        solana_hash::Hash,
+        solana_instruction::Instruction,
+        solana_keypair::{Keypair, Signature},
+        solana_message::{VersionedMessage, v1},
+        solana_packet::PACKET_DATA_SIZE,
         solana_perf::{
             packet::{BytesPacket, PacketBatch},
             test_tx::test_tx,
         },
         solana_runtime::bank::Bank,
-        solana_transaction::Transaction,
+        solana_signature::SIGNATURE_BYTES,
+        solana_signer::Signer,
+        solana_system_interface::program as system_program,
+        solana_transaction::{Transaction, versioned::VersionedTransaction},
+        test_case::test_case,
     };
 
     fn test_sharable_banks() -> SharableBanks {
         let (genesis_config, _) = create_genesis_config(1);
         let (_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
         bank_forks.read().unwrap().sharable_banks()
+    }
+
+    fn test_sharable_banks_with_tx_v1(enable_tx_v1: bool) -> SharableBanks {
+        let (genesis_config, _) = create_genesis_config(1);
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        if enable_tx_v1 {
+            bank.activate_feature(&agave_feature_set::enable_tx_v1::id());
+        } else {
+            bank.deactivate_feature(&agave_feature_set::enable_tx_v1::id());
+        }
+        let (_bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        bank_forks.read().unwrap().sharable_banks()
+    }
+
+    fn v1_transaction_with_wire_size(target_size: usize) -> VersionedTransaction {
+        let payer = Keypair::new();
+        let blockhash = Hash::new_unique();
+        let base_instruction = Instruction::new_with_bytes(system_program::id(), &[], vec![]);
+        let base_message =
+            v1::Message::try_compile(&payer.pubkey(), &[base_instruction], blockhash)
+                .expect("compile base v1 message");
+        let signature_count = usize::from(base_message.header.num_required_signatures);
+        let base_wire_size = core::mem::size_of_val(&v1::V1_PREFIX)
+            + base_message.size()
+            + signature_count * SIGNATURE_BYTES;
+        let padding_len = target_size
+            .checked_sub(base_wire_size)
+            .expect("target size can fit v1 transaction padding");
+        let padding = vec![0; padding_len];
+        let instruction = Instruction::new_with_bytes(system_program::id(), &padding, vec![]);
+        let message = v1::Message::try_compile(&payer.pubkey(), &[instruction], blockhash)
+            .expect("compile padded v1 message");
+        let transaction = VersionedTransaction::try_new(VersionedMessage::V1(message), &[&payer])
+            .expect("sign v1 transaction");
+
+        assert_eq!(
+            wincode::serialize(&transaction)
+                .expect("serialize v1 transaction")
+                .len(),
+            target_size
+        );
+        transaction
     }
 
     #[test]
@@ -308,6 +358,51 @@ mod tests {
                 .unwrap_err(),
             RecvTimeoutError::Timeout
         );
+
+        exit.store(true, Ordering::Relaxed);
+        stage.join().unwrap();
+    }
+
+    #[test_case(true, true; "tx_v1_enabled")]
+    #[test_case(false, false; "tx_v1_disabled")]
+    fn test_bundle_sigverify_stage_tx_v1_feature_gate(
+        enable_tx_v1: bool,
+        expected_verified_bundle: bool,
+    ) {
+        let (unverified_sender, unverified_receiver) = bounded(1024);
+        let (verified_sender, verified_receiver) = bounded(1024);
+        let exit = Arc::new(AtomicBool::new(false));
+        let transaction = v1_transaction_with_wire_size(PACKET_DATA_SIZE + 1);
+        let packet_bundle = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_bytes(
+                None,
+                wincode::serialize(&transaction).unwrap(),
+            )]),
+            "".to_string(),
+        );
+
+        unverified_sender.send(vec![packet_bundle]).unwrap();
+
+        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap());
+        let stage = BundleSigverifyStage::new(
+            thread_pool,
+            unverified_receiver,
+            verified_sender,
+            exit.clone(),
+            test_sharable_banks_with_tx_v1(enable_tx_v1),
+        );
+
+        let timeout = if expected_verified_bundle {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(100)
+        };
+        let verified_bundle = verified_receiver.recv_timeout(timeout);
+        assert_eq!(verified_bundle.is_ok(), expected_verified_bundle);
+        if let Ok(verified_bundle) = verified_bundle {
+            assert_eq!(verified_bundle.batch().len(), 1);
+            assert!(!verified_bundle.batch().get(0).unwrap().meta().discard());
+        }
 
         exit.store(true, Ordering::Relaxed);
         stage.join().unwrap();

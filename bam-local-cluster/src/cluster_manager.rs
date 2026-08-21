@@ -400,9 +400,14 @@ fn activate_configured_slot_time_feature(
 }
 
 fn activate_configured_tx_v1_feature(genesis_config: &mut GenesisConfig, enable_tx_v1: bool) {
+    let tx_v1_feature = vec![agave_feature_set::enable_tx_v1::id()];
+    deactivate_features(genesis_config, &tx_v1_feature);
+
     if enable_tx_v1 {
         info!("Activating transaction v1 feature");
         activate_feature(genesis_config, agave_feature_set::enable_tx_v1::id());
+    } else {
+        info!("Deactivating transaction v1 feature");
     }
 }
 
@@ -898,6 +903,7 @@ mod tests {
     #[test]
     fn activate_configured_tx_v1_feature_leaves_feature_inactive_when_disabled() {
         let mut genesis_config = GenesisConfig::default();
+        activate_feature(&mut genesis_config, agave_feature_set::enable_tx_v1::id());
 
         activate_configured_tx_v1_feature(&mut genesis_config, false);
 

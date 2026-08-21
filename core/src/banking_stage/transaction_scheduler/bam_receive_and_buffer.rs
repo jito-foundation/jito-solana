@@ -42,7 +42,7 @@ use {
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{MAX_PROCESSING_AGE, Slot},
     solana_measure::{measure::Measure, measure_us},
-    solana_message::v1::MAX_TRANSACTION_SIZE,
+    solana_message::v1::{MAX_TRANSACTION_SIZE, V1_PREFIX},
     solana_packet::PACKET_DATA_SIZE,
     solana_perf::sigverify::verify_transaction_view,
     solana_poh::poh_recorder::SharedLeaderState,
@@ -65,20 +65,15 @@ use {
 };
 
 type PrevalidationResult = Result<(usize, bool, u32, u64), (Reason, u32)>;
+type PacketVerificationResult =
+    Result<(SanitizedTransactionView<Bytes>, bool), PacketVerificationError>;
 
 #[derive(Debug)]
-enum PacketVerificationResult {
-    Verified(SanitizedTransactionView<Bytes>, bool),
+enum PacketVerificationError {
     Oversized,
     TxV1Disabled,
     Failed,
     Consumed,
-}
-
-impl PacketVerificationResult {
-    fn is_verified(&self) -> bool {
-        matches!(self, Self::Verified(_, _))
-    }
 }
 
 pub struct BamReceiveAndBuffer {
@@ -198,12 +193,21 @@ impl BamReceiveAndBuffer {
                 }
             }
 
-            let working_bank = shared_leader_state
+            let (current_slot, enable_tx_v1) = shared_leader_state
                 .as_ref()
-                .and_then(|leader_state| leader_state.load().working_bank().cloned())
-                .unwrap_or_else(|| bank_forks.read().unwrap().working_bank());
-            let current_slot = working_bank.slot();
-            let enable_tx_v1 = working_bank.feature_set.snapshot().enable_tx_v1;
+                .and_then(|leader_state| {
+                    let leader_state = leader_state.load();
+                    leader_state
+                        .working_bank()
+                        .map(|bank| (bank.slot(), bank.feature_set.snapshot().enable_tx_v1))
+                })
+                .unwrap_or_else(|| {
+                    let working_bank = bank_forks.read().unwrap().working_bank();
+                    (
+                        working_bank.slot(),
+                        working_bank.feature_set.snapshot().enable_tx_v1,
+                    )
+                });
 
             let (deserialize_stats, duration_us) = measure_us!(Self::batch_verify(
                 &sigverify_thread_pool,
@@ -228,9 +232,8 @@ impl BamReceiveAndBuffer {
                             &mut verification_results[verification_result_offset..batch_end];
                         verification_result_offset = batch_end;
 
-                        if let Some(index) = verified_batch
-                            .iter()
-                            .position(|result| !result.is_verified())
+                        if let Some(index) =
+                            verified_batch.iter().position(|result| result.is_err())
                         {
                             metrics
                                 .sigverify_metrics
@@ -370,8 +373,8 @@ impl BamReceiveAndBuffer {
         for (index, verified_packet) in verified_batch.iter_mut().enumerate() {
             // Load static runtime metadata from the view retained by sigverify.
             let sanitization_start = Instant::now();
-            let PacketVerificationResult::Verified(view, is_simple_vote_transaction) =
-                core::mem::replace(verified_packet, PacketVerificationResult::Consumed)
+            let Ok((view, is_simple_vote_transaction)) =
+                core::mem::replace(verified_packet, Err(PacketVerificationError::Consumed))
             else {
                 unreachable!("signature failures are handled before parsing");
             };
@@ -724,24 +727,27 @@ impl BamReceiveAndBuffer {
                 .par_iter_mut()
                 .map(|data| {
                     let data = core::mem::take(data);
-                    if is_tx_v1_packet(&data) && !enable_tx_v1 {
-                        return PacketVerificationResult::TxV1Disabled;
-                    }
-                    if data.len() > bam_packet_data_size_limit(&data, enable_tx_v1) {
-                        return PacketVerificationResult::Oversized;
+                    let is_v1 = data.first() == Some(&V1_PREFIX);
+                    let packet_data_size_limit = match (is_v1, enable_tx_v1) {
+                        (true, false) => return Err(PacketVerificationError::TxV1Disabled),
+                        (true, true) => MAX_TRANSACTION_SIZE,
+                        (false, _) => PACKET_DATA_SIZE,
+                    };
+                    if data.len() > packet_data_size_limit {
+                        return Err(PacketVerificationError::Oversized);
                     }
                     let Ok(view) =
                         SanitizedTransactionView::try_new_sanitized(data, &sanitize_config)
                     else {
-                        return PacketVerificationResult::Failed;
+                        return Err(PacketVerificationError::Failed);
                     };
                     let (is_simple_vote_transaction, is_valid) =
                         verify_transaction_view(&view, false, enable_tx_v1);
                     if !is_valid {
-                        return PacketVerificationResult::Failed;
+                        return Err(PacketVerificationError::Failed);
                     }
 
-                    PacketVerificationResult::Verified(view, is_simple_vote_transaction)
+                    Ok((view, is_simple_vote_transaction))
                 })
                 .collect_into_vec(verification_results);
         });
@@ -759,30 +765,17 @@ impl BamReceiveAndBuffer {
         metrics.sigverify_metrics.increment_oversized_packets(
             verification_results
                 .iter()
-                .filter(|result| matches!(result, PacketVerificationResult::Oversized))
+                .filter(|result| matches!(result, Err(PacketVerificationError::Oversized)))
                 .count(),
         );
         metrics.sigverify_metrics.increment_tx_v1_disabled_packets(
             verification_results
                 .iter()
-                .filter(|result| matches!(result, PacketVerificationResult::TxV1Disabled))
+                .filter(|result| matches!(result, Err(PacketVerificationError::TxV1Disabled)))
                 .count(),
         );
 
         stats
-    }
-}
-
-fn is_tx_v1_packet(data: &[u8]) -> bool {
-    const V1_VERSION_BYTE: u8 = 128 | 1;
-    data.first() == Some(&V1_VERSION_BYTE)
-}
-
-fn bam_packet_data_size_limit(data: &[u8], enable_tx_v1: bool) -> usize {
-    if enable_tx_v1 && is_tx_v1_packet(data) {
-        MAX_TRANSACTION_SIZE
-    } else {
-        PACKET_DATA_SIZE
     }
 }
 
@@ -923,7 +916,7 @@ impl BamReceiveAndBufferMetrics {
             || self.check_transactions_us > 0
             || self.fee_payer_check_us > 0
             || self.blacklist_check_us > 0
-            || self.sigverify_metrics.total_packets_verified > 0
+            || self.sigverify_metrics.has_data()
     }
 
     fn report(&mut self) {
@@ -983,6 +976,7 @@ impl BamReceiveAndBufferMetrics {
     }
 }
 
+#[derive(Default)]
 struct SigverifyMetrics {
     pub verify_batches_pp_us_hist: Histogram,
     pub batch_packets_len_hist: Histogram,
@@ -993,26 +987,17 @@ struct SigverifyMetrics {
     pub tx_v1_disabled_packets: usize,
 }
 
-impl Default for SigverifyMetrics {
-    fn default() -> Self {
-        Self {
-            verify_batches_pp_us_hist: Histogram::new(),
-            batch_packets_len_hist: Histogram::new(),
-            total_verify_time_us: 0,
-            total_packets_verified: 0,
-            total_batches_verified: 0,
-            oversized_packets: 0,
-            tx_v1_disabled_packets: 0,
-        }
-    }
-}
-
 impl SigverifyMetrics {
+    fn has_data(&self) -> bool {
+        self.total_verify_time_us > 0
+            || self.total_packets_verified > 0
+            || self.total_batches_verified > 0
+            || self.oversized_packets > 0
+            || self.tx_v1_disabled_packets > 0
+    }
+
     pub fn report(&self) {
-        if self.total_packets_verified == 0
-            && self.oversized_packets == 0
-            && self.tx_v1_disabled_packets == 0
-        {
+        if !self.has_data() {
             return;
         }
 
@@ -1126,6 +1111,7 @@ mod tests {
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
         solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
+        solana_signature::SIGNATURE_BYTES,
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
@@ -1160,25 +1146,33 @@ mod tests {
         blockhash: Hash,
         target_size: usize,
     ) -> VersionedTransaction {
-        (0..=solana_message::v1::MAX_TRANSACTION_SIZE)
-            .find_map(|padding_len| {
-                let instruction = Instruction::new_with_bytes(
-                    solana_system_interface::program::id(),
-                    &vec![0; padding_len],
-                    vec![],
-                );
-                let message = v1::Message::try_compile(&payer.pubkey(), &[instruction], blockhash)
-                    .expect("compile v1 message");
-                let transaction =
-                    VersionedTransaction::try_new(VersionedMessage::V1(message), &[payer])
-                        .expect("sign v1 transaction");
-                (wincode::serialize(&transaction)
-                    .expect("serialize v1 transaction")
-                    .len()
-                    == target_size)
-                    .then_some(transaction)
-            })
-            .unwrap_or_else(|| panic!("v1 transaction with wire size {target_size}"))
+        let base_instruction =
+            Instruction::new_with_bytes(solana_system_interface::program::id(), &[], vec![]);
+        let base_message =
+            v1::Message::try_compile(&payer.pubkey(), &[base_instruction], blockhash)
+                .expect("compile base v1 message");
+        let signature_count = usize::from(base_message.header.num_required_signatures);
+        let base_wire_size = core::mem::size_of_val(&v1::V1_PREFIX)
+            + base_message.size()
+            + signature_count * SIGNATURE_BYTES;
+        let padding_len = target_size
+            .checked_sub(base_wire_size)
+            .expect("target size can fit v1 transaction padding");
+        let padding = vec![0; padding_len];
+        let instruction =
+            Instruction::new_with_bytes(solana_system_interface::program::id(), &padding, vec![]);
+        let message = v1::Message::try_compile(&payer.pubkey(), &[instruction], blockhash)
+            .expect("compile padded v1 message");
+        let transaction = VersionedTransaction::try_new(VersionedMessage::V1(message), &[payer])
+            .expect("sign v1 transaction");
+
+        assert_eq!(
+            wincode::serialize(&transaction)
+                .expect("serialize v1 transaction")
+                .len(),
+            target_size
+        );
+        transaction
     }
 
     fn large_v1_transfer_transaction(payer: &Keypair, blockhash: Hash) -> VersionedTransaction {
@@ -1297,9 +1291,7 @@ mod tests {
                             .by_ref()
                             .take(packet_count)
                             .collect::<Vec<_>>();
-                        if let Some(index) = batch_results
-                            .iter()
-                            .position(|result| !result.is_verified())
+                        if let Some(index) = batch_results.iter().position(|result| result.is_err())
                         {
                             return Err((
                                 Reason::DeserializationError(
@@ -1317,18 +1309,6 @@ mod tests {
             })
             .collect();
         (results, stats)
-    }
-
-    #[test]
-    fn test_bam_packet_data_size_limit_uses_v1_version_byte() {
-        let mut data = vec![0; PACKET_DATA_SIZE + 1];
-        data[0] = 128 | 1;
-
-        assert_eq!(
-            bam_packet_data_size_limit(&data, true),
-            solana_message::v1::MAX_TRANSACTION_SIZE
-        );
-        assert_eq!(bam_packet_data_size_limit(&data, false), PACKET_DATA_SIZE);
     }
 
     #[test]
@@ -1398,6 +1378,18 @@ mod tests {
 
         assert!(results[0].is_err());
         assert_eq!(metrics.sigverify_metrics.oversized_packets, 1);
+    }
+
+    #[test]
+    fn test_bam_metrics_has_data_uses_sigverify_activity() {
+        let mut metrics = BamReceiveAndBufferMetrics::default();
+
+        metrics.sigverify_metrics.oversized_packets = 1;
+        assert!(metrics.has_data());
+
+        metrics.sigverify_metrics.oversized_packets = 0;
+        metrics.sigverify_metrics.tx_v1_disabled_packets = 1;
+        assert!(metrics.has_data());
     }
 
     #[test]
@@ -1901,63 +1893,5 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
-    }
-
-    #[test]
-    fn test_txv1_transaction_over_1232_survives_ingest() {
-        use {
-            solana_message::{VersionedMessage, v1},
-            solana_system_interface::instruction as system_instruction,
-        };
-
-        let (bank_forks, mint_keypair) = test_bank_forks();
-        let payer_pubkey = mint_keypair.pubkey();
-        let recent_blockhash = bank_forks.read().unwrap().root_bank().last_blockhash();
-
-        // Pack enough transfer instructions to push the serialized tx over 1232 bytes.
-        // Each extra account key adds ~32 bytes to the message; ~20 instructions clears
-        // PACKET_DATA_SIZE while staying well under MAX_TRANSACTION_SIZE.
-        let serialized = (1usize..=64)
-            .map(|n| {
-                let ixs: Vec<_> = (0..n)
-                    .map(|_| system_instruction::transfer(&payer_pubkey, &Pubkey::new_unique(), 1))
-                    .collect();
-                let message =
-                    v1::Message::try_compile(&payer_pubkey, &ixs, recent_blockhash).unwrap();
-                let tx =
-                    VersionedTransaction::try_new(VersionedMessage::V1(message), &[&mint_keypair])
-                        .unwrap();
-                wincode::serialize(&tx).unwrap()
-            })
-            .find(|bytes| {
-                bytes.len() > solana_packet::PACKET_DATA_SIZE
-                    && bytes.len() <= solana_message::v1::MAX_TRANSACTION_SIZE
-            })
-            .expect("a txv1 tx between PACKET_DATA_SIZE and MAX_TRANSACTION_SIZE");
-
-        assert!(serialized.len() > solana_packet::PACKET_DATA_SIZE);
-        assert!(serialized.len() <= solana_message::v1::MAX_TRANSACTION_SIZE);
-
-        let batch = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: serialized.into(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
-
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
-
-        assert_eq!(results.len(), 1);
-        // run_batch_verify passes enable_tx_v1=false (feature not active in tests), so a real
-        // V1 tx is rejected at sigverify and surfaces as DeserializationError. That's expected.
-        // What matters is the packet reaches sigverify at full length, not discarded at copy.
-        assert!(
-            results[0].is_ok() || matches!(&results[0], Err((Reason::DeserializationError(_), _))),
-            "txv1 tx must reach sigverify at full length, got unexpected result: {:?}",
-            results[0]
-        );
     }
 }
