@@ -51,7 +51,8 @@ pub struct VoteStorage {
     cached_epoch_authorized_voters: Arc<EpochAuthorizedVoters>,
     deprecate_legacy_vote_ixs: bool,
     current_epoch: Epoch,
-    /// Most recent leader bank observed by the vote worker.
+    /// Most recent leader bank observed by the vote worker. All retained votes were taken from
+    /// this bank.
     last_bank: Option<(Slot, BankId)>,
 }
 
@@ -153,11 +154,9 @@ impl VoteStorage {
                         if !Self::is_valid_for_our_fork(latest_vote, &slot_hashes) {
                             return None;
                         }
-                        latest_vote
-                            .take_vote(bank.bank_id(), bank.slot())
-                            .inspect(|_vote| {
-                                self.num_unprocessed_votes -= 1;
-                            })
+                        latest_vote.take_vote().inspect(|_vote| {
+                            self.num_unprocessed_votes -= 1;
+                        })
                     })
             })
             .collect_vec()
@@ -166,10 +165,12 @@ impl VoteStorage {
     /// Restores previously taken votes when the leader bank is replaced at the same slot.
     pub(crate) fn restore_taken_votes_for_bank(&mut self, bank: &Bank) -> usize {
         let bank_identity = (bank.slot(), bank.bank_id());
-        if self.last_bank == Some(bank_identity) {
+        let Some(previous_bank) = self.last_bank.replace(bank_identity) else {
+            return 0;
+        };
+        if previous_bank == bank_identity {
             return 0;
         }
-        self.last_bank = Some(bank_identity);
 
         if !self
             .latest_vote_per_vote_pubkey
@@ -179,17 +180,22 @@ impl VoteStorage {
             return 0;
         }
 
+        if previous_bank.0 != bank.slot() {
+            self.latest_vote_per_vote_pubkey
+                .values_mut()
+                .for_each(|vote| {
+                    vote.restore_retained_vote(false);
+                });
+            return 0;
+        }
+
         let slot_hashes = Self::load_slot_hashes(bank);
         let restored_vote_count = self
             .latest_vote_per_vote_pubkey
             .values_mut()
             .map(|vote| {
                 let is_valid_for_fork = Self::is_valid_for_our_fork(vote, &slot_hashes);
-                usize::from(vote.restore_if_bank_replaced(
-                    bank.bank_id(),
-                    bank.slot(),
-                    is_valid_for_fork,
-                ))
+                usize::from(vote.restore_retained_vote(is_valid_for_fork))
             })
             .sum::<usize>();
         self.num_unprocessed_votes += restored_vote_count;
