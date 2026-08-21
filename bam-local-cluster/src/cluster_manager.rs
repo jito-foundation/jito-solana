@@ -362,6 +362,55 @@ impl BamValidator {
     }
 }
 
+<<<<<<< HEAD
+=======
+fn slot_time_reduction_feature_id(slot_time_ms: u64) -> Result<Option<Pubkey>> {
+    match slot_time_ms {
+        400 => Ok(None),
+        350 => Ok(Some(agave_feature_set::reduce_slot_time_to_350ms::id())),
+        300 => Ok(Some(agave_feature_set::reduce_slot_time_to_300ms::id())),
+        250 => Ok(Some(agave_feature_set::reduce_slot_time_to_250ms::id())),
+        200 => Ok(Some(agave_feature_set::reduce_slot_time_to_200ms::id())),
+        _ => anyhow::bail!(
+            "unsupported slot_time_ms {slot_time_ms}; expected one of 400, 350, 300, 250, 200"
+        ),
+    }
+}
+
+fn activate_configured_slot_time_feature(
+    genesis_config: &mut GenesisConfig,
+    slot_time_ms: Option<u64>,
+) -> Result<()> {
+    let Some(slot_time_ms) = slot_time_ms else {
+        return Ok(());
+    };
+
+    let slot_time_features = slot_time_feature_ids().to_vec();
+    deactivate_features(genesis_config, &slot_time_features);
+
+    if let Some(feature_id) = slot_time_reduction_feature_id(slot_time_ms)? {
+        info!("Activating slot-time feature for {slot_time_ms}ms slots");
+        activate_feature(genesis_config, feature_id);
+    } else {
+        info!("Using default 400ms slot time");
+    }
+
+    Ok(())
+}
+
+fn activate_configured_tx_v1_feature(genesis_config: &mut GenesisConfig, enable_tx_v1: bool) {
+    let tx_v1_feature = vec![agave_feature_set::enable_tx_v1::id()];
+    deactivate_features(genesis_config, &tx_v1_feature);
+
+    if enable_tx_v1 {
+        info!("Activating transaction v1 feature");
+        activate_feature(genesis_config, agave_feature_set::enable_tx_v1::id());
+    } else {
+        info!("Deactivating transaction v1 feature");
+    }
+}
+
+>>>>>>> b64857b54a (feat: support tx v1 in bam receive and buffer (#1552))
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
     skip_last_validator: bool,
@@ -406,7 +455,13 @@ impl BamLocalCluster {
             // https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
             ClusterType::Development,
             config.hashes_per_tick,
+<<<<<<< HEAD
         );
+=======
+            config.slot_time_ms,
+            config.enable_tx_v1,
+        )?;
+>>>>>>> b64857b54a (feat: support tx v1 in bam receive and buffer (#1552))
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
 
@@ -538,7 +593,13 @@ impl BamLocalCluster {
         stakes: Vec<u64>,
         cluster_type: ClusterType,
         hashes_per_tick: Option<u64>,
+<<<<<<< HEAD
     ) -> GenesisConfigInfo {
+=======
+        slot_time_ms: Option<u64>,
+        enable_tx_v1: bool,
+    ) -> Result<GenesisConfigInfo> {
+>>>>>>> b64857b54a (feat: support tx v1 in bam receive and buffer (#1552))
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
         assert!(!voting_keypairs.is_empty());
@@ -604,6 +665,11 @@ impl BamLocalCluster {
         );
 
         activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
+<<<<<<< HEAD
+=======
+        activate_configured_slot_time_feature(&mut genesis_config, slot_time_ms)?;
+        activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
+>>>>>>> b64857b54a (feat: support tx v1 in bam receive and buffer (#1552))
 
         let mut genesis_config_info = GenesisConfigInfo {
             genesis_config,
@@ -739,3 +805,126 @@ impl BamLocalCluster {
         }
     }
 }
+<<<<<<< HEAD
+=======
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slot_time_reduction_feature_id_maps_supported_durations() {
+        assert_eq!(slot_time_reduction_feature_id(400).unwrap(), None);
+        assert_eq!(
+            slot_time_reduction_feature_id(350).unwrap(),
+            Some(agave_feature_set::reduce_slot_time_to_350ms::id())
+        );
+        assert_eq!(
+            slot_time_reduction_feature_id(300).unwrap(),
+            Some(agave_feature_set::reduce_slot_time_to_300ms::id())
+        );
+        assert_eq!(
+            slot_time_reduction_feature_id(250).unwrap(),
+            Some(agave_feature_set::reduce_slot_time_to_250ms::id())
+        );
+        assert_eq!(
+            slot_time_reduction_feature_id(200).unwrap(),
+            Some(agave_feature_set::reduce_slot_time_to_200ms::id())
+        );
+    }
+
+    #[test]
+    fn slot_time_reduction_feature_id_rejects_unsupported_duration() {
+        let err = slot_time_reduction_feature_id(225).unwrap_err();
+        assert!(err.to_string().contains("unsupported slot_time_ms 225"));
+    }
+
+    #[test]
+    fn activate_configured_slot_time_feature_adds_feature_account_to_genesis() {
+        let mut genesis_config = GenesisConfig::default();
+
+        activate_configured_slot_time_feature(&mut genesis_config, Some(200)).unwrap();
+
+        assert!(
+            genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_200ms::id())
+        );
+    }
+
+    #[test]
+    fn activate_configured_slot_time_feature_replaces_development_default_slot_time_features() {
+        let mut genesis_config = GenesisConfig::default();
+        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
+            activate_feature(&mut genesis_config, feature_id);
+        }
+
+        activate_configured_slot_time_feature(&mut genesis_config, Some(350)).unwrap();
+
+        assert!(
+            genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_350ms::id())
+        );
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_300ms::id())
+        );
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_250ms::id())
+        );
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_200ms::id())
+        );
+    }
+
+    #[test]
+    fn activate_configured_slot_time_feature_can_restore_400ms_default() {
+        let mut genesis_config = GenesisConfig::default();
+        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
+            activate_feature(&mut genesis_config, feature_id);
+        }
+
+        activate_configured_slot_time_feature(&mut genesis_config, Some(400)).unwrap();
+
+        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
+            assert!(
+                !genesis_config.accounts.contains_key(&feature_id),
+                "explicit 400ms slot time should deactivate feature {feature_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn activate_configured_tx_v1_feature_adds_feature_account_to_genesis() {
+        let mut genesis_config = GenesisConfig::default();
+
+        activate_configured_tx_v1_feature(&mut genesis_config, true);
+
+        assert!(
+            genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::enable_tx_v1::id())
+        );
+    }
+
+    #[test]
+    fn activate_configured_tx_v1_feature_leaves_feature_inactive_when_disabled() {
+        let mut genesis_config = GenesisConfig::default();
+        activate_feature(&mut genesis_config, agave_feature_set::enable_tx_v1::id());
+
+        activate_configured_tx_v1_feature(&mut genesis_config, false);
+
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::enable_tx_v1::id())
+        );
+    }
+}
+>>>>>>> b64857b54a (feat: support tx v1 in bam receive and buffer (#1552))
