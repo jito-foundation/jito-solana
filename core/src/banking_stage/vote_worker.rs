@@ -184,6 +184,7 @@ impl VoteWorker {
         }
     }
 
+    #[cfg_attr(test, qualifier_attr::qualifiers(pub(crate)))]
     fn consume_buffered_packets(
         &mut self,
         bank: &Bank,

@@ -1460,40 +1460,56 @@ mod tests {
         crate::{
             bam_dependencies::BamOutboundMessage,
             banking_stage::{
+                BankingStageStats, TestVotePacketReceiver, TestVoteWorker, VoteSource,
                 committer::Committer,
                 consume_worker::ConsumeWorker,
                 consumer::Consumer,
-                decision_maker::BufferedPacketsDecision,
+                decision_maker::{BufferedPacketsDecision, DecisionMaker},
+                leader_slot_metrics::LeaderSlotMetricsTracker,
                 scheduler_messages::MaxAge,
                 transaction_scheduler::{
                     bam_scheduler::BamScheduler,
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
+                vote_storage::VoteStorage,
             },
             banking_trace::BankingTracer,
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         agave_banking_stage_ingress_types::BankingPacketReceiver,
+        agave_transaction_view::transaction_view::SanitizedTransactionView,
         crossbeam_channel::{bounded, unbounded},
         jito_protos::proto::bam_types::atomic_txn_batch_result::Result::NotCommitted,
         solana_bls_signatures::{BLS_SIGNATURE_AFFINE_SIZE, Signature as BLSSignature},
+        solana_clock::BankId,
         solana_entry::{block_component::VersionedUpdateParent, entry_or_marker::EntryOrMarker},
         solana_keypair::Keypair,
         solana_leader_schedule::{FixedSchedule, LeaderSchedule, SlotLeader},
         solana_ledger::{blockstore::Blockstore, get_tmp_ledger_path_auto_delete},
         solana_poh::{
             poh_recorder::{PohRecorder, Record, WorkingBankEntryOrMarker},
-            record_channels::record_channels,
+            record_channels::{RecordSender, record_channels},
             transaction_recorder::TransactionRecorder,
         },
         solana_poh_config::PohConfig,
         solana_runtime::{
-            bank::Bank, bank_forks::BankForks, genesis_utils::create_genesis_config_with_leader,
+            bank::Bank,
+            bank_forks::BankForks,
+            genesis_utils::{
+                GenesisConfigInfo, ValidatorVoteKeypairs, create_genesis_config_with_leader,
+                create_genesis_config_with_vote_accounts,
+            },
             installed_scheduler_pool::BankWithScheduler,
         },
-        solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+        solana_runtime_transaction::{
+            runtime_transaction::RuntimeTransaction, sanitize_config::sanitize_config,
+        },
         solana_system_transaction as system_transaction,
+        solana_vote::vote_transaction::new_tower_sync_transaction,
+        solana_vote_program::vote_state::TowerSync,
         std::num::NonZeroUsize,
+        tokio_util::sync::CancellationToken,
     };
 
     fn versioned_transfer(lamports: u64) -> VersionedTransaction {
@@ -1560,6 +1576,157 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
     ) -> Arc<dyn BankForksController> {
         Arc::new(TestBankForksController { bank_forks })
+    }
+
+    const SAD_HANDOVER_LEADER_SLOT: Slot = 4;
+    const SAD_HANDOVER_PARENT_SLOT: Slot = 1;
+
+    struct SadHandoverTestFixture {
+        genesis: GenesisConfigInfo,
+        root_bank: Arc<Bank>,
+        optimistic_bank: Arc<Bank>,
+        optimistic_parent: Block,
+        optimistic_parent_bank_id: BankId,
+        optimistic_only_blockhash: Hash,
+        replacement_parent: Block,
+        replacement_parent_bank_id: BankId,
+        ctx: LeaderContext,
+        record_sender: RecordSender,
+        entry_receiver: Receiver<WorkingBankEntryOrMarker>,
+        banking_stage_receiver: BankingPacketReceiver,
+        entry_notification_receiver: Receiver<EntryNotification>,
+    }
+
+    impl SadHandoverTestFixture {
+        fn new(
+            genesis: GenesisConfigInfo,
+            optimistic_parent_slot: Slot,
+            blockstore: Arc<Blockstore>,
+        ) -> Self {
+            let root_bank = Bank::new_for_tests(&genesis.genesis_config);
+            root_bank.set_block_id(Some(Hash::new_unique()));
+            root_bank.freeze();
+            let bank_forks = BankForks::new_rw_arc(root_bank);
+            let root_bank = bank_forks.read().unwrap().root_bank();
+            let my_pubkey = genesis.validator_pubkey;
+            let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
+
+            let replacement_parent_hash = Hash::new_unique();
+            let replacement_parent_bank = Bank::new_from_parent_with_bank_forks(
+                &bank_forks,
+                root_bank.clone(),
+                SlotLeader::new_unique(),
+                SAD_HANDOVER_PARENT_SLOT,
+            );
+            replacement_parent_bank.register_unique_recent_blockhash_for_test();
+            replacement_parent_bank.freeze();
+            replacement_parent_bank.set_block_id(Some(replacement_parent_hash));
+            let replacement_parent_bank_id = replacement_parent_bank.bank_id();
+            let replacement_parent = Block {
+                slot: SAD_HANDOVER_PARENT_SLOT,
+                block_id: replacement_parent_hash,
+            };
+
+            let optimistic_parent_hash = Hash::new_unique();
+            let optimistic_parent_bank = if optimistic_parent_slot == SAD_HANDOVER_PARENT_SLOT {
+                Arc::new(Bank::new_from_parent(
+                    root_bank.clone(),
+                    SlotLeader::new_unique(),
+                    optimistic_parent_slot,
+                ))
+            } else {
+                Bank::new_from_parent_with_bank_forks(
+                    &bank_forks,
+                    root_bank.clone(),
+                    SlotLeader::new_unique(),
+                    optimistic_parent_slot,
+                )
+            };
+            optimistic_parent_bank.register_unique_recent_blockhash_for_test();
+            optimistic_parent_bank.freeze();
+            optimistic_parent_bank.set_block_id(Some(optimistic_parent_hash));
+            let optimistic_parent_bank_id = optimistic_parent_bank.bank_id();
+            let optimistic_only_blockhash = optimistic_parent_bank.last_blockhash();
+            let optimistic_parent = Block {
+                slot: optimistic_parent_slot,
+                block_id: optimistic_parent_hash,
+            };
+
+            let exit = Arc::new(AtomicBool::new(false));
+            let (mut poh_recorder, entry_receiver) = PohRecorder::new(
+                root_bank.tick_height(),
+                root_bank.last_blockhash(),
+                root_bank.clone(),
+                Some((SAD_HANDOVER_LEADER_SLOT, 7)),
+                root_bank.ticks_per_slot(),
+                blockstore.clone(),
+                &leader_schedule_cache,
+                &PohConfig::default(),
+                exit.clone(),
+            );
+            poh_recorder.enable_alpenglow();
+            let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+
+            let (record_sender, record_receiver) = record_channels(false);
+            let (_leader_window_info_sender, leader_window_info_receiver) = bounded(1);
+            let (banking_stage_sender, banking_stage_receiver) = BankingTracer::channel_for_test();
+            let (reward_certs_requestor, _reward_request_receiver) = CertsRequestor::new();
+            let (entry_notification_sender, entry_notification_receiver) = bounded(1);
+            let mut ctx = LeaderContext {
+                exit,
+                my_pubkey,
+                leader_window_info_receiver,
+                pending_parent_ready: None,
+                highest_parent_ready: Arc::new(RwLock::new((
+                    SAD_HANDOVER_LEADER_SLOT,
+                    replacement_parent,
+                ))),
+                highest_finalized: Arc::new(RwLock::new(None)),
+                blockstore,
+                record_receiver,
+                poh_recorder,
+                leader_schedule_cache,
+                sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+                alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
+                bank_forks: bank_forks.clone(),
+                bank_forks_controller: test_bank_forks_controller(bank_forks.clone()),
+                rpc_subscriptions: None,
+                slot_status_notifier: None,
+                entry_notification_sender: Some(entry_notification_sender),
+                banking_tracer: BankingTracer::new_disabled(),
+                replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
+                reward_certs_requestor,
+                banking_stage_sender,
+                metrics: LoopMetrics::default(),
+                slot_metrics: SlotMetrics::default(),
+                genesis_cert_block_marker: test_genesis_cert_block_marker(),
+            };
+            create_and_insert_leader_bank(
+                SAD_HANDOVER_LEADER_SLOT,
+                optimistic_parent_bank,
+                0,
+                false,
+                &mut ctx,
+            )
+            .unwrap();
+            let optimistic_bank = ctx.poh_recorder.read().unwrap().bank().unwrap();
+
+            Self {
+                genesis,
+                root_bank,
+                optimistic_bank,
+                optimistic_parent,
+                optimistic_parent_bank_id,
+                optimistic_only_blockhash,
+                replacement_parent,
+                replacement_parent_bank_id,
+                ctx,
+                record_sender,
+                entry_receiver,
+                banking_stage_receiver,
+                entry_notification_receiver,
+            }
+        }
     }
 
     fn leader_window_info(start_slot: Slot, parent_slot: Slot) -> LeaderWindowInfo {
@@ -1926,6 +2093,139 @@ mod tests {
     }
 
     #[test]
+    fn test_recorded_vote_survives_sad_handover_without_ordinary_ingress() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
+        let vote_keypairs = ValidatorVoteKeypairs::new_rand();
+        let genesis =
+            create_genesis_config_with_vote_accounts(10_000, &[&vote_keypairs], vec![1_000]);
+        let mut fixture =
+            SadHandoverTestFixture::new(genesis, SAD_HANDOVER_PARENT_SLOT, blockstore);
+        let optimistic_bank = fixture.optimistic_bank.clone();
+        let optimistic_bank_id = optimistic_bank.bank_id();
+
+        let tower_sync =
+            TowerSync::new_from_slot(fixture.root_bank.slot(), fixture.root_bank.hash());
+        let vote_transaction = new_tower_sync_transaction(
+            tower_sync,
+            fixture.root_bank.last_blockhash(),
+            &vote_keypairs.node_keypair,
+            &vote_keypairs.vote_keypair,
+            &vote_keypairs.vote_keypair,
+            None,
+        );
+        let vote_signature = vote_transaction.signatures[0];
+        let vote_view = SanitizedTransactionView::try_new_sanitized(
+            Bytes::from(wincode::serialize(&vote_transaction).unwrap()),
+            &sanitize_config(),
+        )
+        .unwrap();
+        let mut vote_storage = VoteStorage::new(&optimistic_bank);
+        vote_storage.insert_packet(VoteSource::Tpu, vote_view);
+
+        let (_tpu_vote_sender, tpu_vote_receiver) = BankingTracer::channel_for_test();
+        let (_gossip_vote_sender, gossip_vote_receiver) = BankingTracer::channel_for_test();
+        let (replay_vote_sender, _replay_vote_receiver) = bounded(2);
+        let mut vote_worker = TestVoteWorker::new(
+            Arc::new(AtomicBool::default()),
+            CancellationToken::new(),
+            DecisionMaker::new(
+                fixture
+                    .ctx
+                    .poh_recorder
+                    .read()
+                    .unwrap()
+                    .shared_leader_state(),
+            ),
+            TestVotePacketReceiver::new(tpu_vote_receiver, Arc::default()),
+            TestVotePacketReceiver::new(gossip_vote_receiver, Arc::default()),
+            vote_storage,
+            fixture.ctx.bank_forks.clone(),
+            Consumer::new(
+                Committer::new(None, replay_vote_sender, None),
+                TransactionRecorder::new(fixture.record_sender.clone()),
+                None,
+            ),
+            BundleAccountLocker::default(),
+        );
+        let banking_stage_stats = BankingStageStats::new();
+        let mut slot_metrics_tracker = LeaderSlotMetricsTracker::default();
+
+        vote_worker.consume_buffered_packets(
+            &optimistic_bank,
+            &banking_stage_stats,
+            &mut slot_metrics_tracker,
+        );
+        assert_eq!(
+            optimistic_bank.get_signature_status(&vote_signature),
+            Some(Ok(()))
+        );
+
+        let replacement_bank = handle_parent_ready(
+            &mut fixture.ctx,
+            LeaderWindowInfo {
+                start_slot: SAD_HANDOVER_LEADER_SLOT,
+                end_slot: 7,
+                parent_block: fixture.replacement_parent,
+                block_timer: Instant::now(),
+            },
+            fixture.optimistic_parent,
+            vec![],
+            &mut Instant::now(),
+        )
+        .unwrap()
+        .expect("sad handover should recreate the leader bank");
+        assert_eq!(replacement_bank.slot(), optimistic_bank.slot());
+        assert_ne!(replacement_bank.bank_id(), optimistic_bank_id);
+        assert_eq!(replacement_bank.get_signature_status(&vote_signature), None);
+        assert_eq!(fixture.banking_stage_receiver.len(), 1);
+
+        let recv_recorded_vote = |expected_bank_id| {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                assert!(!timeout.is_zero(), "timed out waiting for recorded vote");
+                let (bank, (entry_or_marker, _tick_height)) =
+                    fixture.entry_receiver.recv_timeout(timeout).unwrap();
+                let EntryOrMarker::Entry(entry) = entry_or_marker else {
+                    continue;
+                };
+                if entry.transactions.iter().any(|transaction| {
+                    transaction
+                        .signatures
+                        .iter()
+                        .any(|signature| signature == &vote_signature)
+                }) {
+                    assert_eq!(bank.bank_id(), expected_bank_id);
+                    break;
+                }
+            }
+        };
+        recv_recorded_vote(optimistic_bank_id);
+
+        // Leave the ordinary reinjection receiver untouched until the replacement bank records the
+        // vote. This models the BAM-connected scheduler gate and proves that no reinjected or new
+        // network copy is responsible for the second inclusion.
+        vote_worker.consume_buffered_packets(
+            &replacement_bank,
+            &banking_stage_stats,
+            &mut slot_metrics_tracker,
+        );
+        assert_eq!(
+            replacement_bank.get_signature_status(&vote_signature),
+            Some(Ok(()))
+        );
+        shutdown_and_drain_record_receiver(
+            &fixture.ctx.poh_recorder,
+            &mut fixture.ctx.record_receiver,
+            None,
+        )
+        .unwrap();
+        recv_recorded_vote(replacement_bank.bank_id());
+        assert_eq!(fixture.banking_stage_receiver.len(), 1);
+    }
+
+    #[test]
     fn test_sad_leader_handover_same_parent_slot() {
         test_sad_leader_handover(1);
     }
@@ -1940,113 +2240,27 @@ mod tests {
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
         let my_pubkey = Pubkey::new_unique();
         let genesis = create_genesis_config_with_leader(10_000, &my_pubkey, 1_000);
-        let root_bank = Bank::new_for_tests(&genesis.genesis_config);
-        root_bank.set_block_id(Some(Hash::new_unique()));
-        root_bank.freeze();
-        let bank_forks = BankForks::new_rw_arc(root_bank);
-        let root_bank = bank_forks.read().unwrap().root_bank();
-
-        let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
-
-        let new_parent_slot = 1;
-        let new_parent_hash = Hash::new_unique();
-        let new_parent = Bank::new_from_parent_with_bank_forks(
-            &bank_forks,
-            root_bank.clone(),
-            SlotLeader::new_unique(),
-            new_parent_slot,
-        );
-        new_parent.register_unique_recent_blockhash_for_test();
-        new_parent.freeze();
-        new_parent.set_block_id(Some(new_parent_hash));
-        let new_parent_bank_id = new_parent.bank_id();
-
-        let optimistic_parent_hash = Hash::new_unique();
-        let optimistic_parent = if optimistic_parent_slot == new_parent_slot {
-            Arc::new(Bank::new_from_parent(
-                root_bank.clone(),
-                SlotLeader::new_unique(),
-                optimistic_parent_slot,
-            ))
-        } else {
-            Bank::new_from_parent_with_bank_forks(
-                &bank_forks,
-                root_bank.clone(),
-                SlotLeader::new_unique(),
-                optimistic_parent_slot,
-            )
-        };
-        optimistic_parent.register_unique_recent_blockhash_for_test();
-        optimistic_parent.freeze();
-        optimistic_parent.set_block_id(Some(optimistic_parent_hash));
-        let optimistic_parent_bank_id = optimistic_parent.bank_id();
-        let optimistic_only_blockhash = optimistic_parent.last_blockhash();
+        let SadHandoverTestFixture {
+            genesis,
+            root_bank,
+            optimistic_bank,
+            optimistic_parent,
+            optimistic_parent_bank_id,
+            optimistic_only_blockhash,
+            replacement_parent,
+            replacement_parent_bank_id: new_parent_bank_id,
+            mut ctx,
+            record_sender,
+            entry_receiver,
+            banking_stage_receiver,
+            entry_notification_receiver,
+        } = SadHandoverTestFixture::new(genesis, optimistic_parent_slot, blockstore);
+        let new_parent_slot = replacement_parent.slot;
+        let new_parent_hash = replacement_parent.block_id;
+        let optimistic_parent_hash = optimistic_parent.block_id;
         assert_ne!(optimistic_parent_bank_id, new_parent_bank_id);
-        assert_ne!(
-            optimistic_parent.last_blockhash(),
-            new_parent.last_blockhash()
-        );
-
-        let exit = Arc::new(AtomicBool::new(false));
-        let poh_config = PohConfig::default();
-        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
-            root_bank.tick_height(),
-            root_bank.last_blockhash(),
-            root_bank.clone(),
-            Some((4, 7)),
-            root_bank.ticks_per_slot(),
-            blockstore.clone(),
-            &leader_schedule_cache,
-            &poh_config,
-            exit.clone(),
-        );
-        poh_recorder.enable_alpenglow();
-        let poh_recorder = Arc::new(RwLock::new(poh_recorder));
-
-        let (record_sender, record_receiver) = record_channels(false);
-        let (leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
-        let (banking_stage_sender, banking_stage_receiver) = BankingTracer::channel_for_test();
-        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
-        let (reward_certs_requestor, _receiver) = CertsRequestor::new();
-        let (entry_notification_sender, entry_notification_receiver) = bounded(1);
-
-        let mut ctx = LeaderContext {
-            exit,
-            my_pubkey,
-            leader_window_info_receiver,
-            pending_parent_ready: None,
-            highest_parent_ready: Arc::new(RwLock::new((
-                4,
-                Block {
-                    slot: new_parent_slot,
-                    block_id: new_parent_hash,
-                },
-            ))),
-            highest_finalized: Arc::new(RwLock::new(None)),
-            blockstore,
-            record_receiver,
-            poh_recorder,
-            leader_schedule_cache,
-            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
-            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
-            bank_forks: bank_forks.clone(),
-            bank_forks_controller,
-            rpc_subscriptions: None,
-            slot_status_notifier: None,
-            entry_notification_sender: Some(entry_notification_sender),
-            banking_tracer: BankingTracer::new_disabled(),
-            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
-            reward_certs_requestor,
-            banking_stage_sender,
-            metrics: LoopMetrics::default(),
-            slot_metrics: SlotMetrics::default(),
-            genesis_cert_block_marker: test_genesis_cert_block_marker(),
-        };
-
-        let leader_slot = 4;
-        create_and_insert_leader_bank(leader_slot, optimistic_parent, 0, false, &mut ctx).unwrap();
-        let optimistic_bank = ctx.poh_recorder.read().unwrap().bank().unwrap();
         let optimistic_bank_id = optimistic_bank.bank_id();
+        let leader_slot = SAD_HANDOVER_LEADER_SLOT;
         const ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER: u64 = 1_024;
         optimistic_bank
             .entry_bytes_budget()
@@ -2289,7 +2503,5 @@ mod tests {
         assert_eq!(rescheduled.len(), 2);
         assert!(rescheduled.contains(&accumulated_tx));
         assert!(rescheduled.contains(&drained_tx));
-
-        drop(leader_window_info_sender);
     }
 }
