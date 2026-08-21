@@ -5,7 +5,7 @@ use {
     crate::mock_bam_server::MockBamServer,
     arc_swap::ArcSwap,
     assert_matches::assert_matches,
-    clap::{Arg, Command, crate_description, crate_name},
+    clap::{App, Arg, crate_description, crate_name, value_t},
     crossbeam_channel::{Receiver, unbounded},
     log::*,
     solana_accounts_db::accounts_db::AccountsDbConfig,
@@ -57,18 +57,18 @@ use {
 #[allow(clippy::cognitive_complexity)]
 fn main() {
     agave_logger::setup();
-    let matches = Command::new(crate_name!())
+    let matches = App::new(crate_name!())
         .about(crate_description!())
         .version(solana_version::version!())
         .arg(
-            Arg::new("num_keypairs")
+            Arg::with_name("num_keypairs")
                 .long("num-keypairs")
                 .takes_value(true)
                 .help("Number of keypairs")
                 .default_value("1000"),
         )
         .arg(
-            Arg::new("test_duration")
+            Arg::with_name("test_duration")
                 .long("test-duration")
                 .takes_value(true)
                 .help("Test duration in seconds")
@@ -76,7 +76,7 @@ fn main() {
         )
         .get_matches();
 
-    let test_duration = matches.value_of_t::<u64>("test_duration").unwrap();
+    let test_duration = value_t!(matches, "test_duration", u64).unwrap();
 
     let mint_total = 10_000 * 1_000_000_000; // 10k SOL
     let GenesisConfigInfo {
@@ -141,7 +141,7 @@ fn main() {
         bam_shred_receiver_addresses: Arc::default(),
     };
 
-    let keypairs = (0..matches.value_of_t::<usize>("num_keypairs").unwrap())
+    let keypairs = (0..value_t!(matches, "num_keypairs", usize).unwrap())
         .map(|_| Keypair::new())
         .collect::<Vec<_>>();
 
