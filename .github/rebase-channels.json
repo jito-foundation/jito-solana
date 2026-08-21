@@ -1,0 +1,17 @@
+[
+  {
+    "channel": "master",
+    "upstream": "master",
+    "owner": "0xEdgar"
+  },
+  {
+    "channel": "v4.1",
+    "upstream": "v4.1",
+    "owner": "0xEdgar"
+  },
+  {
+    "channel": "v4.2",
+    "upstream": "v4.2",
+    "owner": "0xEdgar"
+  }
+]
