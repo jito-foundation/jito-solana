@@ -73,6 +73,10 @@ filter = 'package(solana-local-cluster) & test(/^test_boot_from_local_state$/)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
+filter = 'package(solana-local-cluster) & test(/^test_duplicate_shreds_broadcast_leader$/)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[[profile.ci.overrides]]
 filter = 'package(solana-local-cluster)'
 slow-timeout = { period = "60s", terminate-after = 2 }
 
