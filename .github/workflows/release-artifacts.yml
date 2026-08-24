@@ -18,6 +18,9 @@ on:
         required: true
         description: git ref to build (tag, branch, or SHA)
 
+permissions:
+  contents: read
+
 concurrency:
   group: release-artifacts-${{ github.event.pull_request.number || inputs.ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -73,7 +76,11 @@ jobs:
           fi
           if [[ "$EVENT" == "workflow_dispatch" ]]; then
             git fetch --depth=1 origin "$DISPATCH_REF"
-            args+=(--checkout "$(git rev-parse FETCH_HEAD)")
+            args+=(--checkout "$(git rev-parse 'FETCH_HEAD^{commit}')")
+            if [[ -z "$TAG" ]]; then
+              # keep the human-readable ref in the artifact name
+              args+=(--tag "${DISPATCH_REF//\//_}-$(git rev-parse --short 'FETCH_HEAD^{commit}')")
+            fi
           fi
           ./f "${args[@]}"
 
