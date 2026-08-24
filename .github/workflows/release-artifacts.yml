@@ -34,33 +34,13 @@ jobs:
       github.repository == 'jito-foundation/jito-solana' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-24.04
+    # Org larger runner: 16-core / 64GB / 600GB SSD (label big-runner-1).
+    runs-on: big-runner-1
     timeout-minutes: 360
     permissions:
       contents: write
       packages: write
     steps:
-      # The release build needs ~40GB of scratch; stock runners have ~14GB
-      # free on / and ~65GB on /mnt. Drop unused toolchains and move docker's
-      # data-root (where BuildKit keeps layers and cache mounts) to /mnt.
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache
-          sudo systemctl stop docker
-          sudo rm -rf /var/lib/docker
-          sudo mkdir -p /etc/docker /mnt/docker
-          if [[ -s /etc/docker/daemon.json ]]; then
-            sudo jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json \
-              | sudo tee /etc/docker/daemon.json.new >/dev/null
-            sudo mv /etc/docker/daemon.json.new /etc/docker/daemon.json
-          else
-            echo '{"data-root": "/mnt/docker"}' \
-              | sudo tee /etc/docker/daemon.json >/dev/null
-          fi
-          sudo systemctl start docker
-          df -h / /mnt
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
