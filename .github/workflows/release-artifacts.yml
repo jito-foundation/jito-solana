@@ -78,10 +78,19 @@ jobs:
           fi
           if [[ "$EVENT" == "workflow_dispatch" ]]; then
             git fetch --depth=1 origin "$DISPATCH_REF"
-            args+=(--checkout "$(git rev-parse 'FETCH_HEAD^{commit}')")
+            sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+            short="$(git rev-parse --short "$sha")"
+            args+=(--checkout "$sha")
             if [[ -z "$TAG" ]]; then
-              # keep the human-readable ref in the artifact name
-              args+=(--tag "${DISPATCH_REF//\//_}-$(git rev-parse --short 'FETCH_HEAD^{commit}')")
+              # Keep the human-readable ref in the artifact name. A SHA ref
+              # is already the commit, so use it alone.
+              name="${DISPATCH_REF//\//_}"
+              if [[ "$sha" == "$name"* ]]; then
+                name="$short"
+              else
+                name="${name}-${short}"
+              fi
+              args+=(--tag "$name")
             fi
           fi
           ./f "${args[@]}"
@@ -98,6 +107,7 @@ jobs:
             echo '```'
             ../docker-output/agave-validator --version
             echo '```'
+            echo "### Version manifest"
             echo '```'
             cat ./*.yml
             echo '```'
