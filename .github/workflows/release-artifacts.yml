@@ -35,11 +35,13 @@ jobs:
       contents: write
       packages: write
     steps:
+      # Always check out the workflow's own ref; dispatch refs are built via
+      # ./f --checkout below so old tags get current build tooling.
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
+          persist-credentials: false
 
       # Empty tag = not a release build; artifact keeps ./f's derived name
       # and is uploaded as a workflow artifact instead.
@@ -71,12 +73,22 @@ jobs:
 
       - name: Build release tarball
         env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ inputs.ref }}
           TAG: ${{ steps.meta.outputs.tag }}
           CACHE_REF: ghcr.io/${{ github.repository }}/build-cache
         run: |
           args=(--pull-cache "$CACHE_REF" --push-cache "$CACHE_REF")
           if [[ -n "$TAG" ]]; then
             args+=(--tag "$TAG")
+          fi
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            if git fetch --depth=1 origin "refs/tags/$DISPATCH_REF:refs/tags/$DISPATCH_REF" 2>/dev/null; then
+              args+=(--checkout "$DISPATCH_REF")
+            else
+              git fetch --depth=1 origin "$DISPATCH_REF"
+              args+=(--checkout "$(git rev-parse FETCH_HEAD)")
+            fi
           fi
           ./f "${args[@]}"
 
