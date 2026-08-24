@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build:
-    # Skip fork PRs: their token cannot push the GHCR cache.
+    # Skip fork PRs: they cannot use org larger runners and would queue forever.
     if: >-
       github.repository == 'jito-foundation/jito-solana' &&
       (github.event_name != 'pull_request' ||
@@ -33,7 +33,6 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
-      packages: write
     steps:
       # Always check out the workflow's own ref; dispatch refs are built via
       # ./f --checkout below so old tags get current build tooling.
@@ -62,33 +61,19 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      # Layer cache only (toolchain stage); cargo state lives in BuildKit
-      # cache mounts, which registry cache cannot export.
-      - name: Set up registry build cache
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx create --use
-
       - name: Build release tarball
         env:
           EVENT: ${{ github.event_name }}
           DISPATCH_REF: ${{ inputs.ref }}
           TAG: ${{ steps.meta.outputs.tag }}
-          CACHE_REF: ghcr.io/${{ github.repository }}/build-cache
         run: |
-          args=(--pull-cache "$CACHE_REF" --push-cache "$CACHE_REF")
+          args=()
           if [[ -n "$TAG" ]]; then
             args+=(--tag "$TAG")
           fi
           if [[ "$EVENT" == "workflow_dispatch" ]]; then
-            if git fetch --depth=1 origin "refs/tags/$DISPATCH_REF:refs/tags/$DISPATCH_REF" 2>/dev/null; then
-              args+=(--checkout "$DISPATCH_REF")
-            else
-              git fetch --depth=1 origin "$DISPATCH_REF"
-              args+=(--checkout "$(git rev-parse FETCH_HEAD)")
-            fi
+            git fetch --depth=1 origin "$DISPATCH_REF"
+            args+=(--checkout "$(git rev-parse FETCH_HEAD)")
           fi
           ./f "${args[@]}"
 
@@ -119,13 +104,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          # release.yml normally creates the release on tag push
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --prerelease --title "Release $TAG" --notes "🚧"
-          fi
-          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+        # release.yml creates the release on tag push; fail if it is missing
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload workflow artifact
         if: steps.meta.outputs.tag == ''
