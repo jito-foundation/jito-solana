@@ -676,30 +676,139 @@ mod tests {
 
     #[test]
     fn test_load_program_invalid_account_data() {
-        let key = Pubkey::new_unique();
+        let program_key = Pubkey::new_unique();
+        let programdata_key = Pubkey::new_unique();
         let mock_bank = MockBankCallback::default();
-        let mut account_data = AccountSharedData::default();
-        account_data.set_owner(bpf_loader_upgradeable::id());
         let batch_processor = TransactionBatchProcessor::<TestForkGraph>::default();
+
+        // Create a valid program account.
+        let program_account = loader_v3_program_account(programdata_key);
         mock_bank
             .account_shared_data
             .borrow_mut()
-            .insert(key, (account_data.clone(), 0));
+            .insert(program_key, (program_account.clone(), 50));
 
+        // Create the programdata account as loader-owned, but with no state.
+        let mut programdata_account = AccountSharedData::default();
+        programdata_account.set_owner(bpf_loader_upgradeable::id());
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(programdata_key, (programdata_account, 60));
+
+        // Just like we saw earlier in `test_load_program_accounts_loader_v3`,
+        // the load result should be `InvalidAccountData(owner)`.
+        let result = load_program_accounts(&mock_bank, &program_key);
+        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        assert_eq!(owner, ProgramCacheEntryOwner::LoaderV3);
+        assert_eq!(last_modification_slot, 60);
+
+        // This is key, because we should now get a `Closed` tombstone.
         let result = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(20),
-            &key,
-            0, // Slot 0
+            &program_key,
+            100, // Slot 100
             &mut ExecuteTimings::default(),
         );
 
-        let loaded_program = ProgramCacheEntry::new_failed_verification_tombstone(
-            0, // Slot 0
+        // Assert the result matches a `Closed` tombstone.
+        let closed_tombstone = ProgramCacheEntry::new_closed_tombstone(
+            100, // Slot 100
+            ProgramCacheEntryOwner::LoaderV3,
+        );
+        let (entry, last_modification_slot) = result.unwrap();
+        assert_eq!(last_modification_slot, 60);
+        assert_eq!(entry, Arc::new(closed_tombstone));
+
+        // Assert that it is NOT a `FailedVerification` tombstone.
+        let fv_tombstone = ProgramCacheEntry::new_failed_verification_tombstone(
+            100, // Slot 100
             ProgramCacheEntryOwner::LoaderV3,
             batch_processor.program_runtime_environment_for_epoch(20),
         );
-        assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
+        assert_ne!(entry, Arc::new(fv_tombstone));
+
+        // Assert that it is NOT a `DelayVisibility` tombstone.
+        let dv_tombstone = ProgramCacheEntry::new_delay_visibility_tombstone(
+            100, // Slot 100
+            ProgramCacheEntryOwner::LoaderV3,
+            Arc::default(),
+        );
+        assert_ne!(entry, Arc::new(dv_tombstone));
+    }
+
+    #[test]
+    fn test_load_program_invalid_elf_bytes() {
+        let program_key = Pubkey::new_unique();
+        let programdata_key = Pubkey::new_unique();
+        let mock_bank = MockBankCallback::default();
+        let batch_processor = TransactionBatchProcessor::<TestForkGraph>::default();
+
+        // Create a valid program account.
+        let program_account = loader_v3_program_account(programdata_key);
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(program_key, (program_account.clone(), 50));
+
+        // Create a valid programdata account, but with invalid ELF bytes after
+        // the metadata.
+        let mut programdata_account = loader_v3_programdata_account(7);
+        let mut data = programdata_account.data().to_vec();
+        data.resize(UpgradeableLoaderState::size_of_programdata_metadata(), 0);
+        data.extend_from_slice(&[0xff; 64]);
+        programdata_account.set_data_from_slice(&data);
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(programdata_key, (programdata_account, 60));
+
+        // The accounts themselves are fine, so the load result carries the
+        // deployment slot the programdata account named.
+        let result = load_program_accounts(&mock_bank, &program_key);
+        unwrap_as!(
+            result,
+            ProgramOfLoaderV3(_program, _programdata, deployment_slot),
+            last_modification_slot
+        );
+        assert_eq!(deployment_slot, 7);
+        assert_eq!(last_modification_slot, 60);
+
+        // This is key, because the ELF fails to verify, so we should now get a
+        // `FailedVerification` tombstone.
+        let result = load_program_with_pubkey(
+            &mock_bank,
+            &batch_processor.program_runtime_environment_for_epoch(20),
+            &program_key,
+            100, // Slot 100
+            &mut ExecuteTimings::default(),
+        );
+
+        // Assert the result matches a `FailedVerification` tombstone.
+        let fv_tombstone = ProgramCacheEntry::new_failed_verification_tombstone(
+            7, // Deployment slot, not the current slot
+            ProgramCacheEntryOwner::LoaderV3,
+            batch_processor.program_runtime_environment_for_epoch(20),
+        );
+        let (entry, last_modification_slot) = result.unwrap();
+        assert_eq!(last_modification_slot, 60);
+        assert_eq!(entry, Arc::new(fv_tombstone));
+
+        // Assert that it is NOT a `Closed` tombstone.
+        let closed_tombstone = ProgramCacheEntry::new_closed_tombstone(
+            7, // Deployment slot, not the current slot
+            ProgramCacheEntryOwner::LoaderV3,
+        );
+        assert_ne!(entry, Arc::new(closed_tombstone));
+
+        // Assert that it is NOT a `DelayVisibility` tombstone.
+        let dv_tombstone = ProgramCacheEntry::new_delay_visibility_tombstone(
+            7, // Deployment slot, not the current slot
+            ProgramCacheEntryOwner::LoaderV3,
+            Arc::default(),
+        );
+        assert_ne!(entry, Arc::new(dv_tombstone));
     }
 
     #[test]
@@ -788,7 +897,8 @@ mod tests {
             .borrow_mut()
             .insert(key2, (account_data2.clone(), 0));
 
-        // This should return an error
+        // The programdata account is not owned by the loader, so this is a
+        // `Closed` tombstone rather than a `FailedVerification` one.
         let result = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(0),
@@ -796,11 +906,8 @@ mod tests {
             0,
             &mut ExecuteTimings::default(),
         );
-        let loaded_program = ProgramCacheEntry::new_failed_verification_tombstone(
-            0,
-            ProgramCacheEntryOwner::LoaderV3,
-            batch_processor.program_runtime_environment_for_epoch(0),
-        );
+        let loaded_program =
+            ProgramCacheEntry::new_closed_tombstone(0, ProgramCacheEntryOwner::LoaderV3);
         assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
 
         let mut buffer = load_test_program();
@@ -843,6 +950,54 @@ mod tests {
             &mut LoadProgramMetrics::default(),
         );
         assert_eq!(result.unwrap(), (Arc::new(expected.unwrap()), 0));
+    }
+
+    #[test]
+    fn test_load_program_program_loader_v4() {
+        let key = Pubkey::new_unique();
+        let mock_bank = MockBankCallback::default();
+        let batch_processor = TransactionBatchProcessor::<TestForkGraph>::default();
+        let environment = batch_processor.program_runtime_environment_for_epoch(20);
+
+        // No ELF, fail verification.
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(key, (loader_v4_account(9, LoaderV4Status::Deployed), 100));
+        let (entry, _) = load_program_with_pubkey(
+            &mock_bank,
+            &environment,
+            &key,
+            200,
+            &mut ExecuteTimings::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            entry.program,
+            ProgramCacheEntryType::FailedVerification(_)
+        ));
+        assert_eq!(entry.deployment_slot, 9);
+
+        // Valid ELF, success.
+        let mut account = loader_v4_account(9, LoaderV4Status::Deployed);
+        let mut data = account.data().to_vec();
+        data.extend_from_slice(&load_test_program());
+        account.set_data_from_slice(&data);
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(key, (account, 100));
+        let (entry, _) = load_program_with_pubkey(
+            &mock_bank,
+            &environment,
+            &key,
+            200,
+            &mut ExecuteTimings::default(),
+        )
+        .unwrap();
+        assert!(matches!(entry.program, ProgramCacheEntryType::Loaded(_)));
+        assert_eq!(entry.deployment_slot, 9);
+        assert_eq!(entry.account_owner, ProgramCacheEntryOwner::LoaderV4);
     }
 
     #[test]
