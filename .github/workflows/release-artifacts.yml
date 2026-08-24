@@ -1,18 +1,13 @@
-# Build the versioned jito-solana validator artifact in CI and publish it so
-# deploys can download-and-swap instead of building from source (MEV-12300).
-#
-# Drives ./f (dev/Dockerfile), which produces a hermetic linux/amd64 release
-# tarball + version manifest. Tag pushes (and dispatch refs that name an
-# existing GitHub release) upload the tarball, manifest, and SHA-256 to that
-# release; any other dispatch ref is kept as a workflow artifact.
+# Build the release tarball with ./f and attach it (+ manifest, SHA-256) to
+# the tag's GitHub release, so deploys download instead of building from
+# source (MEV-12300).
 name: Release Artifacts
 
 on:
   push:
     tags:
       - "v*-jito"
-  # Self-test: PRs touching this workflow run the full build pre-merge.
-  # PR runs never touch a release (artifact-upload path only).
+  # Self-test: PR runs build but never touch a release.
   pull_request:
     paths:
       - ".github/workflows/release-artifacts.yml"
@@ -29,12 +24,11 @@ concurrency:
 
 jobs:
   build:
-    # Fork PRs get a read-only token (GHCR login would fail); skip them.
+    # Skip fork PRs: their token cannot push the GHCR cache.
     if: >-
       github.repository == 'jito-foundation/jito-solana' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    # Org larger runner: 16-core / 64GB / 600GB SSD (label big-runner-1).
     runs-on: big-runner-1
     timeout-minutes: 360
     permissions:
@@ -47,10 +41,8 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
-      # Tag pushes always name the artifact after the tag. A dispatch ref gets
-      # the release name only when a GitHub release for that exact ref already
-      # exists (backfills); anything else keeps ./f's derived
-      # v<version>_<shortsha> naming.
+      # Empty tag = not a release build; artifact keeps ./f's derived name
+      # and is uploaded as a workflow artifact instead.
       - name: Resolve release tag
         id: meta
         env:
@@ -68,11 +60,8 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      # Registry layer cache skips the toolchain stage (apt + rustup) on
-      # warm runs. It does NOT cache the cargo compile: that state lives in
-      # BuildKit cache mounts, which registry cache export doesn't cover.
-      # Registry cache export also requires a docker-container builder (the
-      # default docker driver can't export cache).
+      # Layer cache only (toolchain stage); cargo state lives in BuildKit
+      # cache mounts, which registry cache cannot export.
       - name: Set up registry build cache
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,8 +80,6 @@ jobs:
           fi
           ./f "${args[@]}"
 
-      # Publish the source revision, checksum, and contents alongside the
-      # artifact (see the job summary and the .sha256 asset).
       - name: Checksum and summarize
         run: |
           cd dist
@@ -121,8 +108,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          # release.yml creates the release on tag push; recreate defensively
-          # in case it was deleted before this multi-hour build finished.
+          # release.yml normally creates the release on tag push
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --prerelease --title "Release $TAG" --notes "🚧"
