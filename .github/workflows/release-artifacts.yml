@@ -11,6 +11,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/release-artifacts.yml"
+      - "f"
+      - "dev/Dockerfile"
   workflow_dispatch:
     inputs:
       ref:
@@ -86,12 +88,16 @@ jobs:
 
       - name: Checksum and summarize
         run: |
+          ./docker-output/agave-validator --version
           cd dist
           for f in *.tar.bz2; do
             sha256sum "$f" > "$f.sha256"
           done
           {
             echo "## jito-solana release artifact"
+            echo '```'
+            ../docker-output/agave-validator --version
+            echo '```'
             echo '```'
             cat ./*.yml
             echo '```'
