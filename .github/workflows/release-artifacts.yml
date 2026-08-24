@@ -1,6 +1,6 @@
 # Build the release tarball with ./f and attach it (+ manifest, SHA-256) to
 # the tag's GitHub release, so deploys download instead of building from
-# source (MEV-12300).
+# source.
 name: Release Artifacts
 
 on:
