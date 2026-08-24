@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
+      packages: write
     steps:
       # The release build needs ~40GB of scratch; stock runners have ~14GB
       # free on / and ~65GB on /mnt. Drop unused toolchains and move docker's
@@ -73,11 +74,24 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # Registry layer cache skips the toolchain stage (apt + rustup) on
+      # warm runs. It does NOT cache the cargo compile: that state lives in
+      # BuildKit cache mounts, which registry cache export doesn't cover.
+      # Registry cache export also requires a docker-container builder (the
+      # default docker driver can't export cache).
+      - name: Set up registry build cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use
+
       - name: Build release tarball
         env:
           TAG: ${{ steps.meta.outputs.tag }}
+          CACHE_REF: ghcr.io/${{ github.repository }}/build-cache
         run: |
-          args=()
+          args=(--pull-cache "$CACHE_REF" --push-cache "$CACHE_REF")
           if [[ -n "$TAG" ]]; then
             args+=(--tag "$TAG")
           fi
