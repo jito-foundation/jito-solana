@@ -1,0 +1,129 @@
+# Build the versioned jito-solana validator artifact in CI and publish it so
+# deploys can download-and-swap instead of building from source (MEV-12300).
+#
+# Drives ./f (dev/Dockerfile), which produces a hermetic linux/amd64 release
+# tarball + version manifest. Tag pushes (and dispatch refs that name an
+# existing GitHub release) upload the tarball, manifest, and SHA-256 to that
+# release; any other dispatch ref is kept as a workflow artifact.
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*-jito"
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+        required: true
+        description: git ref to build (tag, branch, or SHA)
+
+jobs:
+  build:
+    if: github.repository == 'jito-foundation/jito-solana'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      # The release build needs ~40GB of scratch; stock runners have ~14GB
+      # free on / and ~65GB on /mnt. Drop unused toolchains and move docker's
+      # data-root (where BuildKit keeps layers and cache mounts) to /mnt.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache
+          sudo systemctl stop docker
+          sudo rm -rf /var/lib/docker
+          sudo mkdir -p /etc/docker /mnt/docker
+          if [[ -s /etc/docker/daemon.json ]]; then
+            sudo jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json \
+              | sudo tee /etc/docker/daemon.json.new >/dev/null
+            sudo mv /etc/docker/daemon.json.new /etc/docker/daemon.json
+          else
+            echo '{"data-root": "/mnt/docker"}' \
+              | sudo tee /etc/docker/daemon.json >/dev/null
+          fi
+          sudo systemctl start docker
+          df -h / /mnt
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      # Tag pushes always name the artifact after the tag. A dispatch ref gets
+      # the release name only when a GitHub release for that exact ref already
+      # exists (backfills); anything else keeps ./f's derived
+      # v<version>_<shortsha> naming.
+      - name: Resolve release tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          DISPATCH_REF: ${{ inputs.ref }}
+        run: |
+          tag=""
+          if [[ "$EVENT" == "push" ]]; then
+            tag="$PUSH_TAG"
+          elif gh release view "$DISPATCH_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            tag="$DISPATCH_REF"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build release tarball
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          args=()
+          if [[ -n "$TAG" ]]; then
+            args+=(--tag "$TAG")
+          fi
+          ./f "${args[@]}"
+
+      # Publish the source revision, checksum, and contents alongside the
+      # artifact (see the job summary and the .sha256 asset).
+      - name: Checksum and summarize
+        run: |
+          cd dist
+          for f in *.tar.bz2; do
+            sha256sum "$f" > "$f.sha256"
+          done
+          {
+            echo "## jito-solana release artifact"
+            echo '```'
+            cat ./*.yml
+            echo '```'
+            echo "### SHA-256"
+            echo '```'
+            cat ./*.sha256
+            echo '```'
+            echo "### Contents"
+            echo '```'
+            tar -tjf ./*.tar.bz2
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -lh
+
+      - name: Publish to GitHub release
+        if: steps.meta.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          # release.yml creates the release on tag push; recreate defensively
+          # in case it was deleted before this multi-hour build finished.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --prerelease --title "Release $TAG" --notes "🚧"
+          fi
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload workflow artifact
+        if: steps.meta.outputs.tag == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: jito-solana-release
+          path: dist/
