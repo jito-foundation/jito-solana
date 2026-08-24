@@ -11,6 +11,11 @@ on:
   push:
     tags:
       - "v*-jito"
+  # Self-test: PRs touching this workflow run the full build pre-merge.
+  # PR runs never touch a release (artifact-upload path only).
+  pull_request:
+    paths:
+      - ".github/workflows/release-artifacts.yml"
   workflow_dispatch:
     inputs:
       ref:
@@ -18,9 +23,17 @@ on:
         required: true
         description: git ref to build (tag, branch, or SHA)
 
+concurrency:
+  group: release-artifacts-${{ github.event.pull_request.number || inputs.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
-    if: github.repository == 'jito-foundation/jito-solana'
+    # Fork PRs get a read-only token (GHCR login would fail); skip them.
+    if: >-
+      github.repository == 'jito-foundation/jito-solana' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
@@ -69,7 +82,8 @@ jobs:
           tag=""
           if [[ "$EVENT" == "push" ]]; then
             tag="$PUSH_TAG"
-          elif gh release view "$DISPATCH_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          elif [[ -n "$DISPATCH_REF" ]] \
+            && gh release view "$DISPATCH_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             tag="$DISPATCH_REF"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
