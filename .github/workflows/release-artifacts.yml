@@ -126,3 +126,4 @@ jobs:
         with:
           name: jito-solana-release
           path: dist/
+          compression-level: 0  # contents are already bzip2
