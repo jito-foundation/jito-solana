@@ -14,8 +14,9 @@ pub(super) fn simulate_bundle(
     config: Option<RpcSimulateBundleConfig>,
 ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
     const MAX_BUNDLES_SIMULATED: usize = 20;
+    let transaction_count = rpc_bundle_request.encoded_transactions.len();
 
-    if rpc_bundle_request.encoded_transactions.len() > MAX_BUNDLES_SIMULATED {
+    if transaction_count > MAX_BUNDLES_SIMULATED {
         return Err(Error::invalid_params(
             "bundle size too large, max 20 transactions",
         ));
@@ -24,8 +25,8 @@ pub(super) fn simulate_bundle(
     debug!("simulate_bundle rpc request received");
 
     let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
-        pre_execution_accounts_configs: vec![None; rpc_bundle_request.encoded_transactions.len()],
-        post_execution_accounts_configs: vec![None; rpc_bundle_request.encoded_transactions.len()],
+        pre_execution_accounts_configs: vec![None; transaction_count],
+        post_execution_accounts_configs: vec![None; transaction_count],
         ..RpcSimulateBundleConfig::default()
     });
 
@@ -39,8 +40,8 @@ pub(super) fn simulate_bundle(
     } = config;
 
     // Run some request validations
-    if !(pre_execution_accounts_configs.len() == rpc_bundle_request.encoded_transactions.len()
-        && post_execution_accounts_configs.len() == rpc_bundle_request.encoded_transactions.len())
+    if pre_execution_accounts_configs.len() != transaction_count
+        || post_execution_accounts_configs.len() != transaction_count
     {
         return Err(Error::invalid_params(
             "pre/post_execution_accounts_configs must be equal in length to the number of \
@@ -56,42 +57,31 @@ pub(super) fn simulate_bundle(
             "Base64 is the only supported encoding for transactions",
         ));
     }
-    for config in pre_execution_accounts_configs.iter() {
-        if config
-            .as_ref()
-            .and_then(|c| c.encoding)
-            .unwrap_or(UiAccountEncoding::Base64)
-            != UiAccountEncoding::Base64
-        {
-            return Err(Error::invalid_params(
-                "Base64 is the only supported encoding for pre-execution accounts",
-            ));
-        }
-    }
-    for config in post_execution_accounts_configs.iter() {
-        if config
-            .as_ref()
-            .and_then(|c| c.encoding)
-            .unwrap_or(UiAccountEncoding::Base64)
-            != UiAccountEncoding::Base64
-        {
-            return Err(Error::invalid_params(
-                "Base64 is the only supported encoding for post-execution accounts",
-            ));
+    for (configs, error) in [
+        (
+            pre_execution_accounts_configs.as_slice(),
+            "Base64 is the only supported encoding for pre-execution accounts",
+        ),
+        (
+            post_execution_accounts_configs.as_slice(),
+            "Base64 is the only supported encoding for post-execution accounts",
+        ),
+    ] {
+        if configs.iter().flatten().any(|config| {
+            config.encoding.unwrap_or(UiAccountEncoding::Base64) != UiAccountEncoding::Base64
+        }) {
+            return Err(Error::invalid_params(error));
         }
     }
 
-    let tx_encoding = transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
-    let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
-        Error::invalid_params(format!(
-            "Unsupported encoding: {tx_encoding:?}. Supported encodings are: base64, base58",
-        ))
-    })?;
-    let mut packet_hashes = HashSet::with_capacity(rpc_bundle_request.encoded_transactions.len());
-    let mut unsanitized_txs = Vec::with_capacity(rpc_bundle_request.encoded_transactions.len());
+    let mut packet_hashes = HashSet::with_capacity(transaction_count);
+    let mut unsanitized_txs = Vec::with_capacity(transaction_count);
     for encoded_tx in rpc_bundle_request.encoded_transactions {
-        let tx = decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)
-            .map(|(_bytes, txn)| txn)?;
+        let tx = decode_and_deserialize::<VersionedTransaction>(
+            encoded_tx,
+            TransactionBinaryEncoding::Base64,
+        )?
+        .1;
         if !packet_hashes.insert(tx.message.hash()) {
             return Err(Error::invalid_params("duplicate transactions"));
         }
@@ -108,24 +98,12 @@ pub(super) fn simulate_bundle(
 
     // Ensure an excessive amount of accounts are not requested per transaction
     let max_accounts = bank.get_transaction_account_lock_limit();
-    if pre_execution_accounts_configs.iter().any(|config| {
-        if let Some(config) = config {
-            config.addresses.len() > max_accounts
-        } else {
-            false
-        }
-    }) {
-        return Err(Error::invalid_params(format!(
-            "Too many accounts provided; max {max_accounts}"
-        )));
-    }
-    if post_execution_accounts_configs.iter().any(|config| {
-        if let Some(config) = config {
-            config.addresses.len() > max_accounts
-        } else {
-            false
-        }
-    }) {
+    if pre_execution_accounts_configs
+        .iter()
+        .chain(&post_execution_accounts_configs)
+        .flatten()
+        .any(|config| config.addresses.len() > max_accounts)
+    {
         return Err(Error::invalid_params(format!(
             "Too many accounts provided; max {max_accounts}"
         )));
@@ -167,13 +145,11 @@ pub(super) fn simulate_bundle(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    if !config.skip_sig_verify {
+    if !skip_sig_verify {
         for tx in &transactions {
-            if let Err(e) = tx.verify() {
-                return Err(Error::invalid_params(format!(
-                    "transaction signature is invalid: {e}",
-                )));
-            }
+            tx.verify().map_err(|e| {
+                Error::invalid_params(format!("transaction signature is invalid: {e}"))
+            })?;
         }
     }
 
