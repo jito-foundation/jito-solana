@@ -95,6 +95,7 @@ pub trait BankNotificationFilter: Send + Sync + 'static {
 pub struct BankNotificationSender {
     tx: Sender<BankNotificationWithDependencyWork>,
     filter: Option<Box<dyn BankNotificationFilter>>,
+    disconnected: AtomicBool,
 }
 
 impl BankNotificationSender {
@@ -116,12 +117,25 @@ impl BankNotificationSender {
         // All subscriber channels are unbounded so sending to one subscriber cannot block
         // consensus-critical producers or delay notification delivery to other subscribers.
         let (tx, rx) = unbounded();
-        (Self { tx, filter }, rx)
+        (
+            Self {
+                tx,
+                filter,
+                disconnected: AtomicBool::new(false),
+            },
+            rx,
+        )
     }
 
     /// Forward `notification` if accepted by this subscriber's filter, returning whether the
     /// subscriber is assumed connected.
     fn forward(&self, notification: &BankNotificationWithDependencyWork) -> bool {
+        // A disconnected receiver cannot reconnect. Avoid all subsequent filter, clone, send,
+        // and logging work once a failed send establishes disconnection.
+        if self.disconnected.load(Ordering::Relaxed) {
+            return false;
+        }
+
         if !self
             .filter
             .as_ref()
@@ -133,10 +147,14 @@ impl BankNotificationSender {
         match self.tx.send(notification.clone()) {
             Ok(()) => true,
             Err(SendError(notification)) => {
-                warn!(
-                    "bank notification subscriber disconnected, dropping {:?}",
-                    notification.0
-                );
+                // Concurrent producers may observe the first failure together. `swap` ensures
+                // only one of them emits the disconnection warning.
+                if !self.disconnected.swap(true, Ordering::Relaxed) {
+                    warn!(
+                        "bank notification subscriber disconnected, dropping {:?}",
+                        notification.0
+                    );
+                }
                 false
             }
         }
