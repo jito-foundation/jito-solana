@@ -84,7 +84,7 @@ pub(super) fn simulate_bundle(
     let tx_encoding = transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
     let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
         Error::invalid_params(format!(
-            "Unsupported encoding: {tx_encoding:?}. Supported encodings are: base58 & base64",
+            "Unsupported encoding: {tx_encoding:?}. Supported encodings are: base64, base58",
         ))
     })?;
     let mut packet_hashes = HashSet::with_capacity(rpc_bundle_request.encoded_transactions.len());
