@@ -48,19 +48,13 @@ impl AuthRefreshState {
         connection_timeout: &Duration,
         refresh_within_s: u64,
     ) -> crate::proxy::Result<(bool, bool)> {
-        let now = Utc::now().timestamp() as u64;
-        let expires_within = |token: &Token| {
-            token
-                .expires_at_utc
-                .as_ref()
-                .map(|ts| ts.seconds as u64)
-                .unwrap_or_default()
-                .saturating_sub(now)
-                <= refresh_within_s
-        };
+        let refresh_deadline = Utc::now()
+            .timestamp()
+            .saturating_add_unsigned(refresh_within_s);
 
-        if expires_within(&self.refresh_token) {
+        if expires_by(&self.refresh_token, refresh_deadline) {
             let keypair = cluster_info.keypair();
+            // Close the identity-rotation race between the outer check and reauthentication.
             self.validate_identity(keypair.pubkey())?;
             let (new_access_token, new_refresh_token) = timeout(
                 *connection_timeout,
@@ -75,7 +69,7 @@ impl AuthRefreshState {
             self.access_token.store(Arc::new(new_access_token));
             self.refresh_token = new_refresh_token;
             Ok((true, true))
-        } else if expires_within(&self.access_token.load()) {
+        } else if expires_by(&self.access_token.load(), refresh_deadline) {
             let new_access_token = timeout(
                 *connection_timeout,
                 refresh_access_token(&mut self.auth_client, &self.refresh_token),
@@ -92,6 +86,14 @@ impl AuthRefreshState {
             Ok((false, false))
         }
     }
+}
+
+fn expires_by(token: &Token, deadline: i64) -> bool {
+    // Keep protobuf seconds signed so already-expired timestamps cannot wrap into the future.
+    token
+        .expires_at_utc
+        .as_ref()
+        .is_none_or(|ts| ts.seconds <= deadline)
 }
 
 /// Interceptor responsible for adding the access token to request headers.
@@ -217,17 +219,50 @@ async fn refresh_access_token(
     get_validated_token(response.into_inner().access_token)
 }
 
-/// An invalid token is one where any of its fields are None or the token itself is None.
-/// Performs the necessary validations on the auth tokens before returning,
-/// i.e. it is safe to call .unwrap() on the token fields from the call-site.
+/// Reject malformed auth responses before publishing a token to the interceptor.
 fn get_validated_token(maybe_token: Option<Token>) -> crate::proxy::Result<Token> {
     let token = maybe_token
         .ok_or_else(|| ProxyError::BadAuthenticationToken("received a null token".to_string()))?;
-    if token.expires_at_utc.is_none() {
+    if token.value.is_empty() {
+        Err(ProxyError::BadAuthenticationToken(
+            "token value is empty".to_string(),
+        ))
+    } else if token.expires_at_utc.is_none() {
         Err(ProxyError::BadAuthenticationToken(
             "expires_at_utc field is null".to_string(),
         ))
     } else {
         Ok(token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token(value: &str, expires_at: i64) -> Token {
+        let mut token = Token {
+            value: value.to_string(),
+            ..Token::default()
+        };
+        token.expires_at_utc.get_or_insert_default().seconds = expires_at;
+        token
+    }
+
+    #[test]
+    fn expiry_is_signed_and_inclusive() {
+        for (expires_at, expected) in [(-1, true), (10, true), (11, false)] {
+            assert_eq!(expires_by(&token("token", expires_at), 10), expected);
+        }
+    }
+
+    #[test]
+    fn token_requires_value_and_expiry() {
+        assert!(get_validated_token(Some(token("token", 1))).is_ok());
+        let mut missing_expiry = token("token", 1);
+        missing_expiry.expires_at_utc = None;
+        for invalid in [None, Some(token("", 1)), Some(missing_expiry)] {
+            assert!(get_validated_token(invalid).is_err());
+        }
     }
 }
