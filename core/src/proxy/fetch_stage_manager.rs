@@ -405,11 +405,12 @@ impl FetchStageTpuStateMachine {
             Ok(pkt) => {
                 // Only forward packets when fetch stage is "connected"
                 if self.should_forward_packets() {
+                    let packet_count = pkt.len() as u64;
                     if self.packet_tx.send(pkt).is_err() {
                         error!("{:?}", ProxyError::PacketForwardError);
                         return false;
                     }
-                    self.metrics.packets_forwarded += 1;
+                    self.metrics.packets_forwarded += packet_count;
                 }
                 true
             }
@@ -500,13 +501,15 @@ mod tests {
         packet_rx: &Receiver<PacketBatch>,
         should_send: bool,
     ) {
-        let pkt = PacketBatch::Single(BytesPacket::empty());
+        let packets_forwarded = brain.metrics.packets_forwarded;
+        let pkt = PacketBatch::from(vec![BytesPacket::empty(); 3]);
         assert!(brain.handle_packet_batch(Ok(pkt.clone())));
         if should_send {
-            let received_pkt = packet_rx.recv().unwrap();
-            assert_eq!(received_pkt, pkt);
+            assert_eq!(packet_rx.recv().unwrap(), pkt);
+            assert_eq!(brain.metrics.packets_forwarded, packets_forwarded + 3);
         } else {
             assert!(packet_rx.try_recv().is_err());
+            assert_eq!(brain.metrics.packets_forwarded, packets_forwarded);
         }
     }
 
