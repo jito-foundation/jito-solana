@@ -1,6 +1,10 @@
 use {
-    crate::{admin_rpc_service, cli::DefaultArgs, commands::Result},
-    clap::{App, Arg, ArgMatches, SubCommand, value_t_or_exit},
+    crate::{
+        admin_rpc_service,
+        cli::DefaultArgs,
+        commands::{Result, jito_args},
+    },
+    clap::{App, ArgMatches, SubCommand, value_t_or_exit},
     solana_clap_utils::input_parsers::value_of,
     std::path::Path,
 };
@@ -8,30 +12,13 @@ use {
 pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
     SubCommand::with_name("set-relayer-config")
         .about("Set configuration for connection to a relayer")
-        .arg(
-            Arg::with_name("relayer_url")
-                .long("relayer-url")
-                .help("Relayer url. Set to empty string to disable relayer connection.")
-                .takes_value(true)
-                .required(true),
-        )
-        .arg(
-            Arg::with_name("relayer_expected_heartbeat_interval_ms")
-                .long("relayer-expected-heartbeat-interval-ms")
-                .takes_value(true)
-                .help("Interval at which the Relayer is expected to send heartbeat messages.")
-                .default_value(&default_args.relayer_expected_heartbeat_interval_ms),
-        )
-        .arg(
-            Arg::with_name("relayer_max_failed_heartbeats")
-                .long("relayer-max-failed-heartbeats")
-                .takes_value(true)
-                .help(
-                    "Maximum number of heartbeats the Relayer can miss before falling back to the \
-                     normal TPU pipeline.",
-                )
-                .default_value(&default_args.relayer_max_failed_heartbeats),
-        )
+        .arg(jito_args::relayer_url().required(true))
+        .arg(jito_args::relayer_expected_heartbeat_interval_ms(
+            &default_args.relayer_expected_heartbeat_interval_ms,
+        ))
+        .arg(jito_args::relayer_max_failed_heartbeats(
+            &default_args.relayer_max_failed_heartbeats,
+        ))
 }
 
 pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()> {
