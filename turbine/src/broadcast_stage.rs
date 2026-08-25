@@ -638,7 +638,9 @@ pub fn broadcast_shreds(
         next_broadcast_leader_pubkey(leader_schedule_cache, &working_bank, &my_pubkey, slot)
     };
 
-    let mut packets: Vec<_> = shreds
+    let packet_capacity = shreds.len().saturating_mul(2 + external_addrs.len());
+    let mut packets = Vec::with_capacity(packet_capacity);
+    shreds
         .iter()
         .chunk_by(|shred| shred.slot())
         .into_iter()
@@ -670,13 +672,12 @@ pub fn broadcast_shreds(
                     })
             })
         })
-        .collect();
+        .for_each(|packet| packets.push(packet));
 
     // Mirror this validator's own broadcast shreds to external receivers
     // (shredstream, `--shred-receiver-address`, BAM, and multicast), avoiding duplicates when
     // addresses overlap. External addresses are not part of the turbine tree and use either
     // shred_receiver_socket (UDP) or XDP routing independent of --bind-address.
-    packets.reserve(shreds.len().saturating_mul(external_addrs.len()));
     let external_packets_start = packets.len();
     for &addr in external_addrs.iter() {
         for shred in shreds {
