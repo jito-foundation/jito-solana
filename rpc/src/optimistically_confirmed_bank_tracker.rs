@@ -119,15 +119,18 @@ impl BankNotificationSender {
         (Self { tx, filter }, rx)
     }
 
-    pub fn should_forward(&self, notification: &BankNotification) -> bool {
-        self.filter
+    /// Forward `notification` if accepted by this subscriber's filter, returning whether the
+    /// subscriber is assumed connected.
+    fn forward(&self, notification: &BankNotificationWithDependencyWork) -> bool {
+        if !self
+            .filter
             .as_ref()
-            .is_none_or(|filter| filter.should_forward(notification))
-    }
+            .is_none_or(|filter| filter.should_forward(&notification.0))
+        {
+            return true;
+        }
 
-    /// Forward `notification` to this subscriber, returning whether it was delivered.
-    pub fn send_notification(&self, notification: BankNotificationWithDependencyWork) -> bool {
-        match self.tx.send(notification) {
+        match self.tx.send(notification.clone()) {
             Ok(()) => true,
             Err(SendError(notification)) => {
                 warn!(
@@ -168,15 +171,9 @@ impl BankNotificationBroadcaster {
         let mut connected_subscriber_count = 0;
 
         for sender in self.subscriber_senders.iter() {
-            // Filter before cloning, so a rejected notification never clones the bank it carries.
             // A subscriber that filters the notification out is still assumed connected, since its
             // channel was never touched.
-            if !sender.should_forward(&notification.0) {
-                connected_subscriber_count += 1;
-                continue;
-            }
-
-            if sender.send_notification(notification.clone()) {
+            if sender.forward(&notification) {
                 connected_subscriber_count += 1;
             }
         }
