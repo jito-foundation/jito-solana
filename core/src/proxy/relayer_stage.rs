@@ -179,7 +179,7 @@ impl RelayerStage {
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
-        let keypair = cluster_info.keypair().clone();
+        let keypair = cluster_info.keypair();
         let backend_endpoint = Self::get_endpoint(&local_relayer_config.relayer_url)?;
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
@@ -204,10 +204,8 @@ impl RelayerStage {
                     crate::proxy::sanitize_status_message_for_influx(&err.to_string()),
                 )
             })?;
-        let relayer_client = RelayerClient::with_interceptor(
-            relayer_channel,
-            AuthInterceptor::new(auth_refresh_state.access_token()),
-        );
+        let relayer_client =
+            RelayerClient::with_interceptor(relayer_channel, auth_refresh_state.interceptor());
 
         Self::start_consuming_relayer_packets(
             relayer_client,
@@ -334,6 +332,8 @@ impl RelayerStage {
                     relayer_stats.report();
                     relayer_stats = RelayerStageStats::default();
 
+                    auth_refresh_state.validate_identity(cluster_info.id())?;
+
                     if global_config.load().as_ref() != local_config {
                         return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
                     }
@@ -349,7 +349,6 @@ impl RelayerStage {
                             ("url", &local_config.relayer_url, String),
                             ("count", num_refresh_access_token, i64),
                         );
-
                     }
                     if refresh_token_refreshed {
                         num_full_refreshes += 1;

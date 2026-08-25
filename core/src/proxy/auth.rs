@@ -27,41 +27,70 @@ pub(crate) struct AuthRefreshState {
 }
 
 impl AuthRefreshState {
-    pub(crate) fn access_token(&self) -> Arc<ArcSwap<Token>> {
-        self.access_token.clone()
+    pub(crate) fn interceptor(&self) -> AuthInterceptor {
+        AuthInterceptor {
+            access_token: self.access_token.clone(),
+        }
     }
 
-    pub(crate) async fn maybe_refresh(
-        &mut self,
-        cluster_info: &Arc<ClusterInfo>,
-        connection_timeout: &Duration,
-        refresh_within_s: u64,
-    ) -> crate::proxy::Result<(bool, bool)> {
-        if cluster_info.id() != self.identity {
+    pub(crate) fn validate_identity(&self, identity: Pubkey) -> crate::proxy::Result<()> {
+        if identity != self.identity {
             return Err(ProxyError::AuthenticationConnectionError(
                 "validator identity changed".to_string(),
             ));
         }
+        Ok(())
+    }
 
-        let (new_access_token, new_refresh_token) = maybe_refresh_auth_tokens(
-            &mut self.auth_client,
-            &self.access_token,
-            &self.refresh_token,
-            cluster_info,
-            connection_timeout,
-            refresh_within_s,
-        )
-        .await?;
+    pub(crate) async fn maybe_refresh(
+        &mut self,
+        cluster_info: &ClusterInfo,
+        connection_timeout: &Duration,
+        refresh_within_s: u64,
+    ) -> crate::proxy::Result<(bool, bool)> {
+        let now = Utc::now().timestamp() as u64;
+        let expires_within = |token: &Token| {
+            token
+                .expires_at_utc
+                .as_ref()
+                .map(|ts| ts.seconds as u64)
+                .unwrap_or_default()
+                .saturating_sub(now)
+                <= refresh_within_s
+        };
 
-        let access_token_refreshed = new_access_token.is_some();
-        if let Some(new_access_token) = new_access_token {
+        if expires_within(&self.refresh_token) {
+            let keypair = cluster_info.keypair();
+            self.validate_identity(keypair.pubkey())?;
+            let (new_access_token, new_refresh_token) = timeout(
+                *connection_timeout,
+                generate_auth_tokens(&mut self.auth_client, keypair.as_ref()),
+            )
+            .await
+            .map_err(|_| ProxyError::MethodTimeout("generate_auth_tokens".to_string()))?
+            .map_err(|e| ProxyError::MethodError {
+                code: tonic::Code::Unknown,
+                message: sanitize_status_message_for_influx(&e.to_string()),
+            })?;
             self.access_token.store(Arc::new(new_access_token));
-        }
-        let refresh_token_refreshed = new_refresh_token.is_some();
-        if let Some(new_refresh_token) = new_refresh_token {
             self.refresh_token = new_refresh_token;
+            Ok((true, true))
+        } else if expires_within(&self.access_token.load()) {
+            let new_access_token = timeout(
+                *connection_timeout,
+                refresh_access_token(&mut self.auth_client, &self.refresh_token),
+            )
+            .await
+            .map_err(|_| ProxyError::MethodTimeout("refresh_access_token".to_string()))?
+            .map_err(|e| ProxyError::MethodError {
+                code: tonic::Code::Unknown,
+                message: sanitize_status_message_for_influx(&e.to_string()),
+            })?;
+            self.access_token.store(Arc::new(new_access_token));
+            Ok((true, false))
+        } else {
+            Ok((false, false))
         }
-        Ok((access_token_refreshed, refresh_token_refreshed))
     }
 }
 
@@ -69,12 +98,6 @@ impl AuthRefreshState {
 pub(crate) struct AuthInterceptor {
     /// The token added to each request header.
     access_token: Arc<ArcSwap<Token>>,
-}
-
-impl AuthInterceptor {
-    pub(crate) fn new(access_token: Arc<ArcSwap<Token>>) -> Self {
-        Self { access_token }
-    }
 }
 
 impl Interceptor for AuthInterceptor {
@@ -120,7 +143,7 @@ pub(crate) async fn auth_client_from_endpoint(
 }
 
 /// Generates an auth challenge then generates and returns validated auth tokens.
-pub async fn generate_auth_tokens(
+async fn generate_auth_tokens(
     auth_service_client: &mut AuthServiceClient<Channel>,
     // used to sign challenges
     keypair: &Keypair,
@@ -178,70 +201,7 @@ pub async fn generate_auth_tokens(
     Ok((access_token, refresh_token))
 }
 
-/// Tries to refresh the access token or run full-reauth if needed.
-pub async fn maybe_refresh_auth_tokens(
-    auth_service_client: &mut AuthServiceClient<Channel>,
-    access_token: &Arc<ArcSwap<Token>>,
-    refresh_token: &Token,
-    cluster_info: &Arc<ClusterInfo>,
-    connection_timeout: &Duration,
-    refresh_within_s: u64,
-) -> crate::proxy::Result<(
-    Option<Token>, // access token
-    Option<Token>, // refresh token
-)> {
-    let now = Utc::now().timestamp() as u64;
-
-    let should_refresh_access = access_token
-        .load()
-        .expires_at_utc
-        .as_ref()
-        .map(|ts| ts.seconds as u64)
-        .unwrap_or_default()
-        .saturating_sub(now)
-        <= refresh_within_s;
-    let should_generate_new_tokens = refresh_token
-        .expires_at_utc
-        .as_ref()
-        .map(|ts| ts.seconds as u64)
-        .unwrap_or_default()
-        .saturating_sub(now)
-        <= refresh_within_s;
-
-    if should_generate_new_tokens {
-        let kp = cluster_info.keypair().clone();
-
-        let (new_access_token, new_refresh_token) = timeout(
-            *connection_timeout,
-            generate_auth_tokens(auth_service_client, kp.as_ref()),
-        )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("generate_auth_tokens".to_string()))?
-        .map_err(|e| ProxyError::MethodError {
-            code: tonic::Code::Unknown,
-            message: sanitize_status_message_for_influx(&e.to_string()),
-        })?;
-
-        return Ok((Some(new_access_token), Some(new_refresh_token)));
-    } else if should_refresh_access {
-        let new_access_token = timeout(
-            *connection_timeout,
-            refresh_access_token(auth_service_client, refresh_token),
-        )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("refresh_access_token".to_string()))?
-        .map_err(|e| ProxyError::MethodError {
-            code: tonic::Code::Unknown,
-            message: sanitize_status_message_for_influx(&e.to_string()),
-        })?;
-
-        return Ok((Some(new_access_token), None));
-    }
-
-    Ok((None, None))
-}
-
-pub async fn refresh_access_token(
+async fn refresh_access_token(
     auth_service_client: &mut AuthServiceClient<Channel>,
     refresh_token: &Token,
 ) -> crate::proxy::Result<Token> {

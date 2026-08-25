@@ -465,7 +465,7 @@ impl BlockEngineStage {
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
-        let keypair = cluster_info.keypair().clone();
+        let keypair = cluster_info.keypair();
 
         debug!("connecting to auth: {}", backend_endpoint.uri());
         let auth_refresh_state =
@@ -493,7 +493,7 @@ impl BlockEngineStage {
             })?;
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
             block_engine_channel,
-            AuthInterceptor::new(auth_refresh_state.access_token()),
+            auth_refresh_state.interceptor(),
         );
         datapoint_info!(
             "block_engine_stage-connected",
@@ -863,6 +863,8 @@ impl BlockEngineStage {
                     block_engine_stats.report();
                     block_engine_stats = BlockEngineStageStats::default();
 
+                    auth_refresh_state.validate_identity(cluster_info.id())?;
+
                     if global_config.load().as_ref() != local_config {
                         return Err(ProxyError::BlockEngineConfigChanged);
                     }
@@ -879,7 +881,6 @@ impl BlockEngineStage {
                             ("url", &block_engine_url, String),
                             ("count", num_refresh_access_token, i64),
                         );
-
                     }
                     if refresh_token_refreshed {
                         num_full_refreshes += 1;
