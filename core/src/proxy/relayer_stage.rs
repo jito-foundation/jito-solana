@@ -13,20 +13,15 @@ use {
         proto_packet_to_packet,
         proxy::{
             HeartbeatEvent, ProxyError,
-            auth::{AuthInterceptor, auth_client_from_endpoint, maybe_refresh_auth_tokens},
+            auth::{AuthInterceptor, AuthRefreshState, auth_client_from_endpoint},
             endpoint_from_url,
         },
     },
     arc_swap::ArcSwap,
     crossbeam_channel::Sender,
-    jito_protos::proto::{
-        auth::{Token, auth_service_client::AuthServiceClient},
-        relayer::{self, relayer_client::RelayerClient},
-    },
+    jito_protos::proto::relayer::{self, relayer_client::RelayerClient},
     solana_gossip::cluster_info::ClusterInfo,
-    solana_keypair::Keypair,
     solana_perf::packet::{BytesPacket, PacketBatch},
-    solana_signer::Signer,
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         ops::AddAssign,
@@ -184,11 +179,11 @@ impl RelayerStage {
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
-        let keypair = cluster_info.keypair().clone();
+        let keypair = cluster_info.keypair();
         let backend_endpoint = Self::get_endpoint(&local_relayer_config.relayer_url)?;
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let (auth_client, access_token, refresh_token) =
+        let auth_refresh_state =
             auth_client_from_endpoint(&backend_endpoint, connection_timeout, keypair.as_ref())
                 .await?;
 
@@ -197,7 +192,6 @@ impl RelayerStage {
             ("url", local_relayer_config.relayer_url, String),
             ("count", 1, i64),
         );
-
         debug!(
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
@@ -210,10 +204,8 @@ impl RelayerStage {
                     crate::proxy::sanitize_status_message_for_influx(&err.to_string()),
                 )
             })?;
-        let relayer_client = RelayerClient::with_interceptor(
-            relayer_channel,
-            AuthInterceptor::new(access_token.clone()),
-        );
+        let relayer_client =
+            RelayerClient::with_interceptor(relayer_channel, auth_refresh_state.interceptor());
 
         Self::start_consuming_relayer_packets(
             relayer_client,
@@ -222,10 +214,7 @@ impl RelayerStage {
             local_relayer_config,
             global_relayer_config,
             exit,
-            auth_client,
-            access_token,
-            refresh_token,
-            keypair,
+            auth_refresh_state,
             cluster_info,
             connection_timeout,
         )
@@ -240,10 +229,7 @@ impl RelayerStage {
         local_config: &RelayerConfig, // local copy of config with current connections
         global_config: &Arc<ArcSwap<RelayerConfig>>, // guarded reference for detecting run-time updates
         exit: &Arc<AtomicBool>,
-        auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<ArcSwap<Token>>,
-        refresh_token: Token,
-        keypair: Arc<Keypair>,
+        auth_refresh_state: AuthRefreshState,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
@@ -295,10 +281,7 @@ impl RelayerStage {
             local_config,
             global_config,
             exit,
-            auth_client,
-            access_token,
-            refresh_token,
-            keypair,
+            auth_refresh_state,
             cluster_info,
             connection_timeout,
         )
@@ -314,10 +297,7 @@ impl RelayerStage {
         local_config: &RelayerConfig, // local copy of config with current connections
         global_config: &Arc<ArcSwap<RelayerConfig>>, // guarded reference for detecting run-time updates
         exit: &Arc<AtomicBool>,
-        mut auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<ArcSwap<Token>>,
-        mut refresh_token: Token,
-        keypair: Arc<Keypair>,
+        mut auth_refresh_state: AuthRefreshState,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
@@ -352,40 +332,31 @@ impl RelayerStage {
                     relayer_stats.report();
                     relayer_stats = RelayerStageStats::default();
 
-                    if cluster_info.id() != keypair.pubkey() {
-                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
-                    }
+                    auth_refresh_state.validate_identity(cluster_info.id())?;
 
                     if global_config.load().as_ref() != local_config {
                         return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
                     }
 
-                    let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
-                        &access_token,
-                        &refresh_token,
-                        cluster_info,
-                        connection_timeout,
-                        refresh_within_s,
-                    ).await?;
+                    let (access_token_refreshed, refresh_token_refreshed) = auth_refresh_state
+                        .maybe_refresh(cluster_info, connection_timeout, refresh_within_s)
+                        .await?;
 
-                    if let Some(new_token) = maybe_new_access {
+                    if access_token_refreshed {
                         num_refresh_access_token += 1;
                         datapoint_info!(
                             "relayer_stage-refresh_access_token",
                             ("url", &local_config.relayer_url, String),
                             ("count", num_refresh_access_token, i64),
                         );
-
-                        access_token.store(Arc::new(new_token));
                     }
-                    if let Some(new_token) = maybe_new_refresh {
+                    if refresh_token_refreshed {
                         num_full_refreshes += 1;
                         datapoint_info!(
                             "relayer_stage-tokens_generated",
                             ("url", &local_config.relayer_url, String),
                             ("count", num_full_refreshes, i64),
                         );
-                        refresh_token = new_token;
                     }
                 }
             }
