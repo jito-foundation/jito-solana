@@ -77,7 +77,8 @@ extern crate solana_frozen_abi_macro;
 extern crate assert_matches;
 
 use {
-    solana_packet::{Meta, PACKET_DATA_SIZE, PacketFlags},
+    bytes::Bytes,
+    solana_packet::{Meta, PacketFlags},
     solana_perf::packet::BytesPacket,
     std::net::{IpAddr, Ipv4Addr},
 };
@@ -86,9 +87,16 @@ const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
 // NOTE: last profiled at around 180ns
 pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPacket {
-    let mut data = p.data;
-    data.truncate(PACKET_DATA_SIZE);
-    let mut packet = BytesPacket::new(data, Meta::default());
+    if p.data.len() > solana_message::v1::MAX_TRANSACTION_SIZE
+        || p.meta
+            .as_ref()
+            .is_some_and(|meta| usize::try_from(meta.size).map_or(true, |size| size > p.data.len()))
+    {
+        let mut packet = BytesPacket::new(Bytes::new(), Meta::default());
+        packet.meta_mut().set_discard(true);
+        return packet;
+    }
+    let mut packet = BytesPacket::new(p.data, Meta::default());
 
     if let Some(meta) = p.meta {
         packet.meta_mut().size = meta.size as usize;
@@ -113,4 +121,54 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPac
         }
     }
     packet
+}
+
+#[cfg(test)]
+mod proto_packet_to_packet_tests {
+    use {
+        super::*,
+        jito_protos::proto::packet::{Meta as ProtoMeta, Packet as ProtoPacket},
+    };
+
+    fn proto_with_len(len: usize) -> ProtoPacket {
+        ProtoPacket {
+            data: vec![7u8; len].into(),
+            meta: Some(ProtoMeta {
+                size: len as u64,
+                addr: "0.0.0.0".to_string(),
+                port: 0,
+                flags: None,
+                sender_stake: 0,
+            }),
+        }
+    }
+
+    #[test]
+    fn txv1_sized_packet_is_not_truncated() {
+        // 2000 bytes: bigger than the old PACKET_DATA_SIZE (1232), within txv1 max (4096)
+        let packet = proto_packet_to_packet(proto_with_len(2000));
+        assert_eq!(packet.data(..).unwrap().len(), 2000);
+    }
+
+    #[test]
+    fn packet_over_txv1_max_is_discarded() {
+        let packet = proto_packet_to_packet(proto_with_len(10_000));
+        assert!(packet.meta().discard());
+    }
+
+    #[test]
+    fn packet_with_meta_size_larger_than_data_is_discarded() {
+        let mut proto = proto_with_len(1000);
+        proto.meta.as_mut().unwrap().size = 1001;
+
+        let packet = proto_packet_to_packet(proto);
+
+        assert!(packet.meta().discard());
+    }
+
+    #[test]
+    fn legacy_sized_packet_is_unchanged() {
+        let packet = proto_packet_to_packet(proto_with_len(1000));
+        assert_eq!(packet.data(..).unwrap().len(), 1000);
+    }
 }

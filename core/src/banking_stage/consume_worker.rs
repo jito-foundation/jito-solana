@@ -8,7 +8,10 @@ use {
             TransactionResult,
         },
     },
-    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+    crate::{
+        bam_dependencies::BamConnectionState,
+        banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+    },
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
@@ -18,6 +21,7 @@ use {
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
     std::{
+        marker::PhantomData,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -31,8 +35,14 @@ use {
 pub enum ConsumeWorkerError<Tx> {
     #[error("Failed to receive work from scheduler: {0}")]
     Recv(#[from] TryRecvError),
-    #[error("Failed to send finalized consume work to scheduler: {0}")]
-    Send(#[from] SendError<FinishedConsumeWork<Tx>>),
+    #[error("Scheduler channel disconnected")]
+    Send(PhantomData<Tx>),
+}
+
+impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError<Tx> {
+    fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
+        Self::Send(PhantomData)
+    }
 }
 
 enum ProcessingStatus<Tx> {
@@ -169,17 +179,19 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
-        let output = self.consumer.process_and_record_aged_transactions(
-            bank,
-            &work.transactions,
-            &work.max_ages,
-            ExecutionFlags {
-                drop_on_failure: work.revert_on_error,
-                all_or_nothing: work.revert_on_error,
-            },
-            None, // bundle account locker checked in scheduler
-            work.revert_on_error,
-        );
+        let output = self
+            .consumer
+            .process_and_record_aged_transactions_with_policy(
+                bank,
+                &work.transactions,
+                &work.max_ages,
+                ExecutionFlags {
+                    drop_on_failure: work.revert_on_error,
+                    all_or_nothing: work.revert_on_error,
+                },
+                None, // bundle account locker checked in scheduler
+                work.revert_on_error,
+            );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
@@ -200,17 +212,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     /// Best-effort per-slot tip-program maintenance for batches that touch tip accounts.
     ///
     /// Returns `true` when tip deps are disabled, no tip account is touched, tips were already
-    /// updated for this slot, or the best-effort upkeep path reaches the end.
+    /// updated for this bank, or the best-effort upkeep path reaches the end.
     /// Bundle-construction errors from init/crank bundle creation are non-fatal (crank errors are
-    /// logged), and this path still sets `last_tip_updated_slot = bank.slot()`.
+    /// logged), and this path still records the bank as updated.
     ///
     /// Returns `false` when required upkeep transactions fail to commit, or when block-builder
     /// info is unavailable.
     fn maybe_run_tip_programs(&self, bank: &Arc<Bank>, txs: &[impl TransactionWithMeta]) -> bool {
         let Some(TipProcessingDependencies {
             tip_manager,
-            last_tip_updated_slot,
+            last_tip_updated_bank,
             block_builder_fee_info,
+            bam_enabled,
             cluster_info,
             bundle_account_locker,
         }) = &self.tip_processing_dependencies
@@ -228,8 +241,12 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return true;
         }
 
-        let mut last_tip_updated_slot_guard = last_tip_updated_slot.lock().unwrap();
-        if bank.slot() == *last_tip_updated_slot_guard {
+        if bam_enabled.load(Ordering::Acquire) != BamConnectionState::Connected as u8 {
+            return true;
+        }
+
+        let mut last_tip_updated_bank_guard = last_tip_updated_bank.lock().unwrap();
+        if *last_tip_updated_bank_guard == Some((bank.slot(), bank.bank_id())) {
             return true;
         }
 
@@ -237,10 +254,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         let initialize_tip_programs_bundle =
             tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
         if let Ok(init_bundle) = initialize_tip_programs_bundle {
-            let result = self.consumer.process_and_record_transactions(
+            let result = self.consumer.process_and_record_transactions_with_policy(
                 bank,
                 &init_bundle,
-                bundle_account_locker,
+                Some(bundle_account_locker),
                 true,
             );
             if result
@@ -262,10 +279,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         }
         match tip_manager.get_tip_programs_crank_bundle(bank, &keypair, &block_builder_fee_info) {
             Ok(tip_crank_bundle) => {
-                let result = self.consumer.process_and_record_transactions(
+                let result = self.consumer.process_and_record_transactions_with_policy(
                     bank,
                     &tip_crank_bundle,
-                    bundle_account_locker,
+                    Some(bundle_account_locker),
                     true,
                 );
                 if result
@@ -286,7 +303,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        *last_tip_updated_slot_guard = bank.slot();
+        *last_tip_updated_bank_guard = Some((bank.slot(), bank.bank_id()));
         true
     }
 
@@ -666,14 +683,16 @@ pub(crate) mod external {
                     return Ok(false);
                 }
 
-                let output = self.consumer.process_and_record_aged_transactions(
-                    bank,
-                    &transactions,
-                    &max_ages,
-                    execution_flags,
-                    Some(&self.bundle_account_locker),
-                    false,
-                );
+                let output = self
+                    .consumer
+                    .process_and_record_aged_transactions_with_policy(
+                        bank,
+                        &transactions,
+                        &max_ages,
+                        execution_flags,
+                        Some(&self.bundle_account_locker),
+                        false,
+                    );
 
                 self.metrics.update_for_consume(&output);
                 self.metrics.has_data.store(true, Ordering::Relaxed);
@@ -3230,7 +3249,10 @@ mod tests {
         solana_transaction_error::TransactionError,
         std::{
             collections::HashSet,
-            sync::{Mutex, RwLock, atomic::AtomicBool},
+            sync::{
+                Mutex, RwLock,
+                atomic::{AtomicBool, AtomicU8},
+            },
         },
     };
 
@@ -3320,11 +3342,12 @@ mod tests {
                         commission_bps: 0,
                     },
                 }),
-                last_tip_updated_slot: Arc::new(Mutex::new(0)),
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
                 block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                     block_builder: mint_keypair.pubkey(),
                     block_builder_commission: 0,
                 })),
+                bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
                 cluster_info,
                 bundle_account_locker: BundleAccountLocker::default(),
             }),
@@ -3872,7 +3895,6 @@ mod tests {
         );
 
         let runtime_tx = RuntimeTransaction::from_transaction_for_tests(tx);
-
         consume_sender
             .send(ConsumeWork {
                 batch_id: TransactionBatchId::new(1),

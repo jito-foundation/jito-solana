@@ -60,7 +60,6 @@ use {
         transaction_execution::TransactionStatusSender,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
-    solana_signer::Signer,
     solana_streamer::{
         evicting_sender::EvictingSender,
         quic::{
@@ -344,10 +343,9 @@ impl Tpu {
                 .expect("new rayon threadpool"),
         );
 
-        let block_builder_fee_info = Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-            block_builder: cluster_info.keypair().pubkey(),
-            block_builder_commission: 0,
-        }));
+        // Shared config; the default pubkey disables cranking until Block Engine or BAM publishes.
+        let block_builder_fee_info =
+            Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default()));
 
         let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
         let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
@@ -369,6 +367,7 @@ impl Tpu {
             unverified_bundle_receiver,
             verified_bundle_sender,
             exit.clone(),
+            bank_forks.read().unwrap().sharable_banks(),
         );
 
         let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
@@ -417,15 +416,13 @@ impl Tpu {
         };
         let (bam_batch_sender, bam_batch_receiver) = bounded(100_000);
         let (bam_outbound_sender, bam_outbound_receiver) = mpsc::channel(100_000);
-        let bam_block_builder_fee_info =
-            Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default()));
         let bam_dependencies = BamDependencies {
             bam_enabled: bam_enabled.clone(),
             batch_sender: bam_batch_sender,
             batch_receiver: bam_batch_receiver,
             outbound_sender: bam_outbound_sender,
             cluster_info: cluster_info.clone(),
-            block_builder_fee_info: bam_block_builder_fee_info.clone(),
+            block_builder_fee_info: block_builder_fee_info.clone(),
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bank_forks: bank_forks.clone(),
             bam_tpu_info,
@@ -455,8 +452,9 @@ impl Tpu {
             bundle_account_locker.clone(),
             Some(TipProcessingDependencies {
                 tip_manager: tip_manager.clone(),
-                last_tip_updated_slot: Arc::new(Mutex::new(0)),
-                block_builder_fee_info: bam_block_builder_fee_info,
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
+                block_builder_fee_info: block_builder_fee_info.clone(),
+                bam_enabled: bam_enabled.clone(),
                 cluster_info: cluster_info.clone(),
                 bundle_account_locker: bundle_account_locker.clone(),
             }),

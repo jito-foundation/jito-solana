@@ -219,6 +219,11 @@ impl BundleStageLoopMetrics {
                     i64
                 ),
                 (
+                    "cost_model_buffered_bundles_count",
+                    self.cost_model_buffered_bundles_count.0 as i64,
+                    i64
+                ),
+                (
                     "num_bundles_dropped",
                     self.num_bundles_dropped.0 as i64,
                     i64
@@ -576,7 +581,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) {
-        match decision_maker.make_consume_or_forward_decision() {
+        match decision_maker.make_atomic_consume_or_forward_decision() {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
             BufferedPacketsDecision::Consume(bank) => {
@@ -623,7 +628,7 @@ impl BundleStage {
         let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
 
         if bank.slot() != *last_tip_update_slot {
-            if Self::handle_tip_programs(
+            match Self::handle_tip_programs(
                 bank,
                 bundle_account_locker,
                 consumer,
@@ -631,15 +636,24 @@ impl BundleStage {
                 cluster_info,
                 block_builder_fee_info,
                 consume_worker_metrics,
-            )
-            .is_err()
-            {
-                bundle_stage_metrics.increment_tip_programs_error(1);
-                error!("tip programs error, not processing bundles");
-                return;
+            ) {
+                Ok(()) => {
+                    *last_tip_update_slot = bank.slot();
+                }
+                Err(BundleExecutionError::ErrorRetryable) => {
+                    bundle_stage_metrics.increment_tip_programs_error(1);
+                    error!("tip programs error, not processing bundles");
+                    return;
+                }
+                Err(err) => {
+                    // Instruction failures and missing accounts will not succeed on retry
+                    // in this slot. Advance so we do not tight-loop every 10ms poll.
+                    bundle_stage_metrics.increment_tip_programs_error(1);
+                    error!("tip programs error, not processing bundles: {err:?}");
+                    *last_tip_update_slot = bank.slot();
+                    return;
+                }
             }
-
-            *last_tip_update_slot = bank.slot();
         }
 
         // This loop shall:
@@ -660,7 +674,7 @@ impl BundleStage {
         loop {
             // Always ensure the window is filled with bundles, breaking out when the bundle deque is full or no more bundles are available to pop
             while bundles.len() < BUNDLE_WINDOW_SIZE.get() {
-                let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
+                let Some(bundle) = bundle_storage.pop_bundle(bank.slot(), bank.bank_id()) else {
                     break;
                 };
 
@@ -727,6 +741,15 @@ impl BundleStage {
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) -> BundleExecutionResult<()> {
+        // Tip programs fund PDAs with Rent::get().minimum_balance(). When rent is
+        // free (local-cluster), that is 0 lamports and accounts-db drops the
+        // accounts, so init/crank can never succeed. Skip instead of retrying
+        // doomed work every poll.
+        if bank.rent_collector().rent.minimum_balance(0) == 0 {
+            debug!("skipping tip program init/crank because rent is free");
+            return Ok(());
+        }
+
         let keypair = cluster_info.keypair();
 
         Self::handle_initialize_tip_programs(
@@ -811,6 +834,9 @@ impl BundleStage {
         keypair: &Keypair,
     ) -> BundleExecutionResult<()> {
         let block_builder_fee_info = block_builder_fee_info.load();
+        if block_builder_fee_info.block_builder == Pubkey::default() {
+            return Err(BundleExecutionError::ErrorRetryable);
+        }
         let crank_tip_program_transactions = tip_manager
             .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info)
             .map_err(|e| {
@@ -967,9 +993,16 @@ mod tests {
         solana_program_binaries::{jito_tip_distribution, jito_tip_payment, spl_programs},
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
+        solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
+        solana_svm::{
+            transaction_commit_result::TransactionCommitResultExtensions,
+            transaction_processor::ExecutionRecordingConfig,
+        },
+        solana_svm_timings::ExecuteTimings,
         solana_system_transaction::transfer,
         solana_time_utils::timestamp,
+        solana_transaction::sanitized::SanitizedTransaction,
         solana_vote_interface::state::vote_state_v4::VoteStateV4,
     };
 
@@ -979,11 +1012,25 @@ mod tests {
     }
 
     fn create_genesis_config(mint_sol: u64) -> TestFixture {
+        create_genesis_config_with_rent(
+            mint_sol,
+            Rent::default(),
+            FeeRateGovernor {
+                // Initialize with a non-zero fee
+                lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
+                ..FeeRateGovernor::default()
+            },
+        )
+    }
+
+    fn create_genesis_config_with_rent(
+        mint_sol: u64,
+        rent: Rent,
+        fee_rate_governor: FeeRateGovernor,
+    ) -> TestFixture {
         let mint_keypair = Keypair::new();
         let leader_keypair = Keypair::new();
         let voting_keypair = Keypair::new();
-
-        let rent = Rent::default();
 
         let mut genesis_config = create_genesis_config_with_leader_ex(
             mint_sol * LAMPORTS_PER_SOL,
@@ -994,12 +1041,8 @@ mod tests {
             None,
             rent.minimum_balance(VoteStateV4::size_of()) + (LAMPORTS_PER_SOL * 1_000_000),
             LAMPORTS_PER_SOL * 1_000_000,
-            FeeRateGovernor {
-                // Initialize with a non-zero fee
-                lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
-                ..FeeRateGovernor::default()
-            },
-            rent.clone(), // most tests don't expect rent
+            fee_rate_governor,
+            rent.clone(),
             ClusterType::Development,
             &FeatureSet::all_enabled(),
             spl_programs(&rent),
@@ -1015,6 +1058,76 @@ mod tests {
             },
             leader_keypair,
         }
+    }
+
+    fn execute_tip_program_maintenance(
+        bank: &Bank,
+        leader_keypair: &Keypair,
+        vote_account: Pubkey,
+    ) -> (
+        bool,
+        bool,
+        crate::tip_manager::Result<SmallVec<[RuntimeTransaction<SanitizedTransaction>; 2]>>,
+    ) {
+        let tip_manager = TipManager::new(TipManagerConfig {
+            tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+            tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: leader_keypair.pubkey(),
+                vote_account,
+                commission_bps: 10,
+            },
+        });
+
+        let init_txs = tip_manager
+            .get_initialize_tip_programs_bundle(bank, leader_keypair)
+            .unwrap();
+        let batch = bank.prepare_sanitized_batch(&init_txs);
+        let (results, _) = bank.load_execute_and_commit_transactions(
+            &batch,
+            ExecutionRecordingConfig::new_single_setting(true),
+            &mut ExecuteTimings::default(),
+            None,
+        );
+        drop(batch);
+
+        let init_executed_ok = results.iter().all(|r| r.was_executed_successfully());
+        assert!(init_executed_ok, "tip program init failed: {results:?}");
+        let config_account_exists = bank
+            .get_account(&tip_manager.tip_payment_config_pubkey())
+            .is_some();
+        let crank = tip_manager.get_tip_programs_crank_bundle(
+            bank,
+            leader_keypair,
+            &BlockBuilderFeeInfo {
+                block_builder: leader_keypair.pubkey(),
+                block_builder_commission: 0,
+            },
+        );
+
+        (init_executed_ok, config_account_exists, crank)
+    }
+
+    #[test]
+    fn test_missing_block_builder_fee_info_is_retryable() {
+        let bank = Arc::new(Bank::new_for_tests(&GenesisConfig::default()));
+        let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(None, replay_vote_sender, None);
+        let mut consumer =
+            BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
+
+        let result = BundleStage::handle_crank_tip_programs(
+            &bank,
+            &BundleAccountLocker::default(),
+            &mut consumer,
+            &TipManager::new(TipManagerConfig::default()),
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+            &ConsumeWorkerMetrics::new(10_000),
+            &Keypair::new(),
+        );
+
+        assert_matches!(result, Err(BundleExecutionError::ErrorRetryable));
     }
 
     #[test]
@@ -1038,7 +1151,9 @@ mod tests {
         for _ in 0..2 {
             insert_bundle(&mut bundle_storage);
         }
-        let retryable_bundle = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        let retryable_bundle = bundle_storage
+            .pop_bundle(bank.slot(), bank.bank_id())
+            .unwrap();
         bundle_storage.retry_bundle(retryable_bundle);
 
         std::thread::scope(|scope| {
@@ -1081,6 +1196,70 @@ mod tests {
         assert_eq!(
             bam_enabled.load(Ordering::Acquire),
             BamConnectionState::Connected as u8
+        );
+    }
+
+    #[test]
+    fn test_tip_program_accounts_dropped_when_genesis_rent_is_free() {
+        // Local-cluster genesis uses Rent::free() + zero fees. Tip program init
+        // then creates 0-lamport PDAs, which accounts-db drops, so crank fails
+        // with AccountMissing. BundleStage skips init/crank in that environment.
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config_with_rent(2, Rent::free(), FeeRateGovernor::new(0, 0));
+        let (bank, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+        let bank = bank_forks.read().unwrap().working_bank();
+
+        let (init_committed_ok, config_account_exists, crank) = execute_tip_program_maintenance(
+            &bank,
+            &leader_keypair,
+            genesis_config_info.voting_keypair.pubkey(),
+        );
+
+        assert!(init_committed_ok, "init transactions should commit");
+        assert!(
+            !config_account_exists,
+            "0-lamport tip-payment config must not persist under Rent::free()"
+        );
+        assert!(
+            matches!(
+                crank,
+                Err(crate::tip_manager::TipManagerError::AccountMissing)
+            ),
+            "crank must fail after the config PDA is dropped: {crank:?}"
+        );
+    }
+
+    #[test]
+    fn test_tip_program_accounts_persist_with_default_rent_and_zero_fees() {
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config_with_rent(2, Rent::default(), FeeRateGovernor::new(0, 0));
+        let (bank, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+        let bank = bank_forks.read().unwrap().working_bank();
+
+        let (init_committed_ok, config_account_exists, crank) = execute_tip_program_maintenance(
+            &bank,
+            &leader_keypair,
+            genesis_config_info.voting_keypair.pubkey(),
+        );
+
+        assert!(init_committed_ok, "init transactions should commit");
+        assert!(
+            config_account_exists,
+            "tip-payment config must persist when genesis rent is non-zero"
+        );
+        assert!(
+            crank.is_ok(),
+            "crank should build after a persisted init: {crank:?}"
         );
     }
 

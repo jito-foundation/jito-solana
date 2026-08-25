@@ -19,29 +19,25 @@ add_spl_program_to_fetch() {
   declare version=$2
   declare address=$3
   declare loader=$4
-  declare param=${5:-}
+  declare artifact=${5:-}
+  declare download_base_url=${6:-}
+  declare remote_filename=${7:-}
 
-  if [[ $param == "jito" ]]; then
-    so_name="$name.so"
-    download_url="https://github.com/jito-foundation/jito-programs/releases/download/v$version/$so_name"
+  # The artifact is used to determine the tag name. When an artifact
+  # is not provided, use the name as the artifact name and construct
+  # the tag using the "program" prefix.
+  if [[ -n $artifact ]]; then
+    tag=${artifact}@v${version}
   else
-    declare artifact=$param
-
-    # The artifact is used to determine the tag name. When an artifact
-    # is not provided, use the name as the artifact name and construct
-    # the tag using the "program" prefix.
-    if [[ -n $artifact ]]; then
-      tag=${artifact}@v${version}
-    else
-      tag=program@v$version
-      artifact=$name
-    fi
-
-    so_name="${PREFIX}_${artifact//-/_}.so"
-    download_url="https://github.com/solana-program/$name/releases/download/$tag/$so_name"
-    # The program name is the same as the artifact name.
-    name=$artifact
+    tag=program@v$version
+    artifact=$name
   fi
+
+  so_name=${remote_filename:-"${PREFIX}_${artifact//-/_}.so"}
+  download_base_url=${download_base_url:-"https://github.com/solana-program/$name/releases/download/$tag"}
+  download_url="$download_base_url/$so_name"
+  # The program name is the same as the artifact name.
+  name=$artifact
 
   programs+=("$name $version $address $loader $download_url")
 }
@@ -54,7 +50,7 @@ add_spl_program_to_fetch memo  4.0.0 Memo4c2pN8afCj432Lb7RMVKi9PbQnnW7ewFFaV3oAH
 add_spl_program_to_fetch associated-token-account 1.1.2 ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL BPFLoader2111111111111111111111111111111111
 add_spl_program_to_fetch feature-proposal 1.0.0 Feat1YXHhH6t1juaWF74WLcfv4XoNocjXA6sPWHNgAse BPFLoader2111111111111111111111111111111111
 # jito programs
-add_spl_program_to_fetch jito_tip_payment 0.1.10 T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt BPFLoaderUpgradeab1e11111111111111111111111 jito
-add_spl_program_to_fetch jito_tip_distribution 0.1.10 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 BPFLoaderUpgradeab1e11111111111111111111111 jito
+add_spl_program_to_fetch jito_tip_payment 0.1.10 T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt BPFLoaderUpgradeab1e11111111111111111111111 "" https://github.com/jito-foundation/jito-programs/releases/download/v0.1.10 jito_tip_payment.so
+add_spl_program_to_fetch jito_tip_distribution 0.1.10 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 BPFLoaderUpgradeab1e11111111111111111111111 "" https://github.com/jito-foundation/jito-programs/releases/download/v0.1.10 jito_tip_distribution.so
 
 fetch_programs "$PREFIX" "${programs[@]}"

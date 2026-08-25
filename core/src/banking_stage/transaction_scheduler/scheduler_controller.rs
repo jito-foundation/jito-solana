@@ -639,15 +639,12 @@ impl CostPacer {
 mod tests {
     use {
         super::*,
-        crate::{
-            banking_stage::{
-                TransactionViewReceiveAndBuffer,
-                consumer::{RetryableIndex, TARGET_NUM_TRANSACTIONS_PER_BATCH},
-                scheduler_messages::{ConsumeWork, FinishedConsumeWork, TransactionBatchId},
-                tests::create_slow_genesis_config,
-                transaction_scheduler::greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
-            },
-            bundle_stage::bundle_account_locker::BundleAccountLocker,
+        crate::banking_stage::{
+            TransactionViewReceiveAndBuffer,
+            consumer::{RetryableIndex, TARGET_NUM_TRANSACTIONS_PER_BATCH},
+            scheduler_messages::{ConsumeWork, FinishedConsumeWork, TransactionBatchId},
+            tests::create_slow_genesis_config,
+            transaction_scheduler::greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
         },
         agave_banking_stage_ingress_types::{BankingPacketBatch, BankingPacketReceiver},
         ahash::HashSet,
@@ -707,7 +704,6 @@ mod tests {
             Arc<RwLock<BankForks>>,
             HashSet<Pubkey>,
         ) -> R,
-        bundle_account_locker: BundleAccountLocker,
     ) -> (
         TestFrame<R::Transaction>,
         SchedulerController<R, GreedyScheduler<R::Transaction>>,
@@ -748,7 +744,6 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             GreedySchedulerConfig::default(),
-            bundle_account_locker,
         );
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
@@ -848,11 +843,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch id 0 is not being tracked")]
     fn test_unexpected_batch_id() {
-        let (test_frame, mut scheduler_controller) = create_test_frame(
-            1,
-            test_create_transaction_view_receive_and_buffer,
-            BundleAccountLocker::default(),
-        );
+        let (test_frame, mut scheduler_controller) =
+            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
         let TestFrame {
             finished_consume_work_sender,
             ..
@@ -879,11 +871,8 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_no_conflicts() {
-        let (mut test_frame, mut scheduler_controller) = create_test_frame(
-            1,
-            test_create_transaction_view_receive_and_buffer,
-            BundleAccountLocker::default(),
-        );
+        let (mut test_frame, mut scheduler_controller) =
+            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
         let TestFrame {
             bank,
             mint_keypair,
@@ -941,11 +930,8 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_conflict() {
-        let (mut test_frame, mut scheduler_controller) = create_test_frame(
-            1,
-            test_create_transaction_view_receive_and_buffer,
-            BundleAccountLocker::default(),
-        );
+        let (mut test_frame, mut scheduler_controller) =
+            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
         let TestFrame {
             bank,
             mint_keypair,
@@ -1006,11 +992,8 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_multi_batch() {
-        let (mut test_frame, mut scheduler_controller) = create_test_frame(
-            1,
-            test_create_transaction_view_receive_and_buffer,
-            BundleAccountLocker::default(),
-        );
+        let (mut test_frame, mut scheduler_controller) =
+            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
         let TestFrame {
             bank,
             mint_keypair,
@@ -1078,11 +1061,8 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_simple_thread_selection() {
-        let (mut test_frame, mut scheduler_controller) = create_test_frame(
-            2,
-            test_create_transaction_view_receive_and_buffer,
-            BundleAccountLocker::default(),
-        );
+        let (mut test_frame, mut scheduler_controller) =
+            create_test_frame(2, test_create_transaction_view_receive_and_buffer);
         let TestFrame {
             bank,
             mint_keypair,
@@ -1151,11 +1131,8 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_retryable() {
-        let (mut test_frame, mut scheduler_controller) = create_test_frame(
-            1,
-            test_create_transaction_view_receive_and_buffer,
-            BundleAccountLocker::default(),
-        );
+        let (mut test_frame, mut scheduler_controller) =
+            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
         let TestFrame {
             bank,
             mint_keypair,
@@ -1272,6 +1249,7 @@ mod tests {
             finished_work_receiver,
             response_sender,
             bank_forks.clone(),
+            shared_leader_state.clone(),
         );
 
         let mut scheduler_controller = SchedulerController::new(
