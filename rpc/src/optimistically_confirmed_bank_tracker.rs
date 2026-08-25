@@ -140,15 +140,7 @@ impl BankNotificationSender {
     }
 }
 
-impl std::fmt::Debug for BankNotificationSender {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("BankNotificationSender")
-            .field("filtered", &self.filter.is_some())
-            .finish()
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BankNotificationBroadcaster {
     subscriber_senders: Arc<[BankNotificationSender]>,
 }
