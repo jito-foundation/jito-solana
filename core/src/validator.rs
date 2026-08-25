@@ -1304,7 +1304,7 @@ impl Validator {
                     .map(|addr| socket_addr_space.check(&addr))
             );
             let (bank_notification_sender, bank_notification_receiver) =
-                BankNotificationSender::channel();
+                BankNotificationSender::channel("optimistically-confirmed-bank-tracker");
             let confirmed_bank_subscribers = if !bank_notification_senders.is_empty() {
                 Some(Arc::new(RwLock::new(bank_notification_senders)))
             } else {

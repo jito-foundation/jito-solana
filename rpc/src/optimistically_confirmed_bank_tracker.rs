@@ -93,6 +93,7 @@ pub trait BankNotificationFilter: Send + Sync + 'static {
 }
 
 pub struct BankNotificationSender {
+    label: &'static str,
     tx: Sender<BankNotificationWithDependencyWork>,
     filter: Option<Box<dyn BankNotificationFilter>>,
     disconnected: AtomicBool,
@@ -100,18 +101,20 @@ pub struct BankNotificationSender {
 
 impl BankNotificationSender {
     /// Create a subscriber that receives every notification.
-    pub fn channel() -> (Self, BankNotificationReceiver) {
-        Self::new_channel(None)
+    pub fn channel(label: &'static str) -> (Self, BankNotificationReceiver) {
+        Self::new_channel(label, None)
     }
 
     /// Create a subscriber that receives only notifications accepted by `filter`.
     pub fn channel_with_filter<F: BankNotificationFilter>(
+        label: &'static str,
         filter: F,
     ) -> (Self, BankNotificationReceiver) {
-        Self::new_channel(Some(Box::new(filter)))
+        Self::new_channel(label, Some(Box::new(filter)))
     }
 
     fn new_channel(
+        label: &'static str,
         filter: Option<Box<dyn BankNotificationFilter>>,
     ) -> (Self, BankNotificationReceiver) {
         // All subscriber channels are unbounded so sending to one subscriber cannot block
@@ -119,6 +122,7 @@ impl BankNotificationSender {
         let (tx, rx) = unbounded();
         (
             Self {
+                label,
                 tx,
                 filter,
                 disconnected: AtomicBool::new(false),
@@ -151,8 +155,8 @@ impl BankNotificationSender {
                 // only one of them emits the disconnection warning.
                 if !self.disconnected.swap(true, Ordering::Relaxed) {
                     warn!(
-                        "bank notification subscriber disconnected, dropping {:?}",
-                        notification.0
+                        "bank notification subscriber '{}' disconnected, dropping {:?}",
+                        self.label, notification.0
                     );
                 }
                 false
@@ -617,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_bank_notification_subscriber_channels_are_unbounded() {
-        let (sender, _receiver) = BankNotificationSender::channel();
+        let (sender, _receiver) = BankNotificationSender::channel("test-subscriber");
         assert_eq!(sender.tx.capacity(), None);
     }
 
