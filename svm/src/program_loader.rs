@@ -192,7 +192,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
 /// Returns slot 0 for programs deployed with v1/v2 loaders, since programs deployed
 /// with those loaders do not retain deployment slot information.
 /// Returns an error if the program's account state can not be found or parsed.
-pub(crate) fn get_program_deployment_slot<CB: TransactionProcessingCallback>(
+fn get_program_deployment_slot<CB: TransactionProcessingCallback>(
     callbacks: &CB,
     program: &AccountSharedData,
     loader: ProgramCacheEntryOwner,
@@ -959,6 +959,22 @@ mod tests {
         let batch_processor = TransactionBatchProcessor::<TestForkGraph>::default();
         let environment = batch_processor.program_runtime_environment_for_epoch(20);
 
+        // Retracted, closed tombstone.
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(key, (loader_v4_account(9, LoaderV4Status::Retracted), 100));
+        let (entry, _) = load_program_with_pubkey(
+            &mock_bank,
+            &environment,
+            &key,
+            200,
+            &mut ExecuteTimings::default(),
+        )
+        .unwrap();
+        assert!(matches!(entry.program, ProgramCacheEntryType::Closed));
+        assert_eq!(entry.deployment_slot, 200);
+
         // No ELF, fail verification.
         mock_bank
             .account_shared_data
@@ -1042,103 +1058,179 @@ mod tests {
     }
 
     #[test]
-    fn test_program_modification_slot_account_not_found() {
+    fn test_get_program_deployment_slot_loader_v1_v2() {
         let mock_bank = MockBankCallback::default();
-        let program_address = Pubkey::new_unique();
-        let programdata_address = Pubkey::new_unique();
+        for loader in [
+            ProgramCacheEntryOwner::LoaderV1,
+            ProgramCacheEntryOwner::LoaderV2,
+        ] {
+            // Fail: invalid state
+            let mut account = AccountSharedData::default();
+            assert_eq!(
+                get_program_deployment_slot(&mock_bank, &account, loader).err(),
+                Some(TransactionError::ProgramAccountNotFound)
+            );
 
-        // Case: Incorrect program_account state
-        let mut program_account = AccountSharedData::new(100, 100, &bpf_loader_upgradeable::id());
-        mock_bank
-            .account_shared_data
-            .borrow_mut()
-            .insert(program_address, (program_account.clone(), 0));
-        let result = get_program_deployment_slot(
-            &mock_bank,
-            &mock_bank
-                .get_account_shared_data(&program_address)
-                .unwrap()
-                .0,
-            ProgramCacheEntryOwner::LoaderV3,
-        );
-        assert_eq!(result.err(), Some(TransactionError::ProgramAccountNotFound));
-
-        // Case: Empty programdata_account
-        let state = UpgradeableLoaderState::Program {
-            programdata_address,
-        };
-        program_account.set_data_from_slice(&bincode::serialize(&state).unwrap());
-        mock_bank
-            .account_shared_data
-            .borrow_mut()
-            .insert(program_address, (program_account.clone(), 0));
-        let result = get_program_deployment_slot(
-            &mock_bank,
-            &mock_bank
-                .get_account_shared_data(&program_address)
-                .unwrap()
-                .0,
-            ProgramCacheEntryOwner::LoaderV3,
-        );
-        assert_eq!(result.err(), Some(TransactionError::ProgramAccountNotFound));
-
-        // Case: Incorrect programdata_account owner
-        let programdata_account = AccountSharedData::new(100, 100, &bpf_loader::id());
-        mock_bank
-            .account_shared_data
-            .borrow_mut()
-            .insert(programdata_address, (programdata_account.clone(), 0));
-        let result = get_program_deployment_slot(
-            &mock_bank,
-            &mock_bank
-                .get_account_shared_data(&program_address)
-                .unwrap()
-                .0,
-            ProgramCacheEntryOwner::LoaderV3,
-        );
-        assert_eq!(result.err(), Some(TransactionError::ProgramAccountNotFound));
+            // Success
+            account.set_data_from_slice(&[1u8; 4]);
+            assert_eq!(
+                get_program_deployment_slot(&mock_bank, &account, loader).unwrap(),
+                0 // <-- slot is always zero for both loaders
+            );
+        }
     }
 
     #[test]
-    fn test_program_deployment_slot_success() {
+    fn test_get_program_deployment_slot_loader_v3() {
+        let mock_bank = MockBankCallback::default();
+        let programdata_key = Pubkey::new_unique();
+        let program_account = loader_v3_program_account(programdata_key);
+
+        // Fail: program account invalid state
+        let invalid_program_account =
+            AccountSharedData::new(100, 100, &bpf_loader_upgradeable::id());
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &invalid_program_account,
+                ProgramCacheEntryOwner::LoaderV3
+            )
+            .err(),
+            Some(TransactionError::ProgramAccountNotFound)
+        );
+
+        // Fail: programdata account missing
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &program_account,
+                ProgramCacheEntryOwner::LoaderV3
+            )
+            .err(),
+            Some(TransactionError::ProgramAccountNotFound)
+        );
+
+        // Fail: programdata account not owned by the loader
+        let mut programdata_account = loader_v3_programdata_account(7);
+        programdata_account.set_owner(Pubkey::new_unique());
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(programdata_key, (programdata_account, 60));
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &program_account,
+                ProgramCacheEntryOwner::LoaderV3
+            )
+            .err(),
+            Some(TransactionError::ProgramAccountNotFound)
+        );
+
+        // Fail: programdata invalid state
+        let mut programdata_account = AccountSharedData::default();
+        programdata_account.set_owner(bpf_loader_upgradeable::id());
+        programdata_account.set_data_from_slice(&[0u8; 4]); // `Uninitialized`
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(programdata_key, (programdata_account, 60));
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &program_account,
+                ProgramCacheEntryOwner::LoaderV3
+            )
+            .err(),
+            Some(TransactionError::ProgramAccountNotFound)
+        );
+
+        // Success
+        mock_bank
+            .account_shared_data
+            .borrow_mut()
+            .insert(programdata_key, (loader_v3_programdata_account(7), 60));
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &program_account,
+                ProgramCacheEntryOwner::LoaderV3
+            )
+            .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn test_get_program_deployment_slot_loader_v4() {
         let mock_bank = MockBankCallback::default();
 
-        let key1 = Pubkey::new_unique();
-        let key2 = Pubkey::new_unique();
-
-        let account_data = AccountSharedData::new_data(
-            100,
-            &UpgradeableLoaderState::Program {
-                programdata_address: key2,
-            },
-            &bpf_loader_upgradeable::id(),
-        )
-        .unwrap();
-        mock_bank
-            .account_shared_data
-            .borrow_mut()
-            .insert(key1, (account_data, 0));
-
-        let account_data = AccountSharedData::new_data(
-            100,
-            &UpgradeableLoaderState::ProgramData {
-                slot: 77,
-                upgrade_authority_address: None,
-            },
-            &bpf_loader_upgradeable::id(),
-        )
-        .unwrap();
-        mock_bank
-            .account_shared_data
-            .borrow_mut()
-            .insert(key2, (account_data.clone(), 0));
-
-        let result = get_program_deployment_slot(
-            &mock_bank,
-            &mock_bank.get_account_shared_data(&key1).unwrap().0,
-            ProgramCacheEntryOwner::LoaderV3,
+        // Fail: invalid state
+        let mut program_account = AccountSharedData::default();
+        program_account.set_owner(loader_v4::id());
+        program_account.set_data_from_slice(&[0u8; 4]);
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &program_account,
+                ProgramCacheEntryOwner::LoaderV4
+            )
+            .err(),
+            Some(TransactionError::ProgramAccountNotFound)
         );
-        assert_eq!(result.unwrap(), 77);
+
+        // TODO: We have a mismatch here in the Loader V4 valid state contract
+        // between `get_program_deployment_slot` and `load_program_accounts`:
+        //
+        // - `load_program_accounts`: Retracted Loader V4 programs result in
+        //   `Closed` tombstones (see `test_load_program_program_loader_v4`).
+        // - `get_program_deployment_slot`: Retracted Loader V4 programs are
+        //   accepted and their deployment slot is returned.
+        //
+        // Case: "gifted" state
+        // Sized correctly, all-zeroes. Since `LoaderV4Status::Retracted` holds
+        // variant `0`, we do NOT currently catch this case.
+        let mut program_account = AccountSharedData::default();
+        program_account.set_owner(loader_v4::id());
+        program_account.set_data_from_slice(&[0u8; LoaderV4State::program_data_offset()]);
+        assert_eq!(
+            get_program_deployment_slot(
+                &mock_bank,
+                &program_account,
+                ProgramCacheEntryOwner::LoaderV4
+            )
+            .unwrap(),
+            0 // <-- Should be an error
+        );
+
+        // TODO: Same issue as the above case.
+        // Case: status is Retracted
+        let account = loader_v4_account(9, LoaderV4Status::Retracted);
+        assert_eq!(
+            get_program_deployment_slot(&mock_bank, &account, ProgramCacheEntryOwner::LoaderV4)
+                .unwrap(),
+            9 // <-- Should be an error
+        );
+
+        // Success
+        for status in [LoaderV4Status::Deployed, LoaderV4Status::Finalized] {
+            let account = loader_v4_account(9, status);
+            assert_eq!(
+                get_program_deployment_slot(&mock_bank, &account, ProgramCacheEntryOwner::LoaderV4)
+                    .unwrap(),
+                9
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error: entered unreachable code")]
+    fn test_get_program_deployment_slot_native_loader() {
+        let mock_bank = MockBankCallback::default();
+        let mut account = AccountSharedData::default();
+        account.set_owner(native_loader::id());
+        let _ =
+            get_program_deployment_slot(&mock_bank, &account, ProgramCacheEntryOwner::NativeLoader);
     }
 
     #[test]
