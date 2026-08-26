@@ -15,6 +15,10 @@ pub struct LocalClusterConfig {
     pub validators: Vec<CustomValidatorConfig>,
     pub dynamic_port_range_start: u16,
     pub hashes_per_tick: Option<u64>,
+    /// Slot duration in milliseconds to activate in genesis via SIMD-0525
+    /// slot-time features. None keeps the validator default.
+    #[serde(default)]
+    pub slot_time_ms: Option<u64>,
     /// Faucet mint balance in SOL.
     #[serde(default)]
     pub mint_sol: Option<u64>,
