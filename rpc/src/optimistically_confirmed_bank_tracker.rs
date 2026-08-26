@@ -88,6 +88,11 @@ pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>
 /// Implementations must return quickly and must not perform blocking I/O, wait on contended locks,
 /// or do expensive work. A slow or blocking filter delays bank-notification production for every
 /// subscriber.
+///
+/// Filters and subscribers at this layer observe raw producer notifications, before the
+/// optimistically confirmed bank tracker applies deduplication, defers notifications for banks
+/// that are not yet frozen, or handles bank hash mismatches. Duplicate and out-of-order optimistic
+/// confirmation notifications for the same slot are normal and must be handled by subscribers.
 pub trait BankNotificationFilter: Send + Sync + 'static {
     fn should_forward(&self, notification: &BankNotification) -> bool;
 }
@@ -101,6 +106,11 @@ pub struct BankNotificationSender {
 
 impl BankNotificationSender {
     /// Create a subscriber that receives every notification.
+    ///
+    /// Prefer [`Self::channel_with_filter`] whenever the subscriber can ignore some
+    /// notifications. The primary benefit is avoiding retention of `Arc<Bank>` values in this
+    /// unbounded channel, not reducing optimistic-confirmation message throughput: those
+    /// notifications are edge-triggered once per `(slot, hash)`, rather than once per vote.
     pub fn channel(label: &'static str) -> (Self, BankNotificationReceiver) {
         Self::new_channel(label, None)
     }
