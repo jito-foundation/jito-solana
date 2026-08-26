@@ -120,6 +120,15 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=0.9.20
   --ignore RUSTSEC-2026-0204
 
+  # Crate:     h2
+  # Version:   0.4.13
+  # Title:     h2 unbounded empty DATA frames
+  # Date:      2026-08-17
+  # ID:        RUSTSEC-2026-0258
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0258
+  # Solution:  Upgrade to >=0.4.16
+  --ignore RUSTSEC-2026-0258
+
 )
 
 xtask_cargo_audit_extra_args=(
