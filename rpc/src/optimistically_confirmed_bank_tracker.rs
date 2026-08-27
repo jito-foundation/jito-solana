@@ -13,6 +13,7 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender, unbounded},
     solana_clock::{BankId, Slot},
     solana_hash::Hash,
+    solana_metrics::datapoint_info,
     solana_rpc_client_api::response::{SlotTransactionStats, SlotUpdate},
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, dependency_tracker::DependencyTracker,
@@ -111,11 +112,15 @@ impl BankNotificationSender {
     /// notifications. The primary benefit is avoiding retention of `Arc<Bank>` values in this
     /// unbounded channel, not reducing optimistic-confirmation message throughput: those
     /// notifications are edge-triggered once per `(slot, hash)`, rather than once per vote.
+    /// `label` must uniquely identify this subscriber; it is emitted as the `subscriber` metric
+    /// tag for queue-depth telemetry.
     pub fn channel(label: &'static str) -> (Self, BankNotificationReceiver) {
         Self::new_channel(label, None)
     }
 
     /// Create a subscriber that receives only notifications accepted by `filter`.
+    /// `label` must uniquely identify this subscriber; it is emitted as the `subscriber` metric
+    /// tag for queue-depth telemetry.
     pub fn channel_with_filter<F: BankNotificationFilter>(
         label: &'static str,
         filter: F,
@@ -159,7 +164,14 @@ impl BankNotificationSender {
         }
 
         match self.tx.send(notification.clone()) {
-            Ok(()) => true,
+            Ok(()) => {
+                datapoint_info!(
+                    "bank-notification-queue-depth",
+                    "subscriber" => self.label,
+                    ("depth", self.tx.len(), i64),
+                );
+                true
+            }
             Err(SendError(notification)) => {
                 // Concurrent producers may observe the first failure together. `swap` ensures
                 // only one of them emits the disconnection warning.
@@ -633,6 +645,17 @@ mod tests {
     fn test_bank_notification_subscriber_channels_are_unbounded() {
         let (sender, _receiver) = BankNotificationSender::channel("test-subscriber");
         assert_eq!(sender.tx.capacity(), None);
+    }
+
+    #[test]
+    fn test_bank_notification_sender_tracks_enqueued_depth() {
+        let (sender, receiver) = BankNotificationSender::channel("test-subscriber");
+        assert!(sender.forward(&(
+            BankNotification::OptimisticallyConfirmed(1, Hash::default()),
+            None
+        )));
+        assert_eq!(sender.tx.len(), 1);
+        assert_eq!(receiver.len(), 1);
     }
 
     #[test]
