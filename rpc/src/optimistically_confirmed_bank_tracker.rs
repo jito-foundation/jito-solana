@@ -87,8 +87,8 @@ pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>
 ///
 /// This method runs synchronously on replay, gossip, and root-processing producer threads.
 /// Implementations must return quickly and must not perform blocking I/O, wait on contended locks,
-/// or do expensive work. A slow or blocking filter delays bank-notification production for every
-/// subscriber.
+/// do expensive work, or panic. A slow, blocking, or panicking filter delays or disrupts
+/// bank-notification production for every subscriber.
 ///
 /// Filters and subscribers at this layer observe raw producer notifications, before the
 /// optimistically confirmed bank tracker applies deduplication, defers notifications for banks
