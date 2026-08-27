@@ -612,8 +612,30 @@ mod tests {
         crossbeam_channel::bounded,
         solana_ledger::genesis_utils::{GenesisConfigInfo, create_genesis_config},
         solana_runtime::{bank::SlotLeader, commitment::BlockCommitmentCache, dependency_tracker},
-        std::sync::atomic::AtomicU64,
+        std::sync::atomic::{AtomicU64, AtomicUsize},
     };
+
+    struct FixedBankNotificationFilter(bool);
+    impl BankNotificationFilter for FixedBankNotificationFilter {
+        fn should_forward(&self, _notification: &BankNotification) -> bool {
+            self.0
+        }
+    }
+
+    struct RejectingBankNotificationFilter {
+        observed_bank_strong_count: Arc<AtomicUsize>,
+    }
+
+    impl BankNotificationFilter for RejectingBankNotificationFilter {
+        fn should_forward(&self, notification: &BankNotification) -> bool {
+            let BankNotification::Frozen(bank) = notification else {
+                panic!("expected frozen bank notification");
+            };
+            self.observed_bank_strong_count
+                .store(Arc::strong_count(bank), Ordering::Relaxed);
+            false
+        }
+    }
 
     /// Receive the Root notifications from the channel, if no item received within 100 ms, break and return all
     /// of those received.
@@ -656,6 +678,161 @@ mod tests {
         )));
         assert_eq!(sender.tx.len(), 1);
         assert_eq!(receiver.len(), 1);
+    }
+
+    #[test]
+    fn test_bank_notification_filter_accepts_notification() {
+        let (sender, receiver) = BankNotificationSender::channel_with_filter(
+            "accepting-subscriber",
+            FixedBankNotificationFilter(true),
+        );
+        let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
+        let hash = Hash::new_unique();
+
+        assert_eq!(
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
+            Ok(())
+        );
+        let (notification, dependency_work) = receiver.try_recv().unwrap();
+        assert_eq!(dependency_work, Some(7));
+        assert!(matches!(
+            notification,
+            BankNotification::OptimisticallyConfirmed(42, received_hash)
+                if received_hash == hash
+        ));
+    }
+
+    #[test]
+    fn test_bank_notification_filter_rejects_notification() {
+        let (sender, receiver) = BankNotificationSender::channel_with_filter(
+            "rejecting-subscriber",
+            FixedBankNotificationFilter(false),
+        );
+        let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
+
+        assert_eq!(
+            broadcaster.send((
+                BankNotification::OptimisticallyConfirmed(42, Hash::new_unique()),
+                None,
+            )),
+            Ok(())
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_bank_notification_filters_are_applied_per_subscriber() {
+        let (accepting_sender, accepting_receiver) = BankNotificationSender::channel_with_filter(
+            "accepting-subscriber",
+            FixedBankNotificationFilter(true),
+        );
+        let (rejecting_sender, rejecting_receiver) = BankNotificationSender::channel_with_filter(
+            "rejecting-subscriber",
+            FixedBankNotificationFilter(false),
+        );
+        let broadcaster =
+            BankNotificationBroadcaster::new(vec![rejecting_sender, accepting_sender]);
+        let hash = Hash::new_unique();
+
+        assert_eq!(
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
+            Ok(())
+        );
+        let (notification, dependency_work) = accepting_receiver.try_recv().unwrap();
+        assert_eq!(dependency_work, Some(7));
+        assert!(matches!(
+            notification,
+            BankNotification::OptimisticallyConfirmed(42, received_hash)
+                if received_hash == hash
+        ));
+        assert!(rejecting_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_bank_notification_broadcast_fails_when_all_subscribers_are_disconnected() {
+        let (sender, receiver) = BankNotificationSender::channel("disconnected-subscriber");
+        drop(receiver);
+        let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
+
+        assert_eq!(
+            broadcaster.send((
+                BankNotification::OptimisticallyConfirmed(42, Hash::new_unique()),
+                None,
+            )),
+            Err(BankNotificationBroadcastError)
+        );
+    }
+
+    #[test]
+    fn test_bank_notification_broadcast_fans_out_to_all_connected_subscribers() {
+        let (first_sender, first_receiver) = BankNotificationSender::channel("first-subscriber");
+        let (second_sender, second_receiver) = BankNotificationSender::channel("second-subscriber");
+        let broadcaster = BankNotificationBroadcaster::new(vec![first_sender, second_sender]);
+        let hash = Hash::new_unique();
+
+        assert_eq!(
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
+            Ok(())
+        );
+        for receiver in [first_receiver, second_receiver] {
+            let (notification, dependency_work) = receiver.try_recv().unwrap();
+            assert_eq!(dependency_work, Some(7));
+            assert!(matches!(
+                notification,
+                BankNotification::OptimisticallyConfirmed(42, received_hash)
+                    if received_hash == hash
+            ));
+        }
+    }
+
+    #[test]
+    fn test_bank_notification_broadcast_succeeds_with_one_connected_subscriber() {
+        let (disconnected_sender, disconnected_receiver) =
+            BankNotificationSender::channel("disconnected-subscriber");
+        drop(disconnected_receiver);
+        let (connected_sender, connected_receiver) =
+            BankNotificationSender::channel("connected-subscriber");
+        let broadcaster =
+            BankNotificationBroadcaster::new(vec![disconnected_sender, connected_sender]);
+        let hash = Hash::new_unique();
+
+        assert_eq!(
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
+            Ok(())
+        );
+        let (notification, dependency_work) = connected_receiver.try_recv().unwrap();
+        assert_eq!(dependency_work, Some(7));
+        assert!(matches!(
+            notification,
+            BankNotification::OptimisticallyConfirmed(42, received_hash)
+                if received_hash == hash
+        ));
+    }
+
+    #[test]
+    fn test_filtered_out_subscriber_does_not_clone_notification() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(100);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        let baseline_bank_strong_count = Arc::strong_count(&bank);
+        let observed_bank_strong_count = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = BankNotificationSender::channel_with_filter(
+            "rejecting-subscriber",
+            RejectingBankNotificationFilter {
+                observed_bank_strong_count: observed_bank_strong_count.clone(),
+            },
+        );
+        let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
+
+        assert_eq!(
+            broadcaster.send((BankNotification::Frozen(bank.clone()), None)),
+            Ok(())
+        );
+        assert_eq!(
+            observed_bank_strong_count.load(Ordering::Relaxed),
+            baseline_bank_strong_count + 1
+        );
+        assert_eq!(Arc::strong_count(&bank), baseline_bank_strong_count);
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
