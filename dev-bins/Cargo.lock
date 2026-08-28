@@ -3335,6 +3335,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-priority-fee-distribution-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+]
+
+[[package]]
 name = "jito-protos"
 version = "4.4.0-alpha.2"
 dependencies = [
@@ -3345,6 +3355,65 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "jito-stake-meta-types"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solana-clock",
+ "solana-pubkey 4.3.0",
+]
+
+[[package]]
+name = "jito-tip-distribution-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+ "solana-pubkey 4.3.0",
+]
+
+[[package]]
+name = "jito-tip-payment-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+]
+
+[[package]]
+name = "jito-tip-router-snapshot-service"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "bincode",
+ "borsh",
+ "clap 2.34.0",
+ "crossbeam-channel",
+ "jito-priority-fee-distribution-sdk",
+ "jito-stake-meta-types",
+ "jito-tip-distribution-sdk",
+ "jito-tip-payment-sdk",
+ "log",
+ "serde_json",
+ "solana-account 4.6.0",
+ "solana-accounts-db",
+ "solana-clap-utils",
+ "solana-clock",
+ "solana-hash 4.6.0",
+ "solana-pubkey 4.3.0",
+ "solana-rpc",
+ "solana-runtime",
+ "solana-stake-interface",
+ "solana-vote",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -5747,6 +5816,8 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9cf16495d9eb53e3d04e72366a33bb1c20c24e78c171d8b8f5978357b63ae95"
 dependencies = [
+ "bincode",
+ "serde_core",
  "solana-address 2.7.0",
  "solana-program-error",
  "solana-program-memory",
@@ -6346,6 +6417,7 @@ dependencies = [
  "histogram",
  "itertools 0.15.0",
  "jito-protos",
+ "jito-tip-router-snapshot-service",
  "lazy-lru",
  "libc",
  "log",
@@ -6653,6 +6725,33 @@ dependencies = [
  "solana-sdk-macro",
  "solana-sysvar-id",
  "wincode",
+]
+
+[[package]]
+name = "solana-epoch-stake"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "027e6d0b9e7daac5b2ac7c3f9ca1b727861121d9ef05084cf435ff736051e7c2"
+dependencies = [
+ "solana-define-syscall 5.2.0",
+ "solana-pubkey 4.3.0",
+]
+
+[[package]]
+name = "solana-example-mocks"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0eb265ff95e28eceda117e2e3d2d2a611ecbbfe911dfeeeecd1521814540ffab"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "solana-hash 4.6.0",
+ "solana-instruction",
+ "solana-nonce",
+ "solana-pubkey 4.3.0",
+ "solana-sdk-ids",
+ "solana-system-interface 3.3.0",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7477,6 +7576,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-program"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c9f2e1b36b5f1c407cff098a383a45890268e848481af32540064986e7397a6"
+dependencies = [
+ "solana-account-info",
+ "solana-big-mod-exp",
+ "solana-blake3-hasher",
+ "solana-clock",
+ "solana-cpi",
+ "solana-define-syscall 5.2.0",
+ "solana-epoch-rewards",
+ "solana-epoch-schedule",
+ "solana-epoch-stake",
+ "solana-example-mocks",
+ "solana-fee-calculator",
+ "solana-hash 4.6.0",
+ "solana-instruction",
+ "solana-instruction-error",
+ "solana-instructions-sysvar 4.0.0",
+ "solana-keccak-hasher",
+ "solana-last-restart-slot",
+ "solana-msg",
+ "solana-native-token",
+ "solana-program-entrypoint",
+ "solana-program-error",
+ "solana-program-memory",
+ "solana-program-option",
+ "solana-program-pack",
+ "solana-pubkey 4.3.0",
+ "solana-rent",
+ "solana-sdk-ids",
+ "solana-secp256k1-recover",
+ "solana-serde-varint",
+ "solana-serialize-utils",
+ "solana-sha256-hasher",
+ "solana-short-vec",
+ "solana-slot-hashes",
+ "solana-slot-history",
+ "solana-stable-layout",
+ "solana-sysvar",
+ "solana-sysvar-id",
+]
+
+[[package]]
 name = "solana-program-binaries"
 version = "4.4.0-alpha.2"
 dependencies = [
@@ -7508,6 +7652,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f04fa578707b3612b095f0c8e19b66a1233f7c42ca8082fcb3b745afcc0add6"
 dependencies = [
  "borsh",
+ "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -8709,6 +8855,8 @@ checksum = "552f9d54ec9597f5a17469df500a1ac345c262e5a9859938ef5e5541844fdac5"
 dependencies = [
  "base64 0.22.1",
  "bincode",
+ "bytemuck",
+ "bytemuck_derive",
  "lazy_static",
  "serde",
  "serde_derive",
