@@ -137,19 +137,17 @@ impl TipRouterSnapshotServiceContext {
     pub(super) fn handle_worker_completion(
         &mut self,
         worker_completion: WorkerCompletion,
-        exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         let Some(completion) = self.workers.complete_worker(worker_completion) else {
             // Weird case where the worker was already removed and this has been duplicated
             return Ok(());
         };
-        self.record_worker_completion(completion, exit)
+        self.record_worker_completion(completion)
     }
 
     fn record_worker_completion(
         &mut self,
         completion: WorkerCompletion,
-        exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         let WorkerCompletion { candidate, outcome } = completion;
         match outcome {
@@ -167,7 +165,6 @@ impl TipRouterSnapshotServiceContext {
                     path.display()
                 );
                 self.publication_state.record_candidate_failure(candidate);
-                exit.store(true, Ordering::Relaxed);
                 return Err(TipRouterSnapshotServiceError::ArtifactStoreUnavailable {
                     path,
                     source,
@@ -176,19 +173,19 @@ impl TipRouterSnapshotServiceContext {
             WorkerOutcome::Failed(err) => {
                 error!("tip-router snapshot candidate {candidate} failed: {err}");
                 if self.publication_state.record_candidate_failure(candidate) {
-                    return self.rooted_candidate_failed(candidate, exit);
+                    return self.rooted_candidate_failed(candidate);
                 }
             }
             WorkerOutcome::Panicked => {
                 error!("tip-router snapshot worker panicked for {candidate}");
                 if self.publication_state.record_candidate_failure(candidate) {
-                    return self.rooted_candidate_failed(candidate, exit);
+                    return self.rooted_candidate_failed(candidate);
                 }
             }
             WorkerOutcome::MissingResult => {
                 error!("tip-router snapshot worker returned no result for {candidate}");
                 if self.publication_state.record_candidate_failure(candidate) {
-                    return self.rooted_candidate_failed(candidate, exit);
+                    return self.rooted_candidate_failed(candidate);
                 }
             }
         }
@@ -198,9 +195,7 @@ impl TipRouterSnapshotServiceContext {
     fn rooted_candidate_failed(
         &self,
         candidate: CandidateIdentity,
-        exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
-        exit.store(true, Ordering::Relaxed);
         Err(TipRouterSnapshotServiceError::RootedCandidateFailed {
             epoch: candidate.epoch,
             slot: candidate.slot,
@@ -248,7 +243,7 @@ impl TipRouterSnapshotServiceContext {
             ),
         };
         for completion in completions {
-            if let Err(err) = self.record_worker_completion(completion, exit) {
+            if let Err(err) = self.record_worker_completion(completion) {
                 first_error.get_or_insert(err);
             }
         }

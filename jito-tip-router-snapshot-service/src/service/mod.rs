@@ -121,10 +121,7 @@ impl TipRouterSnapshotService {
 
                 // StakeMeta generation / writer threads finishing
                 recv(completion_receiver) -> completion => match completion {
-                    Ok(completion) => context.handle_worker_completion(
-                        completion,
-                        &exit,
-                    ),
+                    Ok(completion) => context.handle_worker_completion(completion),
                     Err(_) => Err(
                         TipRouterSnapshotServiceError::WorkerCompletionChannelDisconnected,
                     ),
