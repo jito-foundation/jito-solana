@@ -423,6 +423,7 @@ impl TipManager {
                 AccountMeta::new(self.tip_payment_program_info.tip_pda_6.0, false),
                 AccountMeta::new(self.tip_payment_program_info.tip_pda_7.0, false),
                 AccountMeta::new(keypair.pubkey(), true),
+                AccountMeta::new_readonly(self.tip_distribution_account_config.vote_account, false),
             ],
         };
 
