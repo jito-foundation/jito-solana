@@ -611,10 +611,7 @@ mod tests {
     #[test]
     fn test_bank_notification_sender_tracks_enqueued_depth() {
         let (sender, receiver) = BankNotificationSender::channel("test-subscriber");
-        assert!(sender.forward(&(
-            BankNotification::OptimisticallyConfirmed(1),
-            None
-        )));
+        assert!(sender.forward(&(BankNotification::OptimisticallyConfirmed(1), None)));
         assert_eq!(sender.tx.len(), 1);
         assert_eq!(receiver.len(), 1);
     }
@@ -647,10 +644,7 @@ mod tests {
         let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
 
         assert_eq!(
-            broadcaster.send((
-                BankNotification::OptimisticallyConfirmed(42),
-                None,
-            )),
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(42), None,)),
             Ok(())
         );
         assert!(receiver.try_recv().is_err());
@@ -688,10 +682,7 @@ mod tests {
         let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
 
         assert_eq!(
-            broadcaster.send((
-                BankNotification::OptimisticallyConfirmed(42),
-                None,
-            )),
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(42), None,)),
             Err(BankNotificationBroadcastError)
         );
     }
