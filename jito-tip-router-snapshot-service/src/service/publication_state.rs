@@ -94,8 +94,7 @@ impl SnapshotPublicationTracker {
                 tracked_candidates, ..
             } if tracked_candidates.contains(&candidate) => {
                 warn!(
-                    "received duplicate frozen bank: {candidate} has already been seen and \
-                     handled"
+                    "received duplicate frozen bank: {candidate} has already been seen and handled"
                 );
                 false
             }
@@ -116,8 +115,8 @@ impl SnapshotPublicationTracker {
                 };
             }
             SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => error!(
-                "could not record spawned tip-router snapshot candidate {candidate}: \
-                 publication of {pending_winner} began after it was admitted"
+                "could not record spawned tip-router snapshot candidate {candidate}: publication \
+                 of {pending_winner} began after it was admitted"
             ),
             SnapshotPublicationPhase::TrackingCandidates {
                 candidate_epoch,
