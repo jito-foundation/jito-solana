@@ -1974,7 +1974,7 @@ impl Validator {
             .clone()
             .zip(tip_router_bank_notification_receiver)
             .map(|(tip_router_snapshot_config, bank_notification_receiver)| {
-                TipRouterSnapshotService::new(
+                TipRouterSnapshotService::init(
                     tip_router_snapshot_config,
                     bank_notification_receiver,
                     exit.clone(),

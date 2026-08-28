@@ -59,7 +59,7 @@ impl SnapshotWorkerPool {
     ) -> Option<WorkerCompletion> {
         let candidate = completion.candidate;
         let Some(worker) = self.workers.remove(&candidate) else {
-            warn!("received duplicate or unknown worker completion for {candidate:?}");
+            warn!("received duplicate or unknown worker completion for {candidate}");
             return None;
         };
         Some(worker.join_after_completion(completion))

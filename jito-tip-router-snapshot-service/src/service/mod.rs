@@ -66,7 +66,7 @@ pub enum TipRouterSnapshotServiceError {
 pub type TipRouterSnapshotServiceResult = Result<(), TipRouterSnapshotServiceError>;
 
 impl TipRouterSnapshotService {
-    pub fn new(
+    pub fn init(
         config: TipRouterSnapshotConfig,
         bank_notification_receiver: BankNotificationReceiver,
         exit: Arc<AtomicBool>,
@@ -106,7 +106,7 @@ impl TipRouterSnapshotService {
         let mut service_result = Ok(());
 
         while !exit.load(Ordering::Relaxed) {
-            let iteration_result = crossbeam_channel::select! {
+            service_result = crossbeam_channel::select! {
 
                 // Frozen and Rooted bank notifications
                 recv(bank_notification_receiver) -> notification => match notification {
@@ -126,27 +126,24 @@ impl TipRouterSnapshotService {
                         &exit,
                     ),
                     Err(_) => Err(
-                        // This should be technically unreachable
                         TipRouterSnapshotServiceError::WorkerCompletionChannelDisconnected,
                     ),
                 },
 
                 // Needed so that the service checks the `exit` bool every so often
+                // Though in theory, this never fires, bc bank-notifs should fire much faster
                 default(EXIT_POLL_INTERVAL) => Ok(()),
             };
 
             // If the service breaks, break out of the loop and shutdown
-            if iteration_result.is_err() {
-                service_result = iteration_result;
+            if service_result.is_err() {
                 break;
             }
         }
 
         // Wait for any inflight workers/writers
-        match context.shutdown_workers(&completion_receiver, &exit) {
-            Ok(()) => service_result,
-            Err(shutdown_err) => Err(shutdown_err),
-        }
+        context.shutdown_workers(&completion_receiver, &exit)?;
+        service_result
     }
 
     pub fn join(self) -> thread::Result<TipRouterSnapshotServiceResult> {

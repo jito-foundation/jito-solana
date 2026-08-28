@@ -74,8 +74,8 @@ impl SnapshotPublicationTracker {
             SnapshotPublicationPhase::AwaitingCandidate => true,
             SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => {
                 debug!(
-                    "discarding frozen epoch-boundary candidate {candidate:?} while publishing \
-                     {pending_winner:?}"
+                    "discarding frozen epoch-boundary candidate {candidate} while publishing \
+                     {pending_winner}"
                 );
                 false
             }
@@ -84,7 +84,7 @@ impl SnapshotPublicationTracker {
                 candidate_epoch, ..
             } if candidate.epoch < *candidate_epoch => {
                 warn!(
-                    "received out-of-order frozen epoch-boundary candidate {candidate:?} while \
+                    "received out-of-order frozen epoch-boundary candidate {candidate} while \
                      tracking candidates for newer epoch {candidate_epoch}"
                 );
                 false
@@ -94,7 +94,7 @@ impl SnapshotPublicationTracker {
                 tracked_candidates, ..
             } if tracked_candidates.contains(&candidate) => {
                 warn!(
-                    "received duplicate frozen bank: {candidate:?} has already been seen and \
+                    "received duplicate frozen bank: {candidate} has already been seen and \
                      handled"
                 );
                 false
@@ -116,8 +116,8 @@ impl SnapshotPublicationTracker {
                 };
             }
             SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => error!(
-                "could not record spawned tip-router snapshot candidate {candidate:?}: \
-                 publication of {pending_winner:?} began after it was admitted"
+                "could not record spawned tip-router snapshot candidate {candidate}: \
+                 publication of {pending_winner} began after it was admitted"
             ),
             SnapshotPublicationPhase::TrackingCandidates {
                 candidate_epoch,
@@ -166,9 +166,11 @@ impl SnapshotPublicationTracker {
             .max_by_key(|candidate| candidate.slot)?;
 
         debug!(
-            "picked winner from candidates {:#?}, with rooted_chain submission {:#?}",
-            self.tracked_candidates(),
+            "picked tip-router snapshot winner {winner}; rooted chain slots: {:?}",
             rooted_chain
+                .iter()
+                .map(|(slot, _bank_id)| *slot)
+                .collect::<Vec<_>>(),
         );
         self.phase = SnapshotPublicationPhase::WinnerPendingPublication {
             pending_winner: winner,
@@ -183,7 +185,7 @@ impl SnapshotPublicationTracker {
                 if pending_winner == winner
         ) {
             error!(
-                "could not record failed publication for {winner:?}: it is not the pending winner"
+                "could not record failed publication for {winner}: it is not the pending winner"
             );
             return;
         }

@@ -11,7 +11,7 @@ use {
         snapshot_worker::{SnapshotWorkerError, WorkerCompletion, WorkerOutcome},
     },
     crossbeam_channel::{Receiver, Sender},
-    log::{error, info, warn},
+    log::{debug, error, info, warn},
     solana_clock::{BankId, Slot},
     solana_rpc::optimistically_confirmed_bank_tracker::{
         BankNotification, BankNotificationWithDependencyWork,
@@ -70,11 +70,11 @@ impl TipRouterSnapshotServiceContext {
             return Ok(());
         };
 
-        info!("selected rooted tip-router snapshot candidate {winner:?}");
+        debug!("selected rooted tip-router snapshot candidate {winner}");
 
         match artifact_store.publish_candidate(winner) {
             Ok(()) => {
-                info!("published tip-router snapshot winner {winner:?}");
+                info!("published tip-router snapshot winner {winner}");
                 self.publication_state.record_winner_published(winner);
             }
             Err(ArtifactStoreError::PublishError(PublishError::AlreadyPublished { path })) => {
@@ -86,7 +86,7 @@ impl TipRouterSnapshotServiceContext {
                 self.publication_state.record_winner_published(winner);
             }
             Err(err) => {
-                warn!("failed to finalize tip-router snapshot winner {winner:?}: {err}");
+                warn!("failed to finalize tip-router snapshot winner {winner}: {err}");
                 self.publication_state
                     .record_winner_publication_failure(winner);
             }
@@ -126,7 +126,7 @@ impl TipRouterSnapshotServiceContext {
             candidate,
             parent_bank,
         ) {
-            error!("failed to spawn tip-router snapshot worker for {candidate:?}: {err}");
+            error!("failed to spawn tip-router snapshot worker for {candidate}: {err}");
             return Ok(());
         }
 
@@ -154,8 +154,8 @@ impl TipRouterSnapshotServiceContext {
         let WorkerCompletion { candidate, outcome } = completion;
         match outcome {
             WorkerOutcome::Written(path) => {
-                info!(
-                    "wrote tip-router snapshot candidate {candidate:?} to {}",
+                debug!(
+                    "wrote tip-router snapshot candidate {candidate} to {}",
                     path.display()
                 );
             }
@@ -163,7 +163,7 @@ impl TipRouterSnapshotServiceContext {
                 ArtifactStoreError::DirectoryUnavailable { path, source },
             )) => {
                 error!(
-                    "candidate {candidate:?} failed because {} is unavailable",
+                    "candidate {candidate} failed because {} is unavailable",
                     path.display()
                 );
                 self.publication_state.record_candidate_failure(candidate);
@@ -174,19 +174,19 @@ impl TipRouterSnapshotServiceContext {
                 });
             }
             WorkerOutcome::Failed(err) => {
-                error!("tip-router snapshot candidate {candidate:?} failed: {err}");
+                error!("tip-router snapshot candidate {candidate} failed: {err}");
                 if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate, exit);
                 }
             }
             WorkerOutcome::Panicked => {
-                error!("tip-router snapshot worker panicked for {candidate:?}");
+                error!("tip-router snapshot worker panicked for {candidate}");
                 if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate, exit);
                 }
             }
             WorkerOutcome::MissingResult => {
-                error!("tip-router snapshot worker returned no result for {candidate:?}");
+                error!("tip-router snapshot worker returned no result for {candidate}");
                 if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate, exit);
                 }

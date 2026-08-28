@@ -56,7 +56,6 @@ impl ArtifactStore {
 
         writer.flush()?;
 
-        // file.sync_all().map_err(ArtifactStoreError::Io)?;
         Ok(candidate_path)
     }
 
@@ -204,6 +203,7 @@ fn ensure_output_directory(output_dir: &Path) -> io::Result<()> {
     }
 }
 
+/// Parses + Validates file name
 fn candidate_epoch_from_name(file_name: &OsStr) -> Option<Epoch> {
     let identity = file_name.to_str()?.strip_suffix(ARTIFACT_SUFFIX)?;
     let (slot_and_bank_id, epoch) = identity.rsplit_once('_')?;
