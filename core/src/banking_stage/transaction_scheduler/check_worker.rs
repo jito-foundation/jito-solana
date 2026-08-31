@@ -125,7 +125,7 @@ pub(crate) mod external {
         crate::banking_stage::{
             scheduler_messages::MaxAge,
             transaction_scheduler::receive_and_buffer::{
-                PacketHandlingError, translate_to_runtime_view,
+                PacketHandlingError, contains_blacklisted_account, translate_to_runtime_view,
             },
         },
         agave_scheduler_bindings::{
@@ -145,6 +145,7 @@ pub(crate) mod external {
             sanitize::SanitizeConfig, transaction_data::TransactionData,
             transaction_view::SanitizedTransactionView,
         },
+        ahash::HashSet as AHashSet,
         arrayvec::ArrayVec,
         solana_account::ReadableAccount,
         solana_clock::Slot,
@@ -198,6 +199,7 @@ pub(crate) mod external {
 
         shared_leader_state: SharedLeaderState,
         sharable_banks: SharableBanks,
+        blacklisted_accounts: Arc<AHashSet<Pubkey>>,
     }
 
     #[allow(dead_code)]
@@ -211,6 +213,7 @@ pub(crate) mod external {
             allocator: rts_alloc::Allocator,
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
+            blacklisted_accounts: Arc<AHashSet<Pubkey>>,
         ) -> Self {
             Self {
                 exit,
@@ -219,6 +222,7 @@ pub(crate) mod external {
                 allocator,
                 shared_leader_state,
                 sharable_banks,
+                blacklisted_accounts,
             }
         }
 
@@ -304,7 +308,7 @@ pub(crate) mod external {
 
             // Do resolving next since we (currently) need resolved transactions for status checks.
             let (parsing_and_resolve_results, txs, max_ages) =
-                Self::translate_transaction_batch(&batch, &root_bank);
+                self.translate_transaction_batch(&batch, &root_bank);
 
             if message.flags & check_message_flags::CALCULATE_SCHEDULING_DETAILS != 0 {
                 Self::check_scheduling_details(
@@ -724,6 +728,7 @@ pub(crate) mod external {
         }
 
         fn translate_transaction_batch(
+            &self,
             batch: &TransactionPtrBatch,
             bank: &Bank,
         ) -> (
@@ -743,6 +748,7 @@ pub(crate) mod external {
                     bank,
                     transaction_account_lock_limit,
                     &sanitize_config,
+                    &self.blacklisted_accounts,
                 ) {
                     Ok((tx, max_age)) => {
                         transactions.push(tx);
@@ -761,21 +767,27 @@ pub(crate) mod external {
             bank: &Bank,
             transaction_account_lock_limit: usize,
             sanitize_config: &SanitizeConfig,
+            blacklisted_accounts: &AHashSet<Pubkey>,
         ) -> Result<(Tx, MaxAge), PacketHandlingError> {
             translate_to_runtime_view(
                 transaction_ptr,
                 bank,
+                bank.vote_only_bank(),
                 transaction_account_lock_limit,
                 sanitize_config,
             )
-            .map(|(view, deactivation_slot)| {
-                (
+            .and_then(|(view, deactivation_slot)| {
+                if contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts) {
+                    return Err(PacketHandlingError::FilterKey);
+                }
+
+                Ok((
                     view,
                     MaxAge {
                         sanitized_epoch: bank.epoch(),
                         alt_invalidation_slot: deactivation_slot,
                     },
-                )
+                ))
             })
         }
 
@@ -997,6 +1009,7 @@ pub(crate) mod external {
                 worker_allocator,
                 shared_leader_state,
                 bank_forks.read().unwrap().sharable_banks(),
+                Arc::new(AHashSet::default()),
             );
 
             CheckWorkerTestFrame {
