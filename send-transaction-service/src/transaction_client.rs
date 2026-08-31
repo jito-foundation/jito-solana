@@ -1,6 +1,8 @@
 use {
     crate::{send_transaction_service_stats::SendTransactionServiceStats, tpu_info::TpuInfo},
     log::warn,
+    solana_client::connection_cache::Protocol,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
     solana_tls_utils::NotifyKeyUpdate,
@@ -10,7 +12,7 @@ use {
     std::{
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::atomic::Ordering,
+        sync::{Arc, atomic::Ordering},
         time::{Duration, Instant},
     },
     tokio::runtime::Handle,
@@ -168,18 +170,18 @@ pub fn create_client(
 
 struct SendTransactionServiceLeaderUpdater<T: TpuInfoWithSendStatic> {
     leader_info_provider: CurrentLeaderInfo<T>,
-    my_tpu_address: SocketAddr,
+    cluster_info: Arc<ClusterInfo>,
     tpu_peers: Option<Vec<SocketAddr>>,
 }
 
 pub fn create_leader_updater<T: TpuInfoWithSendStatic>(
     leader_info: Option<T>,
-    my_tpu_address: SocketAddr,
+    cluster_info: Arc<ClusterInfo>,
     tpu_peers: Option<Vec<SocketAddr>>,
 ) -> Box<dyn LeaderUpdater> {
     Box::new(SendTransactionServiceLeaderUpdater {
         leader_info_provider: CurrentLeaderInfo::new(leader_info),
-        my_tpu_address,
+        cluster_info,
         tpu_peers,
     })
 }
@@ -201,7 +203,12 @@ where
         {
             leaders.extend(discovered_peers.into_iter().copied());
         } else {
-            leaders.push(self.my_tpu_address);
+            leaders.push(
+                self.cluster_info
+                    .my_contact_info()
+                    .tpu(Protocol::QUIC)
+                    .unwrap(),
+            );
         }
     }
 }

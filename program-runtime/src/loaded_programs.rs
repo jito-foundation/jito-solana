@@ -612,6 +612,26 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         increment_usage_counter: bool,
         count_hits_and_misses: bool,
     ) -> Option<Pubkey> {
+        self.extract_with_replenish(
+            search_for,
+            loaded_programs_for_tx_batch,
+            program_runtime_environment_for_execution,
+            increment_usage_counter,
+            count_hits_and_misses,
+            true,
+        )
+    }
+
+    /// Extracts programs while allowing non-cooperative callers to leave cache misses unloaded.
+    pub fn extract_with_replenish(
+        &self,
+        search_for: &mut Vec<ProgramToLoad>,
+        loaded_programs_for_tx_batch: &mut ProgramCacheForTxBatch,
+        program_runtime_environment_for_execution: &ProgramRuntimeEnvironment,
+        increment_usage_counter: bool,
+        count_hits_and_misses: bool,
+        replenish_program_cache: bool,
+    ) -> Option<Pubkey> {
         debug_assert!(self.fork_graph.is_some());
         let fork_graph = self.fork_graph.as_ref().unwrap().upgrade().unwrap();
         let locked_fork_graph = fork_graph.read().unwrap();
@@ -691,7 +711,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                             }
                         }
                     }
-                    if cooperative_loading_task.is_none() {
+                    if replenish_program_cache && cooperative_loading_task.is_none() {
                         let mut loading_entries = loading_entries.lock().unwrap();
                         let entry = loading_entries.entry(*program_to_load.program_id);
                         if let Entry::Vacant(entry) = entry {

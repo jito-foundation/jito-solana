@@ -44,11 +44,27 @@ impl DecisionMaker {
         }
     }
 
+    #[inline]
     pub(crate) fn make_consume_or_forward_decision(&self) -> BufferedPacketsDecision {
-        let state = self.shared_leader_state.load();
+        self.make_consume_or_forward_decision_inner(false)
+    }
 
+    #[inline]
+    pub(crate) fn make_atomic_consume_or_forward_decision(&self) -> BufferedPacketsDecision {
+        self.make_consume_or_forward_decision_inner(true)
+    }
+
+    fn make_consume_or_forward_decision_inner(
+        &self,
+        require_atomic_bank: bool,
+    ) -> BufferedPacketsDecision {
+        let state = self.shared_leader_state.load();
         if let Some(working_bank) = state.working_bank() {
-            BufferedPacketsDecision::Consume(working_bank.clone())
+            if require_atomic_bank && !state.atomic_batches_enabled() {
+                BufferedPacketsDecision::Hold
+            } else {
+                BufferedPacketsDecision::Consume(working_bank.clone())
+            }
         } else if let Some(leader_first_tick_height) = state.leader_first_tick_height() {
             let current_tick_height = state.tick_height();
             let ticks_until_leader = leader_first_tick_height.saturating_sub(current_tick_height);
@@ -103,6 +119,13 @@ mod tests {
             decision_maker.make_consume_or_forward_decision(),
             BufferedPacketsDecision::Forward
         );
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            None, 0, None, None, false,
+        )));
+        assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
+            BufferedPacketsDecision::Forward
+        );
 
         // Active bank.
         shared_leader_state.store(Arc::new(LeaderState::new(
@@ -112,8 +135,24 @@ mod tests {
             None,
         )));
         assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
+            BufferedPacketsDecision::Consume(_)
+        );
+
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(bank.clone()),
+            0,
+            None,
+            None,
+            false,
+        )));
+        assert_matches!(
             decision_maker.make_consume_or_forward_decision(),
             BufferedPacketsDecision::Consume(_)
+        );
+        assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
+            BufferedPacketsDecision::Hold
         );
         shared_leader_state.store(Arc::new(LeaderState::new(None, 0, None, None)));
 

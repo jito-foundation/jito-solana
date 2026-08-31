@@ -54,7 +54,7 @@ use {
     solana_account_info::MAX_PERMITTED_DATA_INCREASE,
     solana_accounts_db::{
         accounts::{AccountAddressFilter, Accounts},
-        accounts_db::AccountsDb,
+        accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDb},
         accounts_hash::AccountsLtHash,
         accounts_index::{AccountIndex, AccountSecondaryIndexes, IndexKey},
         accounts_scan::ScanError,
@@ -186,7 +186,7 @@ fn create_genesis_config_no_tx_fee_no_rent(lamports: u64) -> (GenesisConfig, Key
     )
 }
 
-fn create_genesis_config_no_tx_fee(lamports: u64) -> (GenesisConfig, Keypair) {
+pub(super) fn create_genesis_config_no_tx_fee(lamports: u64) -> (GenesisConfig, Keypair) {
     // genesis_config creates config with default fee rate and default rent
     // override to set fee rate to zero.
     let (mut genesis_config, mint_keypair) = solana_genesis_config::create_genesis_config(lamports);
@@ -2195,7 +2195,10 @@ fn new_from_parent(parent: Arc<Bank>) -> Bank {
     Bank::new_from_parent(parent, SlotLeader::default(), slot)
 }
 
-fn new_from_parent_with_fork_next_slot(parent: Arc<Bank>, fork: &RwLock<BankForks>) -> Arc<Bank> {
+pub(super) fn new_from_parent_with_fork_next_slot(
+    parent: Arc<Bank>,
+    fork: &RwLock<BankForks>,
+) -> Arc<Bank> {
     let slot = parent.slot() + 1;
     Bank::new_from_parent_with_bank_forks(fork, parent, SlotLeader::default(), slot)
 }
@@ -13474,4 +13477,54 @@ fn test_commit_noop_transaction_no_fees(relax_fee_payer_constraint: bool) {
         bank.capitalization(),
         bank.calculate_capitalization_for_tests()
     );
+}
+#[test]
+fn test_load_and_execute_transactions_populates_global_program_cache() {
+    let (genesis_config, mint_keypair) = create_genesis_config(100_000);
+    let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+    let program_key = Pubkey::new_unique();
+    let program_data = include_bytes!("../../../programs/bpf_loader/test_elfs/out/noop_aligned.so");
+    let program_account = AccountSharedData::from(Account {
+        lamports: Rent::default().minimum_balance(program_data.len()).min(1),
+        data: program_data.to_vec(),
+        owner: bpf_loader::id(),
+        executable: true,
+        rent_epoch: 0,
+    });
+    root_bank.store_account(&program_key, &program_account);
+
+    goto_end_of_slot(root_bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(root_bank, bank_forks.as_ref());
+
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        assert!(
+            program_cache
+                .get_slot_versions_for_tests(&program_key)
+                .is_empty(),
+            "newly stored program must not exist in global cache before execution",
+        );
+    }
+
+    let instruction = Instruction::new_with_bytes(program_key, &[], Vec::new());
+    let message = Message::new(&[instruction], Some(&mint_keypair.pubkey()));
+    let binding = mint_keypair.insecure_clone();
+    let transaction = Transaction::new(&[&binding], message, bank.last_blockhash());
+    assert_eq!(bank.process_transaction(&transaction), Ok(()));
+
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        let slot_versions = program_cache.get_slot_versions_for_tests(&program_key);
+        assert_eq!(slot_versions.len(), 1);
+        assert_matches!(slot_versions[0].program, ProgramCacheEntryType::Loaded(_));
+    }
 }

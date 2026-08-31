@@ -96,6 +96,7 @@ use {
         wire::{WireBlockCertMessage, WireCertSignature},
     },
     ahash::AHashSet,
+    itertools::izip,
     log::*,
     partitioned_epoch_rewards::PartitionedRewardsCalculation,
     rayon::ThreadPool,
@@ -145,7 +146,9 @@ use {
     solana_precompile_error::PrecompileError,
     solana_program_runtime::{
         invoke_context::BuiltinFunctionRegisterer,
-        loaded_programs::{ProgramRuntimeEnvironment, ProgramRuntimeEnvironments},
+        loaded_programs::{
+            ProgramCacheForTxBatch, ProgramRuntimeEnvironment, ProgramRuntimeEnvironments,
+        },
         program_cache_entry::ProgramCacheEntry,
     },
     solana_pubkey::Pubkey,
@@ -164,6 +167,7 @@ use {
     solana_svm::{
         account_loader::LoadedTransaction,
         account_overrides::AccountOverrides,
+        rollback_accounts::RollbackAccounts,
         transaction_balances::{BalanceCollector, SvmTokenInfo},
         transaction_commit_result::{CommittedTransaction, TransactionCommitResult},
         transaction_error_metrics::TransactionErrorMetrics,
@@ -215,6 +219,7 @@ use {
             },
         },
         time::{Duration, Instant},
+        vec,
     },
     thiserror::Error,
     wincode::{SchemaRead, SchemaWrite},
@@ -224,9 +229,7 @@ use {
     dashmap::DashSet,
     qualifier_attr::{field_qualifiers, qualifiers},
     rayon::iter::{IntoParallelRefIterator, ParallelIterator},
-    solana_accounts_db::accounts_db::{
-        ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
-    },
+    solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
     solana_nonce as nonce,
     solana_nonce_account::{SystemAccountKind, get_system_account_kind},
     solana_program_runtime::sysvar_cache::SysvarCache,
@@ -237,9 +240,12 @@ mod accounts_lt_hash;
 mod address_lookup_table;
 pub mod bank_hash_details;
 pub mod builtins;
+mod bundle_simulation;
 mod check_transactions;
 pub mod entry_bytes_budget;
 mod fee_distribution;
+#[cfg(test)]
+mod jito_tests;
 mod metrics;
 pub(crate) mod partitioned_epoch_rewards;
 mod recent_blockhashes_account;
@@ -350,6 +356,7 @@ impl BankRc {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     // Vector of results indicating whether a transaction was processed or could not
     // be processed. Note processed transactions can still have failed!
@@ -975,7 +982,7 @@ pub struct Bank {
     inflation: Arc<RwLock<Inflation>>,
 
     /// cache of vote_account and stake_account state for this fork
-    stakes_cache: StakesCache,
+    pub stakes_cache: StakesCache,
 
     /// staked nodes on epoch boundaries, saved off when a bank.slot() is at
     ///   a leader schedule calculation boundary
@@ -1094,6 +1101,8 @@ pub struct BankTestConfig {
 #[cfg(feature = "dev-context-only-utils")]
 impl Default for BankTestConfig {
     fn default() -> Self {
+        use solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING;
+
         Self {
             accounts_db_config: ACCOUNTS_DB_CONFIG_FOR_TESTING,
         }
@@ -3987,7 +3996,10 @@ impl Bank {
         }
     }
 
-    fn get_account_overrides_for_simulation(&self, account_keys: &AccountKeys) -> AccountOverrides {
+    pub fn get_account_overrides_for_simulation(
+        &self,
+        account_keys: &AccountKeys,
+    ) -> AccountOverrides {
         let mut account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
@@ -4012,7 +4024,7 @@ impl Bank {
         &self,
         txs_and_results: impl Iterator<Item = (&'a Tx, &'a Result<()>)> + Clone,
     ) {
-        self.rc.accounts.unlock_accounts(txs_and_results)
+        self.rc.accounts.unlock_accounts(txs_and_results);
     }
 
     pub fn remove_unrooted_slots(&self, slots: &[(Slot, BankId)]) {
@@ -4053,6 +4065,48 @@ impl Bank {
         error_counters: &mut TransactionErrorMetrics,
         processing_config: TransactionProcessingConfig,
     ) -> LoadAndExecuteTransactionsOutput {
+        self.load_and_execute_transactions_with_program_cache_internal(
+            batch,
+            max_age,
+            timings,
+            error_counters,
+            processing_config,
+            None,
+            true,
+        )
+    }
+
+    pub fn load_and_execute_transactions_with_program_cache(
+        &self,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        max_age: usize,
+        timings: &mut ExecuteTimings,
+        error_counters: &mut TransactionErrorMetrics,
+        processing_config: TransactionProcessingConfig,
+        program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
+        replenish_program_cache: bool,
+    ) -> LoadAndExecuteTransactionsOutput {
+        self.load_and_execute_transactions_with_program_cache_internal(
+            batch,
+            max_age,
+            timings,
+            error_counters,
+            processing_config,
+            Some(program_cache_for_tx_batch),
+            replenish_program_cache,
+        )
+    }
+
+    fn load_and_execute_transactions_with_program_cache_internal(
+        &self,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        max_age: usize,
+        timings: &mut ExecuteTimings,
+        error_counters: &mut TransactionErrorMetrics,
+        processing_config: TransactionProcessingConfig,
+        program_cache_for_tx_batch: Option<&mut ProgramCacheForTxBatch>,
+        replenish_program_cache: bool,
+    ) -> LoadAndExecuteTransactionsOutput {
         let sanitized_txs = batch.sanitized_transactions();
 
         let (check_results, check_us) = measure_us!(self.check_transactions(
@@ -4086,15 +4140,28 @@ impl Bank {
             rent: self.rent_collector.rent.clone(),
         };
 
-        let sanitized_output = self
-            .transaction_processor
-            .load_and_execute_sanitized_transactions(
-                self,
-                sanitized_txs,
-                check_results,
-                &processing_environment,
-                &processing_config,
-            );
+        let sanitized_output = if let Some(program_cache_for_tx_batch) = program_cache_for_tx_batch
+        {
+            self.transaction_processor
+                .load_and_execute_sanitized_transactions_with_program_cache(
+                    self,
+                    sanitized_txs,
+                    check_results,
+                    &processing_environment,
+                    &processing_config,
+                    program_cache_for_tx_batch,
+                    replenish_program_cache,
+                )
+        } else {
+            self.transaction_processor
+                .load_and_execute_sanitized_transactions(
+                    self,
+                    sanitized_txs,
+                    check_results,
+                    &processing_environment,
+                    &processing_config,
+                )
+        };
 
         // Accumulate the errors returned by the batch processor.
         error_counters.accumulate(&sanitized_output.error_metrics);
@@ -6747,6 +6814,13 @@ impl Bank {
     pub fn clear_accounts_lt_hash_async_progress_is_at_end(&self) {
         self.accounts_lt_hash_async_progress
             .clear_is_at_end_of_slot();
+    }
+
+    /// Total priority fees (lamports) that this bank collected
+    /// **Only populated once the bank is Executed. Always call
+    /// it after the bank is rooted.**
+    pub fn priority_fee_total(&self) -> u64 {
+        self.collector_fee_details.read().unwrap().priority_fee
     }
 }
 
