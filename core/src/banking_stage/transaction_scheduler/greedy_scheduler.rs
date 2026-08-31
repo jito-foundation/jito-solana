@@ -9,9 +9,12 @@ use {
         transaction_state::TransactionState,
         transaction_state_container::StateContainer,
     },
-    crate::banking_stage::{
-        consumer::{ENTRY_OVERHEAD_BYTES, TARGET_NUM_TRANSACTIONS_PER_BATCH},
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+    crate::{
+        banking_stage::{
+            consumer::{ENTRY_OVERHEAD_BYTES, TARGET_NUM_TRANSACTIONS_PER_BATCH},
+            scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+        },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     agave_scheduling_utils::thread_aware_account_locks::{
         ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError,
@@ -55,13 +58,29 @@ pub struct GreedyScheduler<Tx: TransactionWithMeta> {
     common: SchedulingCommon<Tx>,
     unschedulables: Vec<TransactionPriorityId>,
     config: GreedySchedulerConfig,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
+    #[allow(dead_code)]
     pub(crate) fn new(
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: GreedySchedulerConfig,
+    ) -> Self {
+        Self::new_with_bundle_locker(
+            consume_work_senders,
+            finished_consume_work_receiver,
+            config,
+            BundleAccountLocker::default(),
+        )
+    }
+
+    pub(crate) fn new_with_bundle_locker(
+        consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
+        finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
+        config: GreedySchedulerConfig,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         assert!(
             config.target_entry_bytes_per_batch > ENTRY_OVERHEAD_BYTES,
@@ -75,6 +94,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
                 config.target_transactions_per_batch,
             ),
             config,
+            bundle_account_locker,
         }
     }
 }
@@ -162,6 +182,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                         self.common.in_flight_tracker.num_in_flight_per_thread(),
                     )
                 },
+                &self.bundle_account_locker,
             ) {
                 Err(TransactionSchedulingError::UnschedulableConflicts) => {
                     num_unschedulable_conflicts += 1;
@@ -253,6 +274,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     account_locks: &mut ThreadAwareAccountLocks,
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
+    bundle_account_locker: &BundleAccountLocker,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
     // Schedule the transaction if it can be.
     let transaction = transaction_state.transaction();
@@ -265,6 +287,21 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         .iter()
         .enumerate()
         .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
+
+    // Check bundle account locks doesn't have it yet
+    let l_account_locks = bundle_account_locker.account_locks();
+    for lock in read_account_locks.clone() {
+        if l_account_locks.write_locks().contains_key(lock) {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+    }
+    for lock in write_account_locks.clone() {
+        if l_account_locks.write_locks().contains_key(lock)
+            || l_account_locks.read_locks().contains_key(lock)
+        {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+    }
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,
@@ -280,6 +317,9 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
             return Err(TransactionSchedulingError::UnschedulableThread);
         }
     };
+
+    // Avoid time of check time of use race condition between bundle account locker and account locks
+    drop(l_account_locks);
 
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
     let cost = transaction_state.cost();
@@ -300,19 +340,22 @@ mod test {
             scheduler_messages::{MaxAge, TransactionId},
             transaction_scheduler::transaction_state_container::TransactionStateContainer,
         },
-        crossbeam_channel::bounded,
+        crossbeam_channel::unbounded,
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,
+        solana_genesis_config::GenesisConfig,
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_message::{Message, v1::MAX_TRANSACTION_SIZE},
         solana_pubkey::Pubkey,
+        solana_runtime::bank::Bank,
         solana_runtime_transaction::{
             runtime_transaction::RuntimeTransaction,
             transaction_with_meta::StaticTransactionWithMeta,
         },
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
+        solana_system_transaction::transfer,
         solana_transaction::{Transaction, sanitized::SanitizedTransaction},
         std::borrow::Borrow,
     };
@@ -328,11 +371,28 @@ mod test {
         Vec<Receiver<ConsumeWork<RuntimeTransaction<SanitizedTransaction>>>>,
         Sender<FinishedConsumeWork<RuntimeTransaction<SanitizedTransaction>>>,
     ) {
+        create_test_frame_with_bundle_locker(num_threads, config, BundleAccountLocker::default())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn create_test_frame_with_bundle_locker(
+        num_threads: usize,
+        config: GreedySchedulerConfig,
+        bundle_account_locker: BundleAccountLocker,
+    ) -> (
+        GreedyScheduler<RuntimeTransaction<SanitizedTransaction>>,
+        Vec<Receiver<ConsumeWork<RuntimeTransaction<SanitizedTransaction>>>>,
+        Sender<FinishedConsumeWork<RuntimeTransaction<SanitizedTransaction>>>,
+    ) {
         let (consume_work_senders, consume_work_receivers) =
-            (0..num_threads).map(|_| bounded(1024)).unzip();
-        let (finished_consume_work_sender, finished_consume_work_receiver) = bounded(1024);
-        let scheduler =
-            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config);
+            (0..num_threads).map(|_| unbounded()).unzip();
+        let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
+        let scheduler = GreedyScheduler::new_with_bundle_locker(
+            consume_work_senders,
+            finished_consume_work_receiver,
+            config,
+            bundle_account_locker,
+        );
         (
             scheduler,
             consume_work_receivers,
@@ -698,5 +758,64 @@ mod test {
         assert_eq!(scheduling_summary.num_unschedulable_threads, 3);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![5, 4]]);
         assert_eq!(collect_work(&work_receivers[1]).1, [vec![0]]);
+    }
+
+    #[test]
+    fn test_schedule_bundle_account_locker() {
+        let bundle_account_locker = BundleAccountLocker::default();
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+
+        let keypair_1 = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let tx_1_a = transfer(&keypair_1, &keypair_1.pubkey(), 1, Hash::default());
+        let tx_1_b = transfer(&keypair_1, &keypair_1.pubkey(), 2, Hash::default());
+        let tx_2_a = transfer(&keypair_2, &keypair_2.pubkey(), 1, Hash::default());
+        let tx_2_b = transfer(&keypair_2, &keypair_2.pubkey(), 2, Hash::default());
+
+        let runtime_tx_1_a = RuntimeTransaction::from_transaction_for_tests(tx_1_a);
+        let runtime_tx_1_b = RuntimeTransaction::from_transaction_for_tests(tx_1_b);
+        let runtime_tx_1_b = vec![runtime_tx_1_b];
+        let runtime_tx_2_a = RuntimeTransaction::from_transaction_for_tests(tx_2_a);
+        let runtime_tx_2_b = RuntimeTransaction::from_transaction_for_tests(tx_2_b);
+        let runtime_tx_2_b = vec![runtime_tx_2_b];
+
+        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+        container.insert_new_transaction(runtime_tx_1_a, MaxAge::MAX, 1, 5000);
+        container.insert_new_transaction(runtime_tx_2_a, MaxAge::MAX, 1, 5000);
+
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame_with_bundle_locker(
+                1,
+                GreedySchedulerConfig {
+                    target_scheduled_cus: 4 * 5_000, // 2 txs per thread
+                    ..GreedySchedulerConfig::default()
+                },
+                bundle_account_locker.clone(),
+            );
+
+        bundle_account_locker
+            .lock_bundle(&runtime_tx_1_b, &bank)
+            .unwrap();
+
+        let scheduling_summary = scheduler
+            .schedule(&mut container, TEST_SLOT, u64::MAX)
+            .unwrap();
+        assert_eq!(scheduling_summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
+        bundle_account_locker
+            .unlock_bundle(&runtime_tx_1_b, &bank)
+            .unwrap();
+
+        bundle_account_locker
+            .lock_bundle(&runtime_tx_2_b, &bank)
+            .unwrap();
+        let scheduling_summary = scheduler
+            .schedule(&mut container, TEST_SLOT, u64::MAX)
+            .unwrap();
+        assert_eq!(scheduling_summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
+        bundle_account_locker
+            .unlock_bundle(&runtime_tx_2_b, &bank)
+            .unwrap();
     }
 }

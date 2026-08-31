@@ -2,7 +2,7 @@ use {
     crate::{
         bootstrap::RpcBootstrapConfig,
         cli::{DefaultArgs, hash_validator, port_range_validator, port_validator},
-        commands::{FromClapArgMatches, Result},
+        commands::{FromClapArgMatches, Result, bam, jito_args},
     },
     agave_snapshots::{SUPPORTED_ARCHIVE_COMPRESSION, SnapshotVersion},
     bytesize::ByteSize,
@@ -849,6 +849,13 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("advertised_ip")
+            .long("gossip-host")
+            .alias("advertised-ip")
+            .takes_value(true)
+            .hidden(hidden_unless_forced()),
+    )
+    .arg(
         Arg::with_name("rpc_bind_address")
             .long("rpc-bind-address")
             .value_name("HOST")
@@ -1235,6 +1242,57 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
             .validator(|s| is_within_range(s, 1..))
             .help(DefaultSchedulerPool::cli_message()),
+    )
+    .arg(bam::argument())
+    .arg(jito_args::block_engine_url())
+    .arg(jito_args::relayer_url())
+    .arg(jito_args::relayer_expected_heartbeat_interval_ms(
+        &default_args.relayer_expected_heartbeat_interval_ms,
+    ))
+    .arg(jito_args::relayer_max_failed_heartbeats(
+        &default_args.relayer_max_failed_heartbeats,
+    ))
+    .arg(jito_args::trust_block_engine_packets())
+    .arg(
+        Arg::with_name("tip_payment_program_pubkey")
+            .long("tip-payment-program-pubkey")
+            .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+            .takes_value(true)
+            .help("The public key of the tip-payment program"),
+    )
+    .arg(
+        Arg::with_name("tip_distribution_program_pubkey")
+            .long("tip-distribution-program-pubkey")
+            .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+            .takes_value(true)
+            .help("The public key of the tip-distribution program."),
+    )
+    .arg(
+        Arg::with_name("merkle_root_upload_authority")
+            .long("merkle-root-upload-authority")
+            .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+            .takes_value(true)
+            .help("The public key of the authorized merkle-root uploader."),
+    )
+    .arg(
+        Arg::with_name("commission_bps")
+            .long("commission-bps")
+            .value_name("COMMISSION_BPS")
+            .takes_value(true)
+            .help("The commission validator takes from tips expressed in basis points."),
+    )
+    .arg(jito_args::disable_block_engine_autoconfig())
+    .arg(jito_args::shred_receiver_address())
+    .arg(jito_args::shred_retransmit_receiver_address())
+    .arg(
+        Arg::with_name("disable_multicast_shred_check")
+            .long("disable-multicast-shred-check")
+            .takes_value(false)
+            .help(
+                "Disables the background service that automatically detects multicast \
+                 infrastructure and adds the cluster multicast shred address when the route \
+                 exists and the address is not already added.",
+            ),
     )
     .arg(
         Arg::with_name("no_xdp")
