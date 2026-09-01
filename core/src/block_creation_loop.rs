@@ -1018,12 +1018,13 @@ fn handle_parent_ready(
             new_parent_slot,
         ))?;
     let cleared_bank_id = bank.bank_id();
+    ctx.poh_recorder.write().unwrap().set_bank_replacement();
     bank.quiesce_transaction_execution();
     let entry_bytes_consumed = bank.entry_bytes_budget().consumed();
     ctx.bank_forks_controller
         .clear_bank(slot)
         .map_err(|_| PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot))?;
-    ctx.poh_recorder.write().unwrap().clear_bank(true);
+    ctx.poh_recorder.write().unwrap().clear_bank(false);
 
     if let Some(sender) = &ctx.entry_notification_sender
         && let Err(err) = sender.send(EntryNotification::UpdateParent(EntryUpdateParentInfo {
@@ -1047,7 +1048,10 @@ fn handle_parent_ready(
         *block_timer,
         entry_bytes_consumed,
     )
-    .map_err(|_| PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot))?;
+    .map_err(|_| {
+        reset_poh_recorder(&ctx.bank_forks.read().unwrap().working_bank(), ctx);
+        PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot)
+    })?;
     update_leader_window_clock(ctx, slot, *block_timer);
 
     // Re-inject accumulated transactions back to banking stage for rescheduling
@@ -1498,7 +1502,7 @@ mod tests {
         solana_leader_schedule::{FixedSchedule, LeaderSchedule, SlotLeader},
         solana_ledger::{blockstore::Blockstore, get_tmp_ledger_path_auto_delete},
         solana_poh::{
-            poh_recorder::{PohRecorder, Record, WorkingBankEntryOrMarker},
+            poh_recorder::{PohRecorder, Record, SharedLeaderState, WorkingBankEntryOrMarker},
             record_channels::record_channels,
             transaction_recorder::TransactionRecorder,
         },
@@ -1549,6 +1553,7 @@ mod tests {
 
     struct TestBankForksController {
         bank_forks: Arc<RwLock<BankForks>>,
+        shared_leader_state: Option<SharedLeaderState>,
     }
 
     impl BankForksController for TestBankForksController {
@@ -1566,6 +1571,11 @@ mod tests {
         }
 
         fn clear_bank(&self, slot: Slot) -> Result<(), BankForksControllerError> {
+            if let Some(shared_leader_state) = &self.shared_leader_state {
+                let leader_state = shared_leader_state.load();
+                assert!(leader_state.working_bank().is_none());
+                assert!(leader_state.bank_slot().is_some());
+            }
             let bank_to_clear = self.bank_forks.read().unwrap().get_with_scheduler(slot);
             if let Some(bank) = bank_to_clear {
                 let _ = bank.wait_for_completed_scheduler();
@@ -1578,7 +1588,10 @@ mod tests {
     fn test_bank_forks_controller(
         bank_forks: Arc<RwLock<BankForks>>,
     ) -> Arc<dyn BankForksController> {
-        Arc::new(TestBankForksController { bank_forks })
+        Arc::new(TestBankForksController {
+            bank_forks,
+            shared_leader_state: None,
+        })
     }
 
     fn leader_window_info(start_slot: Slot, parent_slot: Slot) -> LeaderWindowInfo {
@@ -2007,11 +2020,15 @@ mod tests {
         );
         poh_recorder.enable_alpenglow();
         let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+        let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let (record_sender, record_receiver) = record_channels(false);
         let (leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
         let (banking_stage_sender, banking_stage_receiver) = BankingTracer::channel_for_test();
-        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
+        let bank_forks_controller = Arc::new(TestBankForksController {
+            bank_forks: bank_forks.clone(),
+            shared_leader_state: Some(shared_leader_state.clone()),
+        });
         let (reward_certs_requestor, _receiver) = CertsRequestor::new();
         let (entry_notification_sender, entry_notification_receiver) = bounded(1);
 
@@ -2060,7 +2077,6 @@ mod tests {
             ctx.poh_recorder.read().unwrap().start_bank_id(),
             optimistic_parent_bank_id
         );
-        let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
         let optimistic_leader_state = shared_leader_state.load();
 
         // Both atomic transactions are valid on the optimistic fork: they reference its

@@ -534,7 +534,11 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         container: &mut impl StateContainer<Tx>,
     ) {
         // Check if no bank or slot has changed
-        let bank_slot = decision.bank().map(|bank| bank.slot());
+        let bank_slot = decision.bank().map(|bank| bank.slot()).or_else(|| {
+            matches!(decision, BufferedPacketsDecision::Hold)
+                .then(|| self.shared_leader_state.load().bank_slot())
+                .flatten()
+        });
         if bank_slot == self.slot {
             return;
         }
@@ -852,7 +856,7 @@ mod tests {
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::Message,
-        solana_poh::poh_recorder::SharedLeaderState,
+        solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, bank_forks::BankForks},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -1252,7 +1256,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "node must exist")]
     fn test_prio_graph_clears_on_slot_boundary() {
         let (bank_forks, _) = test_bank_forks();
         let TestScheduler {
@@ -1295,27 +1298,13 @@ mod tests {
             "Prio graph should have transactions"
         );
 
-        // Store transaction IDs that are currently in the prio_graph
-        let mut stored_txn_ids = Vec::new();
-        while let Some(txn_id) = scheduler.prio_graph.pop() {
-            stored_txn_ids.push(txn_id);
-            // Unblock to allow the next transaction to be popped
-            scheduler.prio_graph.unblock(&txn_id);
-        }
-
-        // Re-insert the transactions back into prio_graph for testing
-        for txn_id in &stored_txn_ids {
-            // Get transaction from container to re-insert
-            if let Some((batch_ids, _, _, _)) = container.get_batch(txn_id.id) {
-                let txns = batch_ids
-                    .iter()
-                    .filter_map(|id| container.get_transaction(*id));
-                scheduler.prio_graph.insert_transaction(
-                    *txn_id,
-                    BamScheduler::<RuntimeTransaction<SanitizedTransaction>>::get_transactions_account_access(txns.into_iter()),
-                );
-            }
-        }
+        let leader_state = LeaderState::new(Some(bank), 0, None, None);
+        scheduler.shared_leader_state.store(Arc::new(leader_state));
+        scheduler.shared_leader_state.set_bank_replacement();
+        scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert!(!scheduler.prio_graph.is_empty());
 
         // Simulate slot boundary change by changing to no bank (None)
         let decision_no_bank = BufferedPacketsDecision::Forward;
@@ -1324,12 +1313,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(scheduler.slot, None);
-
-        // This should panic because the prio_graph has been cleared
-        // and the transaction ID no longer exists in the graph
-        if let Some(first_id) = stored_txn_ids.first() {
-            scheduler.prio_graph.unblock(first_id);
-        }
+        assert!(scheduler.prio_graph.is_empty());
+        assert!(container.is_empty());
     }
 
     /// Regression test for the `solBamSched` "blocking node must exist" panic.
