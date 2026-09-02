@@ -1326,8 +1326,9 @@ impl Validator {
             .unzip();
         // The snapshot service only acts on a small subset of notifications, so filter on the
         // producer side rather than cloning banks it would immediately drop.
-        let mut bank_notification_channel_senders =
-            tip_router_bank_notification_sender.into_iter().collect::<Vec<_>>();
+        let mut bank_notification_channel_senders = tip_router_bank_notification_sender
+            .into_iter()
+            .collect::<Vec<_>>();
 
         let rpc_override_health_check =
             Arc::new(AtomicBool::new(config.rpc_config.disable_health_check));
