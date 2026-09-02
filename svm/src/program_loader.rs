@@ -31,9 +31,8 @@ pub(crate) enum ProgramAccountLoadResult {
 pub(crate) fn load_program_accounts<CB: TransactionProcessingCallback>(
     callbacks: &CB,
     pubkey: &Pubkey,
-) -> Option<(ProgramAccountLoadResult, Slot)> {
-    let (program_account, mut last_modification_slot) =
-        callbacks.get_account_shared_data(pubkey)?;
+) -> Option<ProgramAccountLoadResult> {
+    let (program_account, _last_modification_slot) = callbacks.get_account_shared_data(pubkey)?;
 
     let load_result = if loader_v4::check_id(program_account.owner()) {
         loader_v4_get_state(program_account.data())
@@ -50,10 +49,9 @@ pub(crate) fn load_program_accounts<CB: TransactionProcessingCallback>(
             programdata_address,
         }) = bincode::deserialize(program_account.data())
         {
-            if let Some((programdata_account, slot)) =
+            if let Some((programdata_account, _slot)) =
                 callbacks.get_account_shared_data(&programdata_address)
             {
-                last_modification_slot = slot;
                 if bpf_loader_upgradeable::check_id(programdata_account.owner()) {
                     if let Ok(UpgradeableLoaderState::ProgramData {
                         slot,
@@ -74,7 +72,6 @@ pub(crate) fn load_program_accounts<CB: TransactionProcessingCallback>(
                     ProgramAccountLoadResult::InvalidAccountData(ProgramCacheEntryOwner::LoaderV3)
                 }
             } else {
-                last_modification_slot = 0;
                 ProgramAccountLoadResult::InvalidAccountData(ProgramCacheEntryOwner::LoaderV3)
             }
         } else {
@@ -88,7 +85,7 @@ pub(crate) fn load_program_accounts<CB: TransactionProcessingCallback>(
         return None;
     };
 
-    Some((load_result, last_modification_slot))
+    Some(load_result)
 }
 
 /// Loads the program with the given pubkey.
@@ -102,7 +99,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
     pubkey: &Pubkey,
     current_slot: Slot,
     execute_timings: &mut ExecuteTimings,
-) -> Option<(Arc<ProgramCacheEntry>, Slot)> {
+) -> Option<Arc<ProgramCacheEntry>> {
     #[cfg(feature = "metrics")]
     let mut load_program_metrics = LoadProgramMetrics {
         program_id: pubkey.to_string(),
@@ -111,7 +108,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
     #[cfg(not(feature = "metrics"))]
     let _ = execute_timings;
 
-    let (load_result, last_modification_slot) = load_program_accounts(callbacks, pubkey)?;
+    let load_result = load_program_accounts(callbacks, pubkey)?;
     let loaded_program = match load_result {
         ProgramAccountLoadResult::InvalidAccountData(owner) => {
             Ok(ProgramCacheEntry::new_closed_tombstone(current_slot, owner))
@@ -185,7 +182,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
     #[cfg(feature = "metrics")]
     load_program_metrics.submit_datapoint(&mut execute_timings.details);
     loaded_program.update_access_slot(current_slot);
-    Some((Arc::new(loaded_program), last_modification_slot))
+    Some(Arc::new(loaded_program))
 }
 
 /// Find the slot in which the program was most recently re-/deployed.
@@ -249,24 +246,12 @@ pub fn filter_executable_program_accounts<'a, CB: TransactionProcessingCallback>
     for account_key in keys {
         if let Some(cache_entry) = program_cache_for_tx_batch.find(account_key) {
             cache_entry.stats.uses.fetch_add(1, Ordering::Relaxed);
-        } else if let Some((account, mut last_modification_slot)) =
+        } else if let Some((account, _last_modification_slot)) =
             callbacks.get_account_shared_data(account_key)
         {
             let loader = if loader_v4::check_id(account.owner()) {
                 ProgramCacheEntryOwner::LoaderV4
             } else if bpf_loader_upgradeable::check_id(account.owner()) {
-                if let Ok(UpgradeableLoaderState::Program {
-                    programdata_address,
-                }) = bincode::deserialize(account.data())
-                {
-                    last_modification_slot = if let Some((_programdata, slot)) =
-                        callbacks.get_account_shared_data(&programdata_address)
-                    {
-                        slot
-                    } else {
-                        0
-                    };
-                }
                 ProgramCacheEntryOwner::LoaderV3
             } else if bpf_loader::check_id(account.owner()) {
                 ProgramCacheEntryOwner::LoaderV2
@@ -283,7 +268,6 @@ pub fn filter_executable_program_accounts<'a, CB: TransactionProcessingCallback>
                 program_id: account_key,
                 loader,
                 deployment_slot,
-                last_modification_slot,
             });
         }
     }
@@ -415,10 +399,10 @@ mod tests {
     }
 
     macro_rules! unwrap_as {
-        ($result:expr, $variant:ident($($field:ident),*), $slot:ident) => {
-            let ($($field,)* $slot) = match $result {
-                Some((ProgramAccountLoadResult::$variant($($field),*), slot)) => {
-                    ($($field,)* slot)
+        ($result:expr, $variant:ident($($field:ident),*) $(,)?) => {
+            let ($($field,)*) = match $result {
+                Some(ProgramAccountLoadResult::$variant($($field),*)) => {
+                    ($($field,)*)
                 }
                 other => panic!("Invalid result: {other:?}"),
             };
@@ -464,9 +448,8 @@ mod tests {
             .insert(key, (account_data.clone(), 40));
 
         let result = load_program_accounts(&mock_bank, &key);
-        unwrap_as!(result, ProgramOfLoaderV1(program), last_modification_slot);
+        unwrap_as!(result, ProgramOfLoaderV1(program));
         assert_eq!(program, account_data);
-        assert_eq!(last_modification_slot, 40);
     }
 
     #[test]
@@ -485,9 +468,8 @@ mod tests {
             .insert(key, (account_data.clone(), 40));
 
         let result = load_program_accounts(&mock_bank, &key);
-        unwrap_as!(result, ProgramOfLoaderV2(program), last_modification_slot);
+        unwrap_as!(result, ProgramOfLoaderV2(program));
         assert_eq!(program, account_data);
-        assert_eq!(last_modification_slot, 40);
     }
 
     #[test]
@@ -500,8 +482,7 @@ mod tests {
         assert!(load_program_accounts(&mock_bank, &program_key).is_none());
 
         // Fail: program account invalid state
-        // The load gives up before it ever looks the programdata account up,
-        // so the last_modified_slot we get back is the *program* account's.
+        // The load gives up before it ever looks the programdata account up.
         let mut invalid_program_account = AccountSharedData::default();
         invalid_program_account.set_owner(bpf_loader_upgradeable::id());
         mock_bank
@@ -509,9 +490,8 @@ mod tests {
             .borrow_mut()
             .insert(program_key, (invalid_program_account, 40));
         let result = load_program_accounts(&mock_bank, &program_key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV3);
-        assert_eq!(last_modification_slot, 40); // <-- the program account's
 
         let program_account = loader_v3_program_account(programdata_key);
         mock_bank
@@ -520,17 +500,11 @@ mod tests {
             .insert(program_key, (program_account.clone(), 50));
 
         // Fail: programdata account missing
-        // This is a bit of a footgun. The programdata account is missing, but
-        // we get a modification slot of 0. This is okay as long as we know 0
-        // means "not available" or null.
         let result = load_program_accounts(&mock_bank, &program_key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV3);
-        assert_eq!(last_modification_slot, 0); // <-- slot is 0
 
         // Fail: programdata wrong owner
-        // We also need to be careful here as well, since the load fails but
-        // we still get the *actual* last modified slot.
         let mut programdata_account = loader_v3_programdata_account(7, &[]);
         programdata_account.set_owner(Pubkey::new_unique());
         mock_bank
@@ -538,9 +512,8 @@ mod tests {
             .borrow_mut()
             .insert(programdata_key, (programdata_account, 60));
         let result = load_program_accounts(&mock_bank, &program_key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV3);
-        assert_eq!(last_modification_slot, 60); // <-- slot persists
 
         // Fail: programdata invalid state
         // Same here, fails the load but the last modified slot is returned.
@@ -552,9 +525,8 @@ mod tests {
             .borrow_mut()
             .insert(programdata_key, (programdata_account, 60));
         let result = load_program_accounts(&mock_bank, &program_key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV3);
-        assert_eq!(last_modification_slot, 60); // <-- slot again persists
 
         // Success
         let programdata_account = loader_v3_programdata_account(7, &[]);
@@ -566,12 +538,10 @@ mod tests {
         unwrap_as!(
             result,
             ProgramOfLoaderV3(program, programdata, deployment_slot),
-            last_modification_slot
         );
         assert_eq!(program, program_account);
         assert_eq!(programdata, programdata_account);
         assert_eq!(deployment_slot, 7);
-        assert_eq!(last_modification_slot, 60);
     }
 
     #[test]
@@ -591,9 +561,8 @@ mod tests {
             .borrow_mut()
             .insert(key, (program_account, 100));
         let result = load_program_accounts(&mock_bank, &key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV4);
-        assert_eq!(last_modification_slot, 100); // <-- slot still persists
 
         // Fail: "gifted" state
         // Sized correctly, all-zeroes. Since `LoaderV4Status::Retracted` holds
@@ -606,9 +575,8 @@ mod tests {
             .borrow_mut()
             .insert(key, (program_account, 100));
         let result = load_program_accounts(&mock_bank, &key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV4);
-        assert_eq!(last_modification_slot, 100);
 
         // Fail: status is Retracted
         mock_bank.account_shared_data.borrow_mut().insert(
@@ -616,9 +584,8 @@ mod tests {
             (loader_v4_account(9, LoaderV4Status::Retracted, &[]), 100),
         );
         let result = load_program_accounts(&mock_bank, &key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV4);
-        assert_eq!(last_modification_slot, 100);
 
         // Success: any status but `Retracted`, and the state's slot is the
         // deployment slot
@@ -629,14 +596,9 @@ mod tests {
                 .borrow_mut()
                 .insert(key, (program_account.clone(), 100));
             let result = load_program_accounts(&mock_bank, &key);
-            unwrap_as!(
-                result,
-                ProgramOfLoaderV4(program, deployment_slot),
-                last_modification_slot
-            );
+            unwrap_as!(result, ProgramOfLoaderV4(program, deployment_slot));
             assert_eq!(program, program_account);
             assert_eq!(deployment_slot, 9);
-            assert_eq!(last_modification_slot, 100);
         }
     }
 
@@ -703,26 +665,24 @@ mod tests {
         // Just like we saw earlier in `test_load_program_accounts_loader_v3`,
         // the load result should be `InvalidAccountData(owner)`.
         let result = load_program_accounts(&mock_bank, &program_key);
-        unwrap_as!(result, InvalidAccountData(owner), last_modification_slot);
+        unwrap_as!(result, InvalidAccountData(owner));
         assert_eq!(owner, ProgramCacheEntryOwner::LoaderV3);
-        assert_eq!(last_modification_slot, 60);
 
         // This is key, because we should now get a `Closed` tombstone.
-        let result = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(20),
             &program_key,
             100, // Slot 100
             &mut ExecuteTimings::default(),
-        );
+        )
+        .unwrap();
 
         // Assert the result matches a `Closed` tombstone.
         let closed_tombstone = ProgramCacheEntry::new_closed_tombstone(
             100, // Slot 100
             ProgramCacheEntryOwner::LoaderV3,
         );
-        let (entry, last_modification_slot) = result.unwrap();
-        assert_eq!(last_modification_slot, 60);
         assert_eq!(entry, Arc::new(closed_tombstone));
 
         // Assert that it is NOT a `FailedVerification` tombstone.
@@ -774,20 +734,19 @@ mod tests {
         unwrap_as!(
             result,
             ProgramOfLoaderV3(_program, _programdata, deployment_slot),
-            last_modification_slot
         );
         assert_eq!(deployment_slot, 7);
-        assert_eq!(last_modification_slot, 60);
 
         // This is key, because the ELF fails to verify, so we should now get a
         // `FailedVerification` tombstone.
-        let result = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(20),
             &program_key,
             100, // Slot 100
             &mut ExecuteTimings::default(),
-        );
+        )
+        .unwrap();
 
         // Assert the result matches a `FailedVerification` tombstone.
         let fv_tombstone = ProgramCacheEntry::new_failed_verification_tombstone(
@@ -795,8 +754,6 @@ mod tests {
             ProgramCacheEntryOwner::LoaderV3,
             batch_processor.program_runtime_environment_for_epoch(20),
         );
-        let (entry, last_modification_slot) = result.unwrap();
-        assert_eq!(last_modification_slot, 60);
         assert_eq!(entry, Arc::new(fv_tombstone));
 
         // Assert that it is NOT a `Closed` tombstone.
@@ -828,19 +785,20 @@ mod tests {
             .insert(key, (account_data.clone(), 0));
 
         // This should return an error
-        let result = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(20),
             &key,
             200,
             &mut ExecuteTimings::default(),
-        );
+        )
+        .unwrap();
         let loaded_program = ProgramCacheEntry::new_failed_verification_tombstone(
             0,
             ProgramCacheEntryOwner::LoaderV2,
             batch_processor.program_runtime_environment_for_epoch(20),
         );
-        assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
+        assert_eq!(entry, Arc::new(loaded_program));
 
         let buffer = load_test_program();
         account_data.set_data_from_slice(&buffer);
@@ -850,13 +808,14 @@ mod tests {
             .borrow_mut()
             .insert(key, (account_data.clone(), 0));
 
-        let result = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(20),
             &key,
             200,
             &mut ExecuteTimings::default(),
-        );
+        )
+        .unwrap();
 
         let program_runtime_environment = get_mock_program_runtime_environment();
         let expected = ProgramCacheEntry::load(
@@ -868,7 +827,7 @@ mod tests {
             &mut LoadProgramMetrics::default(),
         );
 
-        assert_eq!(result.unwrap(), (Arc::new(expected.unwrap()), 0));
+        assert_eq!(entry, Arc::new(expected.unwrap()));
     }
 
     #[test]
@@ -903,16 +862,17 @@ mod tests {
 
         // The programdata account is not owned by the loader, so this is a
         // `Closed` tombstone rather than a `FailedVerification` one.
-        let result = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(0),
             &key1,
             0,
             &mut ExecuteTimings::default(),
-        );
+        )
+        .unwrap();
         let loaded_program =
             ProgramCacheEntry::new_closed_tombstone(0, ProgramCacheEntryOwner::LoaderV3);
-        assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
+        assert_eq!(entry, Arc::new(loaded_program));
 
         let mut buffer = load_test_program();
         let mut header = bincode::serialize(&state).unwrap();
@@ -932,13 +892,14 @@ mod tests {
             .borrow_mut()
             .insert(key2, (account_data.clone(), 0));
 
-        let result = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &batch_processor.program_runtime_environment_for_epoch(20),
             &key1,
             200,
             &mut ExecuteTimings::default(),
-        );
+        )
+        .unwrap();
 
         let data = account_data.data().to_vec();
         account_data
@@ -953,7 +914,7 @@ mod tests {
             #[cfg(feature = "metrics")]
             &mut LoadProgramMetrics::default(),
         );
-        assert_eq!(result.unwrap(), (Arc::new(expected.unwrap()), 0));
+        assert_eq!(entry, Arc::new(expected.unwrap()));
     }
 
     #[test]
@@ -968,7 +929,7 @@ mod tests {
             key,
             (loader_v4_account(9, LoaderV4Status::Retracted, &[]), 100),
         );
-        let (entry, _) = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &environment,
             &key,
@@ -984,7 +945,7 @@ mod tests {
             key,
             (loader_v4_account(9, LoaderV4Status::Deployed, &[]), 100),
         );
-        let (entry, _) = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &environment,
             &key,
@@ -1007,7 +968,7 @@ mod tests {
             .account_shared_data
             .borrow_mut()
             .insert(key, (account, 100));
-        let (entry, _) = load_program_with_pubkey(
+        let entry = load_program_with_pubkey(
             &mock_bank,
             &environment,
             &key,
@@ -1042,7 +1003,7 @@ mod tests {
             .insert(key, (account_data.clone(), 0));
 
         for is_upcoming_env in [false, true] {
-            let (result, _last_modification_slot) = load_program_with_pubkey(
+            let result = load_program_with_pubkey(
                 &mock_bank,
                 &batch_processor.program_runtime_environment_for_epoch(is_upcoming_env as u64),
                 &key,
@@ -1328,13 +1289,11 @@ mod tests {
                     program_id: &program_ids[1],
                     loader: ProgramCacheEntryOwner::LoaderV2,
                     deployment_slot: 0,
-                    last_modification_slot: 0,
                 },
                 ProgramToLoad {
                     program_id: &program_ids[2],
                     loader: ProgramCacheEntryOwner::LoaderV3,
                     deployment_slot: 0,
-                    last_modification_slot: 0,
                 },
             ]
         );
@@ -1421,9 +1380,7 @@ mod tests {
                 .insert(key, (empty, 40));
             assert!(filter_executable_program_accounts(&mock_bank, &batch, keys.iter()).is_empty());
 
-            // Any non-empty data is considered to *maybe* be a program, and
-            // both loaders always use deployment slot 0. The modification slot
-            // is the program account's own.
+            // Any non-empty data is considered to *maybe* be a program.
             let mut account = AccountSharedData::default();
             account.set_owner(owner);
             account.set_data_from_slice(&[1u8; 4]);
@@ -1437,7 +1394,6 @@ mod tests {
             let program_to_load = result.first().unwrap();
             assert_eq!(program_to_load.loader, loader);
             assert_eq!(program_to_load.deployment_slot, 0);
-            assert_eq!(program_to_load.last_modification_slot, 40);
         }
     }
 
@@ -1479,8 +1435,6 @@ mod tests {
         assert!(filter_executable_program_accounts(&mock_bank, &batch, keys.iter()).is_empty());
 
         // Successfully queued.
-        // Both fields come from the programdata account: the deployment slot
-        // *and* the modification slot.
         mock_bank
             .account_shared_data
             .borrow_mut()
@@ -1490,7 +1444,6 @@ mod tests {
         let program_to_load = result.first().unwrap();
         assert_eq!(program_to_load.loader, ProgramCacheEntryOwner::LoaderV3);
         assert_eq!(program_to_load.deployment_slot, 7);
-        assert_eq!(program_to_load.last_modification_slot, 60);
     }
 
     #[test]
@@ -1533,8 +1486,6 @@ mod tests {
         assert!(filter_executable_program_accounts(&mock_bank, &batch, keys.iter()).is_empty());
 
         // Successfully queued.
-        // Both fields come from the program account: the deployment slot from
-        // its state, the modification slot from the account itself.
         mock_bank.account_shared_data.borrow_mut().insert(
             key,
             (loader_v4_account(9, LoaderV4Status::Deployed, &[]), 100),
@@ -1544,7 +1495,6 @@ mod tests {
         let program_to_load = result.first().unwrap();
         assert_eq!(program_to_load.loader, ProgramCacheEntryOwner::LoaderV4);
         assert_eq!(program_to_load.deployment_slot, 9);
-        assert_eq!(program_to_load.last_modification_slot, 100);
     }
 
     #[test]
