@@ -276,7 +276,7 @@ land_channel() {
         --force-with-lease="refs/heads/${CHANNEL}:${channel_sha}" \
         origin "${staging_sha}:refs/heads/${CHANNEL}"; then
         result_status="landed"
-        result_detail="Rebased ${CHANNEL} onto agave/${UPSTREAM_CHANNEL}"
+        result_detail="Rebased ${CHANNEL} onto agave/${UPSTREAM_CHANNEL}; previous tip ${channel_sha:0:10}"
         result_url="${GITHUB_SERVER_URL}/${GH_REPO}/commit/${staging_sha}"
         write_result
         close_conflict_issue "${result_url}"
