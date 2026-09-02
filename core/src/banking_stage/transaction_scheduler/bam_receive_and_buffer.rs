@@ -85,6 +85,7 @@ pub struct BamReceiveAndBuffer {
     /// Owned by this struct (unlike the shared `exit` flag) so `drop` can
     /// stop the parsing thread without shutting anything else down.
     shutdown: Arc<AtomicBool>,
+    shared_leader_state: Option<SharedLeaderState>,
     next_fifo_priority: u64,
 }
 
@@ -115,6 +116,7 @@ impl BamReceiveAndBuffer {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
         let response_sender_clone = response_sender.clone();
+        let parsing_leader_state = shared_leader_state.clone();
         let parsing_thread = std::thread::spawn(move || {
             Self::run_parsing(
                 exit,
@@ -124,7 +126,7 @@ impl BamReceiveAndBuffer {
                 recv_stats_sender,
                 response_sender_clone,
                 bank_forks,
-                shared_leader_state,
+                parsing_leader_state,
                 blacklisted_accounts,
             )
         });
@@ -136,6 +138,7 @@ impl BamReceiveAndBuffer {
             recv_stats_receiver,
             parsing_thread: Some(parsing_thread),
             shutdown,
+            shared_leader_state,
             next_fifo_priority: u64::MAX,
         }
     }
@@ -346,6 +349,50 @@ impl BamReceiveAndBuffer {
                     )),
                 },
             ));
+    }
+
+    fn should_buffer_batches(&self) -> bool {
+        self.shared_leader_state
+            .as_ref()
+            .is_some_and(|shared_leader_state| shared_leader_state.load().bank_slot().is_some())
+    }
+
+    fn buffer_batch(
+        &mut self,
+        container: &mut TransactionStateContainer<
+            RuntimeTransaction<ResolvedTransactionView<Bytes>>,
+        >,
+        batch: ParsedBatch,
+        bam_state: BamConnectionState,
+        stats: &mut ReceivingStats,
+    ) {
+        if bam_state != BamConnectionState::Connected {
+            stats.num_dropped_without_parsing += batch.txns_max_age.len();
+            return;
+        }
+
+        let ParsedBatch {
+            txns_max_age,
+            revert_on_error,
+            max_schedule_slot,
+            seq_id,
+        } = batch;
+
+        if container
+            .insert_new_batch(
+                txns_max_age,
+                self.next_fifo_priority,
+                revert_on_error,
+                max_schedule_slot,
+                seq_id,
+            )
+            .is_none()
+        {
+            stats.num_dropped_on_capacity += 1;
+            self.send_container_full_txn_batch_result(seq_id);
+            return;
+        }
+        self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
     }
 
     fn parse_batch(
@@ -817,16 +864,18 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
             stats.accumulate(batch_stats);
         }
 
-        match decision {
+        let should_buffer_batches = matches!(
+            decision,
+            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
+        ) || self.should_buffer_batches();
+        match (should_buffer_batches, bam_state) {
             // Preserve batches during the short Block Engine handoff. Connecting may be
             // long-lived, so retain the existing drain behavior for that state.
-            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
-                if matches!(
-                    bam_state,
-                    BamConnectionState::DrainingBlockEngine
-                        | BamConnectionState::BlockEngineDrained
-                ) => {}
-            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold => loop {
+            (
+                true,
+                BamConnectionState::DrainingBlockEngine | BamConnectionState::BlockEngineDrained,
+            ) => {}
+            (true, _) => loop {
                 let batch = match self.parsed_batch_receiver.try_recv() {
                     Ok(batch) => batch,
                     Err(TryRecvError::Disconnected) => return Err(DisconnectedError::Receiver),
@@ -836,36 +885,9 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                     }
                 };
 
-                // If BAM is not enabled, drain the channel
-                if bam_state != BamConnectionState::Connected {
-                    stats.num_dropped_without_parsing += batch.txns_max_age.len();
-                    continue;
-                }
-
-                let ParsedBatch {
-                    txns_max_age,
-                    revert_on_error,
-                    max_schedule_slot,
-                    seq_id,
-                } = batch;
-
-                if container
-                    .insert_new_batch(
-                        txns_max_age,
-                        self.next_fifo_priority,
-                        revert_on_error,
-                        max_schedule_slot,
-                        seq_id,
-                    )
-                    .is_none()
-                {
-                    stats.num_dropped_on_capacity += 1;
-                    self.send_container_full_txn_batch_result(seq_id);
-                    continue;
-                }
-                self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
+                self.buffer_batch(container, batch, bam_state, &mut stats);
             },
-            BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Forward => {
+            (false, _) => {
                 // Ensure nothing is left in the container
                 while let Some(next_batch_id) = container.pop() {
                     if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
@@ -874,7 +896,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                     container.remove_by_id(next_batch_id.id);
                 }
 
-                // Send back any batches that were received while in Forward/Hold state
+                // Allow the parser to catch up, but refresh leader state before rejecting work.
                 let deadline = Instant::now() + Duration::from_millis(100);
                 loop {
                     let (batch, receive_time_us) =
@@ -890,8 +912,13 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                             break;
                         }
                     };
-                    self.send_no_leader_slot_txn_batch_result(batch.seq_id);
-                    stats.num_dropped_without_parsing += 1;
+                    if self.should_buffer_batches() {
+                        self.buffer_batch(container, batch, bam_state, &mut stats);
+                        break;
+                    } else {
+                        self.send_no_leader_slot_txn_batch_result(batch.seq_id);
+                        stats.num_dropped_without_parsing += 1;
+                    }
                 }
             }
         }
@@ -1529,12 +1556,6 @@ mod tests {
         assert_ne!(old_bank.bank_id(), replacement_bank.bank_id());
 
         let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(old_bank.clone()),
-            0,
-            None,
-            None,
-        )));
         let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
             setup_bam_receive_and_buffer(
                 receiver,
@@ -1594,6 +1615,7 @@ mod tests {
         ));
 
         // Hide the retiring Bank so parsing retains work until its replacement is ready.
+        shared_leader_state.store(Arc::new(LeaderState::new(Some(old_bank), 0, None, None)));
         shared_leader_state.set_bank_replacement();
         assert!(shared_leader_state.load().working_bank().is_none());
 
