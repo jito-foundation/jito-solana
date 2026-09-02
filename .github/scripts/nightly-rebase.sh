@@ -106,20 +106,15 @@ open_pr_action() {
 write_conflict_report() {
     local -r last_staging_sha="$1"
     local conflict_files
-    local git_status
     local issue_number
     local issue_url
     local report_file
 
     conflict_files="$(git diff --name-only --diff-filter=U)"
-    git_status="$(git status --short | sed -n '1,100p')"
     report_file="$(mktemp)"
 
     if [[ -z "${conflict_files}" ]]; then
         conflict_files="No unmerged paths reported"
-    fi
-    if [[ -z "${git_status}" ]]; then
-        git_status="No status entries reported"
     fi
 
     cat >| "${report_file}" <<EOF
@@ -134,12 +129,6 @@ Conflicting files:
 
 \`\`\`text
 ${conflict_files}
-\`\`\`
-
-\`git status --short\`:
-
-\`\`\`text
-${git_status}
 \`\`\`
 
 [Workflow run](${run_url})
