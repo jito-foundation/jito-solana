@@ -4155,7 +4155,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solana-clock",
- "solana-pubkey 4.2.0",
+ "solana-pubkey 4.3.0",
 ]
 
 [[package]]
@@ -4166,7 +4166,7 @@ dependencies = [
  "anyhow",
  "borsh",
  "solana-program",
- "solana-pubkey 4.2.0",
+ "solana-pubkey 4.3.0",
 ]
 
 [[package]]
@@ -4181,7 +4181,7 @@ dependencies = [
 
 [[package]]
 name = "jito-tip-router-snapshot-service"
-version = "4.3.0-alpha.1"
+version = "4.4.0-alpha.2"
 dependencies = [
  "agave-feature-set",
  "bincode",
@@ -4194,19 +4194,19 @@ dependencies = [
  "jito-tip-payment-sdk",
  "log",
  "serde_json",
- "solana-account 4.3.1",
+ "solana-account 4.6.0",
  "solana-accounts-db",
  "solana-clap-utils",
  "solana-clock",
- "solana-hash 4.5.0",
- "solana-pubkey 4.2.0",
+ "solana-hash 4.6.0",
+ "solana-pubkey 4.3.0",
  "solana-rpc",
  "solana-runtime",
  "solana-signer",
  "solana-stake-interface",
  "solana-vote",
  "tempfile",
- "thiserror 2.0.18",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
