@@ -1348,8 +1348,8 @@ impl Validator {
             );
             let (rpc_bank_notification_sender, rpc_bank_notification_receiver) =
                 BankNotificationSender::channel("optimistically-confirmed-bank-tracker");
-            let confirmed_bank_subscribers = if !bank_notification_senders.is_empty() {
-                Some(Arc::new(RwLock::new(bank_notification_senders)))
+            let slot_notification_subscribers = if !slot_notification_senders.is_empty() {
+                Some(Arc::new(RwLock::new(slot_notification_senders)))
             } else {
                 None
             };
@@ -1459,8 +1459,8 @@ impl Validator {
                     prioritization_fee_cache.clone(),
                     dependency_tracker.clone(),
                 ));
-            bank_notification_channel_senders
-                .push(rpc_bank_notification_sender);
+            // Keep the RPC subscriber first to preserve upstream notification ordering.
+            bank_notification_channel_senders.insert(0, rpc_bank_notification_sender);
             (
                 Some(json_rpc_service),
                 Some(rpc_subscriptions),
