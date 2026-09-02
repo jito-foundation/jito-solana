@@ -1518,18 +1518,24 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_and_buffer_waits_for_replacement_bank() {
+    fn test_receive_and_buffer_preserves_replacement_batches_during_stale_forward_drain() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let root_bank = bank_forks.read().unwrap().root_bank();
         let old_bank = child_bank(&root_bank, 1);
         let replacement_bank = child_bank(&root_bank, 1);
         replacement_bank.register_unique_recent_blockhash_for_test();
+        assert_eq!(old_bank.slot(), replacement_bank.slot());
+        assert_ne!(old_bank.bank_id(), replacement_bank.bank_id());
 
         let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        shared_leader_state.store(Arc::new(LeaderState::new(Some(old_bank), 0, None, None)));
-        shared_leader_state.set_bank_replacement();
-        let (_, mut receive_and_buffer, mut container, mut response_receiver) =
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(old_bank.clone()),
+            0,
+            None,
+            None,
+        )));
+        let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
             setup_bam_receive_and_buffer(
                 receiver,
                 bank_forks,
@@ -1537,51 +1543,185 @@ mod tests {
                 HashSet::new(),
             );
 
-        let transaction = transfer(
+        // Reject a probe first so replacement begins while the same Forward call
+        // is blocked on its fixed receive deadline.
+        const DRAIN_PROBE_SEQ_ID: u32 = 70_000;
+        let drain_probe = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            old_bank.last_blockhash(),
+        );
+        let mut drain_probe_batch =
+            batch_with_packet_data(wincode::serialize(&drain_probe).unwrap().into());
+        drain_probe_batch.seq_id = DRAIN_PROBE_SEQ_ID;
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![drain_probe_batch],
+            })
+            .unwrap();
+
+        let stale_drain = std::thread::spawn(move || {
+            receive_and_buffer
+                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Forward)
+                .unwrap();
+            (receive_and_buffer, container)
+        });
+
+        let probe_deadline = Instant::now() + Duration::from_secs(5);
+        let response = loop {
+            if let Ok(response) = response_receiver.try_recv() {
+                break response;
+            }
+            assert!(
+                Instant::now() < probe_deadline,
+                "timed out waiting for the drain probe result"
+            );
+            std::thread::yield_now();
+        };
+        let BamOutboundMessage::AtomicTxnBatchResult(result) = response else {
+            panic!("expected drain probe result");
+        };
+        assert_eq!(result.seq_id, DRAIN_PROBE_SEQ_ID);
+        assert!(matches!(
+            &result.result,
+            Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
+                if matches!(
+                    &not_committed.reason,
+                    Some(Reason::SchedulingError(reason))
+                        if *reason == SchedulingError::OutsideLeaderSlot as i32
+                )
+        ));
+
+        // Hide the retiring Bank so parsing retains work until its replacement is ready.
+        shared_leader_state.set_bank_replacement();
+        assert!(shared_leader_state.load().working_bank().is_none());
+
+        const DURING_REPLACEMENT_SEQ_ID: u32 = 70_001;
+        let during_replacement_transaction = transfer(
             &mint_keypair,
             &Pubkey::new_unique(),
             1,
             replacement_bank.last_blockhash(),
         );
-        let batch = batch_with_packet_data(wincode::serialize(&transaction).unwrap().into());
+        let mut during_replacement_batch = batch_with_packet_data(
+            wincode::serialize(&during_replacement_transaction)
+                .unwrap()
+                .into(),
+        );
+        during_replacement_batch.seq_id = DURING_REPLACEMENT_SEQ_ID;
         sender
             .send(MultipleAtomicTxnBatch {
-                batches: vec![batch],
+                batches: vec![during_replacement_batch],
             })
             .unwrap();
-
         let receive_deadline = Instant::now() + Duration::from_secs(5);
         while !sender.is_empty() {
             assert!(
                 Instant::now() < receive_deadline,
-                "parser did not receive the pending batch"
+                "parser did not receive the replacement-pending batch"
             );
             std::thread::yield_now();
         }
-        receive_and_buffer
-            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
-            .unwrap();
-        assert!(container.is_empty());
+        assert!(
+            response_receiver.try_recv().is_err(),
+            "replacement-pending batch escaped before the new Bank was published"
+        );
 
-        let leader_state = LeaderState::new(Some(replacement_bank), 0, None, None);
-        shared_leader_state.store(Arc::new(leader_state));
-        let parse_deadline = Instant::now() + Duration::from_secs(5);
-        while container.is_empty() {
+        // Publishing the replacement releases pending parsing while the stale
+        // Forward call is still active.
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(replacement_bank.clone()),
+            0,
+            None,
+            None,
+        )));
+
+        // Work sent after publication must use the replacement state rather than
+        // the cached Forward decision.
+        const POST_REPLACEMENT_SEQ_ID: u32 = 70_002;
+        let post_replacement_transaction = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            replacement_bank.last_blockhash(),
+        );
+        let mut post_replacement_batch = batch_with_packet_data(
+            wincode::serialize(&post_replacement_transaction)
+                .unwrap()
+                .into(),
+        );
+        post_replacement_batch.seq_id = POST_REPLACEMENT_SEQ_ID;
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![post_replacement_batch],
+            })
+            .unwrap();
+
+        let (mut receive_and_buffer, mut container) = stale_drain.join().unwrap();
+        let current_leader_state = shared_leader_state.load();
+        let current_bank = current_leader_state
+            .working_bank()
+            .expect("replacement Bank must be active when the stale drain exits");
+        assert!(Arc::ptr_eq(current_bank, &replacement_bank));
+
+        let mut unexpected_responses = Vec::new();
+        while let Ok(BamOutboundMessage::AtomicTxnBatchResult(result)) =
+            response_receiver.try_recv()
+        {
+            let outside_leader_slot = matches!(
+                &result.result,
+                Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
+                    if matches!(
+                        &not_committed.reason,
+                        Some(Reason::SchedulingError(reason))
+                            if *reason == SchedulingError::OutsideLeaderSlot as i32
+                    )
+            );
+            unexpected_responses.push((result.seq_id, outside_leader_slot));
+        }
+        assert!(
+            unexpected_responses.is_empty(),
+            "replacement batches received responses from the stale Forward drain (seq_id, \
+             outside_leader_slot): {unexpected_responses:?}"
+        );
+
+        // A fresh Consume decision must recover retained work and accept new work.
+        const CONTROL_SEQ_ID: u32 = 70_003;
+        let control_transaction = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            replacement_bank.last_blockhash(),
+        );
+        let mut control_batch =
+            batch_with_packet_data(wincode::serialize(&control_transaction).unwrap().into());
+        control_batch.seq_id = CONTROL_SEQ_ID;
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![control_batch],
+            })
+            .unwrap();
+
+        let consume = BufferedPacketsDecision::Consume(replacement_bank);
+        let buffer_deadline = Instant::now() + Duration::from_secs(5);
+        while container.queue_size() < 3 {
             receive_and_buffer
-                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+                .receive_and_buffer_packets(&mut container, &consume)
                 .unwrap();
             assert!(
                 response_receiver.try_recv().is_err(),
-                "batch was rejected before replacement validation"
+                "replacement or control batch was unexpectedly rejected"
             );
             assert!(
-                Instant::now() < parse_deadline,
-                "timed out waiting for the replacement-valid batch"
+                Instant::now() < buffer_deadline,
+                "timed out waiting for replacement and control batches"
             );
             std::thread::yield_now();
         }
 
-        verify_container(&mut container, 1);
+        verify_container(&mut container, 3);
+        exit.store(true, Ordering::Relaxed);
     }
 
     #[test]
