@@ -1,6 +1,6 @@
-# Build the release tarball with ./f and attach it (+ manifest, SHA-256) to
-# the tag's GitHub release, so deploys download instead of building from
-# source.
+# Build the normal and tip-router release tarballs with ./f and attach them
+# (+ manifests and SHA-256 checksums) to the tag's GitHub release, so deploys
+# download instead of building from source.
 name: Release Artifacts
 
 on:
@@ -29,11 +29,22 @@ concurrency:
 
 jobs:
   build:
+    name: Build ${{ matrix.variant }} artifact
     # Skip fork PRs: they cannot use org larger runners and would queue forever.
     if: >-
       github.repository == 'jito-foundation/jito-solana' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard validator
+            basename: jito-solana-release
+            tip_router: false
+          - variant: tip-router validator
+            basename: jito-solana-tip-router-release
+            tip_router: true
     runs-on: big-runner-1
     timeout-minutes: 360
     permissions:
@@ -68,11 +79,16 @@ jobs:
 
       - name: Build release tarball
         env:
+          BASENAME: ${{ matrix.basename }}
           EVENT: ${{ github.event_name }}
           DISPATCH_REF: ${{ inputs.ref }}
           TAG: ${{ steps.meta.outputs.tag }}
+          TIP_ROUTER: ${{ matrix.tip_router }}
         run: |
-          args=()
+          args=(--basename "$BASENAME")
+          if [[ "$TIP_ROUTER" == "true" ]]; then
+            args+=(--tip-router)
+          fi
           if [[ -n "$TAG" ]]; then
             args+=(--tag "$TAG")
           fi
@@ -96,14 +112,25 @@ jobs:
           ./f "${args[@]}"
 
       - name: Checksum and summarize
+        env:
+          TIP_ROUTER: ${{ matrix.tip_router }}
+          VARIANT: ${{ matrix.variant }}
         run: |
           ./docker-output/agave-validator --version
+          if [[ "$TIP_ROUTER" == "true" ]]; then
+            ./docker-output/agave-validator run --help \
+              | grep -q -- '--enable-tip-router-snapshot-service'
+          elif ./docker-output/agave-validator run --help \
+            | grep -q -- '--enable-tip-router-snapshot-service'; then
+            echo "Standard validator unexpectedly contains tip-router support" >&2
+            exit 1
+          fi
           cd dist
           for f in *.tar.bz2; do
             sha256sum "$f" > "$f.sha256"
           done
           {
-            echo "## jito-solana release artifact"
+            echo "## $VARIANT release artifact"
             echo '```'
             ../docker-output/agave-validator --version
             echo '```'
@@ -134,6 +161,6 @@ jobs:
         if: steps.meta.outputs.tag == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: jito-solana-release
+          name: ${{ matrix.basename }}
           path: dist/
           compression-level: 0  # contents are already bzip2
