@@ -63,6 +63,8 @@ impl TipRouterSnapshotServiceContext {
         rooted_chain: Vec<(Slot, BankId)>,
         artifact_store: &ArtifactStore,
     ) -> TipRouterSnapshotServiceResult {
+        // Returns a winner only once its artifact is written; a rooted-but-unwritten winner
+        // is published from `record_worker_completion` when the worker finishes instead.
         let Some(winner) = self
             .publication_state
             .select_winner_for_publication(&rooted_chain)
@@ -72,6 +74,14 @@ impl TipRouterSnapshotServiceContext {
 
         debug!("selected rooted tip-router snapshot candidate {winner}");
 
+        self.publish_winner(winner, artifact_store)
+    }
+
+    fn publish_winner(
+        &mut self,
+        winner: CandidateIdentity,
+        artifact_store: &ArtifactStore,
+    ) -> TipRouterSnapshotServiceResult {
         match artifact_store.publish_candidate(winner) {
             Ok(()) => {
                 info!("published tip-router snapshot winner {winner}");
@@ -136,17 +146,19 @@ impl TipRouterSnapshotServiceContext {
 
     pub(super) fn handle_worker_completion(
         &mut self,
+        artifact_store: &ArtifactStore,
         worker_completion: WorkerCompletion,
     ) -> TipRouterSnapshotServiceResult {
         let Some(completion) = self.workers.complete_worker(worker_completion) else {
             // Weird case where the worker was already removed and this has been duplicated
             return Ok(());
         };
-        self.record_worker_completion(completion)
+        self.record_worker_completion(artifact_store, completion)
     }
 
     fn record_worker_completion(
         &mut self,
+        artifact_store: &ArtifactStore,
         completion: WorkerCompletion,
     ) -> TipRouterSnapshotServiceResult {
         let WorkerCompletion { candidate, outcome } = completion;
@@ -156,6 +168,11 @@ impl TipRouterSnapshotServiceContext {
                     "wrote tip-router snapshot candidate {candidate} to {}",
                     path.display()
                 );
+                // If this candidate was already rooted, its publication was deferred until
+                // the artifact write finished; complete it now.
+                if let Some(winner) = self.publication_state.record_candidate_written(candidate) {
+                    return self.publish_winner(winner, artifact_store);
+                }
             }
             WorkerOutcome::Failed(SnapshotWorkerError::ArtifactStore(
                 ArtifactStoreError::DirectoryUnavailable { path, source },
@@ -205,10 +222,12 @@ impl TipRouterSnapshotServiceContext {
 
     pub(super) fn shutdown_workers(
         &mut self,
+        artifact_store: &ArtifactStore,
         completion_receiver: &Receiver<WorkerCompletion>,
         exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         self.shutdown_workers_with_timeout(
+            artifact_store,
             completion_receiver,
             exit,
             ARTIFACT_WORKERS_SHUTDOWN_TIMEOUT,
@@ -217,6 +236,7 @@ impl TipRouterSnapshotServiceContext {
 
     fn shutdown_workers_with_timeout(
         &mut self,
+        artifact_store: &ArtifactStore,
         completion_receiver: &Receiver<WorkerCompletion>,
         exit: &Arc<AtomicBool>,
         timeout: Duration,
@@ -243,7 +263,7 @@ impl TipRouterSnapshotServiceContext {
             ),
         };
         for completion in completions {
-            if let Err(err) = self.record_worker_completion(completion) {
+            if let Err(err) = self.record_worker_completion(artifact_store, completion) {
                 first_error.get_or_insert(err);
             }
         }
