@@ -5,6 +5,43 @@ channel in `.github/rebase-channels.json` onto its Agave branch and posts one
 Slack summary. What you do next depends on the channel's `landing` mode and
 the status in that summary.
 
+```text
+weekdays 19:00 UTC, one job per channel in rebase-channels.json
+
+  agave/<upstream>                   origin/<channel>
+        │                                  │
+        └──────────┐            ┌──────────┘
+                   ▼            ▼
+             git rebase carry commits onto agave tip
+                   │
+        ┌──────────┴──────────┐
+        │ conflict            │ clean
+        ▼                     ▼
+  git rebase --abort     push ci/rebase/<channel>  (reused if same tree)
+  open/refresh issue          │
+  "Nightly rebase             ├─────────────────────────┐
+   conflict: <channel>"       │ landing: draft          │ landing: auto
+  assign owner                ▼                         ▼
+        │              open/refresh draft PR     poll buildkite/jito-solana
+        │              · carry commits                  │
+        │              · range-diff             ┌───────┴────────┐
+        │              · force-push command     │ green          │ red / 4h
+        │                     │                 ▼                ▼
+        │                     ▼          git push --force-   report ci_failure
+        │              human reviews,    with-lease=<old      staging left
+        │              runs the command  tip> <channel>       in place
+        │                     │                 │
+        │                     ▼          ┌──────┴──────┐
+        │              PR marked merged  │ ok          │ lease failed
+        │                                ▼             ▼
+        │                             landed        stale (channel
+        │                                           moved; retry
+        │                                           next run)
+        └────────────────────┬───────────────────────┘
+                             ▼
+                one Slack line per channel, every run
+```
+
 ## master (`landing: auto`)
 
 The bot rebases master's carry commits (the Jito Patch plus anything merged
