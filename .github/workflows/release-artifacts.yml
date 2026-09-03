@@ -117,11 +117,15 @@ jobs:
           VARIANT: ${{ matrix.variant }}
         run: |
           ./docker-output/agave-validator --version
+          validator_help="$(./docker-output/agave-validator run --help)"
           if [[ "$TIP_ROUTER" == "true" ]]; then
-            ./docker-output/agave-validator run --help \
-              | grep -q -- '--enable-tip-router-snapshot-service'
-          elif ./docker-output/agave-validator run --help \
-            | grep -q -- '--enable-tip-router-snapshot-service'; then
+            if ! grep -Fq -- '--enable-tip-router-snapshot-service' \
+              <<< "$validator_help"; then
+              echo "Tip-router validator is missing tip-router support" >&2
+              exit 1
+            fi
+          elif grep -Fq -- '--enable-tip-router-snapshot-service' \
+            <<< "$validator_help"; then
             echo "Standard validator unexpectedly contains tip-router support" >&2
             exit 1
           fi
