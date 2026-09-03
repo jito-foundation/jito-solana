@@ -1247,12 +1247,12 @@ pub fn execute(
             return Err(err);
         }
     };
-    if let Some(filename) = init_complete_file {
-        if let Err(err) = File::create(filename) {
-            validator.close();
-            tip_router::join(tip_router_service);
-            return Err(format!("unable to create {filename}: {err}").into());
-        }
+    if let Some(filename) = init_complete_file
+        && let Err(err) = File::create(filename)
+    {
+        validator.close();
+        tip_router::join(tip_router_service);
+        return Err(format!("unable to create {filename}: {err}").into());
     }
     info!("Validator initialized");
     let listen_result = validator.listen_for_signals();
