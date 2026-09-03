@@ -4,8 +4,7 @@ mod publication_state;
 mod worker_pool;
 
 use {
-    self::context::TipRouterSnapshotServiceContext,
-    self::metrics::report_fatal_exit,
+    self::{context::TipRouterSnapshotServiceContext, metrics::report_fatal_exit},
     crate::{
         artifact_store::{ArtifactStore, ArtifactStoreError},
         config::TipRouterSnapshotConfig,
