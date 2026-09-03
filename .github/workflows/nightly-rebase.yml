@@ -194,4 +194,3 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${payload}" \
             "${SLACK_WEBHOOK_URL}"
-
