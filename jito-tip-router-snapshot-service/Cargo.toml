@@ -21,6 +21,7 @@ solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-clap-utils = { workspace = true }
 solana-clock = { workspace = true }
+solana-epoch-schedule = { workspace = true }
 solana-hash = { workspace = true }
 solana-metrics = { workspace = true }
 solana-pubkey = { workspace = true }

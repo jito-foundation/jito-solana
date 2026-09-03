@@ -4198,6 +4198,7 @@ dependencies = [
  "solana-accounts-db",
  "solana-clap-utils",
  "solana-clock",
+ "solana-epoch-schedule",
  "solana-hash 4.6.0",
  "solana-metrics",
  "solana-pubkey 4.3.0",
