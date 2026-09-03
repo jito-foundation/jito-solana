@@ -4199,6 +4199,7 @@ dependencies = [
  "solana-clap-utils",
  "solana-clock",
  "solana-hash 4.6.0",
+ "solana-metrics",
  "solana-pubkey 4.3.0",
  "solana-rpc",
  "solana-runtime",

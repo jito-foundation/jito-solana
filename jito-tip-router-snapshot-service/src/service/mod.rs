@@ -1,9 +1,11 @@
 mod context;
+mod metrics;
 mod publication_state;
 mod worker_pool;
 
 use {
     self::context::TipRouterSnapshotServiceContext,
+    self::metrics::report_fatal_exit,
     crate::{
         artifact_store::{ArtifactStore, ArtifactStoreError},
         config::TipRouterSnapshotConfig,
@@ -85,6 +87,7 @@ impl TipRouterSnapshotService {
                 let result = Self::run(config, artifact_store, bank_notification_receiver, exit);
                 if let Err(e) = result.as_ref() {
                     log::error!("TipRouterSnapshotService critical error: {:?}", e);
+                    report_fatal_exit(e);
                 }
                 info!("TipRouterSnapshotService has stopped");
                 result

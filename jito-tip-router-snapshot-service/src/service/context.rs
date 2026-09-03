@@ -1,6 +1,7 @@
 use {
     super::{
         TipRouterSnapshotServiceError, TipRouterSnapshotServiceResult,
+        metrics::{report_publication_failure, report_spawn_failure, report_worker_outcome},
         publication_state::SnapshotPublicationTracker,
         worker_pool::{SnapshotWorkerPool, WorkerShutdownTimeout},
     },
@@ -97,6 +98,7 @@ impl TipRouterSnapshotServiceContext {
             }
             Err(err) => {
                 warn!("failed to finalize tip-router snapshot winner {winner}: {err}");
+                report_publication_failure(&err, winner);
                 self.publication_state
                     .record_winner_publication_failure(winner);
             }
@@ -137,6 +139,7 @@ impl TipRouterSnapshotServiceContext {
             parent_bank,
         ) {
             error!("failed to spawn tip-router snapshot worker for {candidate}: {err}");
+            report_spawn_failure(&err, candidate);
             return Ok(());
         }
 
@@ -162,6 +165,9 @@ impl TipRouterSnapshotServiceContext {
         completion: WorkerCompletion,
     ) -> TipRouterSnapshotServiceResult {
         let WorkerCompletion { candidate, outcome } = completion;
+
+        report_worker_outcome(&outcome, candidate);
+
         match outcome {
             WorkerOutcome::Written(path) => {
                 debug!(
