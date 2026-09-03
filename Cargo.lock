@@ -8200,7 +8200,6 @@ dependencies = [
  "histogram",
  "itertools 0.15.0",
  "jito-protos",
- "jito-tip-router-snapshot-service",
  "lazy-lru",
  "libc",
  "log",

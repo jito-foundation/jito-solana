@@ -1,14 +1,7 @@
 //! The `validator` module hosts all the validator microservices.
 
 pub use solana_perf::report_target_features;
-use {
-    crate::tip_manager::TipManagerConfig,
-    jito_tip_router_snapshot_service::{
-        config::TipRouterSnapshotConfig, notification_filter::TipRouterEpochBoundaryFilter,
-        service::TipRouterSnapshotService,
-    },
-    solana_turbine::ShredReceiverAddresses,
-};
+use {crate::tip_manager::TipManagerConfig, solana_turbine::ShredReceiverAddresses};
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
@@ -435,7 +428,6 @@ pub struct ValidatorConfig {
     /// Automatically detected multicast destination for leader shreds.
     pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
-    pub tip_router_snapshot_config: Option<TipRouterSnapshotConfig>,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
     /// Skips automatic multicast route detection and multicast receiver updates.
     pub disable_multicast_shred_check: bool,
@@ -534,7 +526,6 @@ impl ValidatorConfig {
             )),
             multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
-            tip_router_snapshot_config: None,
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
             disable_multicast_shred_check: false,
         }
@@ -749,7 +740,6 @@ pub struct Validator {
     /// in sync with kernel route availability.
     root_multicast_shred_check_service: Option<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
-    tip_router_snapshot_service: Option<TipRouterSnapshotService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
     serve_repair_service: ServeRepairService,
@@ -810,6 +800,7 @@ impl Validator {
             tpu_config,
             admin_rpc_service_post_init,
             xdp_transmit_setup,
+            Vec::new(),
             exit,
         )
     }
@@ -829,6 +820,7 @@ impl Validator {
         tpu_config: ValidatorTpuConfig,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
         xdp_transmit_setup: Option<XdpTransmitSetup>,
+        extra_bank_notification_senders: Vec<BankNotificationSender>,
         exit: Arc<AtomicBool>,
     ) -> Result<Self> {
         if config.enable_scheduler_bindings && config.bam_url.load().is_some() {
@@ -1314,21 +1306,9 @@ impl Validator {
                 .unwrap()
         });
 
-        let (tip_router_bank_notification_sender, tip_router_bank_notification_receiver) = config
-            .tip_router_snapshot_config
-            .is_some()
-            .then(|| {
-                BankNotificationSender::channel_with_filter(
-                    "tip-router-snapshot-service",
-                    TipRouterEpochBoundaryFilter,
-                )
-            })
-            .unzip();
-        // The snapshot service only acts on a small subset of notifications, so filter on the
-        // producer side rather than cloning banks it would immediately drop.
-        let mut bank_notification_channel_senders = tip_router_bank_notification_sender
-            .into_iter()
-            .collect::<Vec<_>>();
+        let should_send_parents =
+            geyser_plugin_service.is_some() || !extra_bank_notification_senders.is_empty();
+        let mut bank_notification_channel_senders = extra_bank_notification_senders;
 
         let rpc_override_health_check =
             Arc::new(AtomicBool::new(config.rpc_config.disable_health_check));
@@ -1339,7 +1319,7 @@ impl Validator {
             rpc_completed_slots_service,
             sample_performance_service,
             optimistically_confirmed_bank_tracker,
-            bank_notification_dependency_tracker,
+            dependency_tracker,
         ) = if let Some((rpc_addr, rpc_pubsub_addr)) = config.rpc_addrs {
             assert_eq!(
                 node.info.rpc().map(|addr| socket_addr_space.check(&addr)),
@@ -1477,9 +1457,8 @@ impl Validator {
         let bank_notification_sender_config =
             (!bank_notification_channel_senders.is_empty()).then(|| BankNotificationSenderConfig {
                 sender: BankNotificationBroadcaster::new(bank_notification_channel_senders),
-                should_send_parents: geyser_plugin_service.is_some()
-                    || config.tip_router_snapshot_config.is_some(),
-                dependency_tracker: bank_notification_dependency_tracker,
+                should_send_parents,
+                dependency_tracker,
             });
 
         // CompletedDataSetsService feeds two independent sinks: RPC signatureSubscribe
@@ -1970,19 +1949,6 @@ impl Validator {
                 root_addr,
             )
         });
-        let tip_router_snapshot_service = config
-            .tip_router_snapshot_config
-            .clone()
-            .zip(tip_router_bank_notification_receiver)
-            .map(|(tip_router_snapshot_config, bank_notification_receiver)| {
-                TipRouterSnapshotService::init(
-                    tip_router_snapshot_config,
-                    bank_notification_receiver,
-                    exit.clone(),
-                )
-            })
-            .transpose()?;
-
         Ok(Self {
             log_config: config.log_config.clone(),
             exit,
@@ -1999,7 +1965,6 @@ impl Validator {
             leader_multicast_shred_check_service,
             root_multicast_shred_check_service,
             sample_performance_service,
-            tip_router_snapshot_service,
             snapshot_packager_service,
             completed_data_sets_service,
             tpu,
@@ -2169,16 +2134,6 @@ impl Validator {
             sample_performance_service
                 .join()
                 .expect("sample_performance_service");
-        }
-
-        if let Some(tip_router_snapshot_service) = self.tip_router_snapshot_service {
-            match tip_router_snapshot_service
-                .join()
-                .expect("tip_router_snapshot_service")
-            {
-                Ok(()) => {}
-                Err(err) => error!("tip_router_snapshot_service exited with error: {err}"),
-            }
         }
 
         if let Some(entry_notifier_service) = self.entry_notifier_service {
