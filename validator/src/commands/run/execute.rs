@@ -3,7 +3,10 @@ use {
         admin_rpc_service::{self, StakedNodesOverrides, load_staked_nodes_overrides},
         bootstrap,
         cli::{self},
-        commands::{FromClapArgMatches, run::args::RunArgs},
+        commands::{
+            FromClapArgMatches,
+            run::{args::RunArgs, tip_router},
+        },
         ledger_lockfile, lock_ledger,
         shred_receiver_addresses::parse_shred_receiver_addresses,
     },
@@ -768,6 +771,9 @@ pub fn execute(
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
 
     let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
+    let mut extra_bank_notification_senders = Vec::new();
+    let tip_router_service_setup =
+        tip_router::setup(matches, &mut extra_bank_notification_senders)?;
 
     let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig {
         block_engine_url: value_of(matches, "block_engine_url").unwrap_or_default(),
@@ -1183,6 +1189,7 @@ pub fn execute(
         },
     };
 
+    let tip_router_exit = exit.clone();
     let validator = Validator::new_with_exit(
         node,
         identity_keypair,
@@ -1204,17 +1211,31 @@ pub fn execute(
         },
         admin_service_post_init,
         xdp_transmit_setup,
+        extra_bank_notification_senders,
         exit,
     )
     .map_err(|err| format!("{err:?}"))?;
 
-    if let Some(filename) = init_complete_file {
-        File::create(filename).map_err(|err| format!("unable to create {filename}: {err}"))?;
+    let tip_router_service = match tip_router::start(tip_router_service_setup, tip_router_exit) {
+        Ok(service) => service,
+        Err(err) => {
+            validator.close();
+            return Err(err);
+        }
+    };
+    if let Some(filename) = init_complete_file
+        && let Err(err) = File::create(filename)
+    {
+        validator.close();
+        tip_router::join(tip_router_service);
+        return Err(format!("unable to create {filename}: {err}").into());
     }
     info!("Validator initialized");
-    validator.listen_for_signals()?;
-    validator.join();
+    let listen_result = validator.listen_for_signals();
+    validator.close();
+    tip_router::join(tip_router_service);
     info!("Validator exiting...");
+    listen_result?;
 
     Ok(())
 }

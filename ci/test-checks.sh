@@ -50,6 +50,11 @@ else
   echo "Note: cargo-for-all-lock-files.sh skipped because $CI_BASE_BRANCH != $EDGE_CHANNEL"
 fi
 
+# The tip-router integration is optional in production builds. Check it
+# explicitly so its validator wiring cannot silently bitrot behind cfg gates.
+_ cargo "+${rust_stable}" check --locked --package agave-validator \
+  --all-targets --features tip-router
+
 _ ci/order-crates-for-publishing.py
 
 _ scripts/cargo-clippy.sh

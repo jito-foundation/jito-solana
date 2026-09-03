@@ -18,6 +18,7 @@ rustdoc-args = ["--cfg=docsrs"]
 
 [features]
 agave-unstable-api = []
+tip-router = ["dep:jito-tip-router-snapshot-service"]
 
 [dependencies]
 agave-cpu-utils = { workspace = true }
@@ -35,6 +36,7 @@ crossbeam-channel = { workspace = true }
 fd-lock = { workspace = true }
 indicatif = { workspace = true }
 itertools = { workspace = true }
+jito-tip-router-snapshot-service = { workspace = true, optional = true }
 jsonrpc-core = { workspace = true }
 jsonrpc-core-client = { workspace = true, features = ["ipc"] }
 jsonrpc-derive = { workspace = true }
