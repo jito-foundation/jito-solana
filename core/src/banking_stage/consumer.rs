@@ -3,7 +3,7 @@ use {
         committer::{CommitTransactionDetails, Committer},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
-        scheduler_messages::MaxAge,
+        scheduler_messages::{CostAdmission, MaxAge},
     },
     crate::{
         bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -13,6 +13,7 @@ use {
     smallvec::SmallVec,
     solana_accounts_db::accounts::TransactionAccountLocksIterator,
     solana_clock::{BankId, Slot},
+    solana_cost_model::transaction_cost::TransactionCost,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
     solana_poh::{
@@ -245,10 +246,76 @@ impl Consumer {
         )
     }
 
-    fn process_and_record_transactions_with_pre_results(
+    /// Executes work whose cost admission the scheduler already performed on `bank`.
+    ///
+    /// The scheduler reserved the estimate of every `Ok(())` entry of `admission.results` in
+    /// `bank`'s cost tracker, in scheduling order, so this path must not reserve again. It
+    /// recomputes the same costs (a pure function of the transaction and the feature set) so the
+    /// usual post-commit settlement adjusts or releases each reservation exactly once, and it
+    /// re-runs the minimal resanitization that the local path folds into admission: a
+    /// transaction that no longer passes is not executed, is reported with that error, and has
+    /// its reservation released like any other uncommitted transaction.
+    ///
+    /// Callers must ensure `bank.bank_id() == admission.bank_id`; on any other bank the
+    /// reservation does not exist and `process_and_record_aged_transactions_with_policy` is the
+    /// right path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_and_record_preadmitted<Tx: TransactionWithMeta>(
         &self,
         bank: &Bank,
-        txs: &[impl TransactionWithMeta],
+        txs: &[Tx],
+        max_ages: &[MaxAge],
+        admission: &CostAdmission,
+        flags: &ExecutionFlags,
+        bundle_account_locker: Option<&BundleAccountLocker>,
+        revert_on_error: bool,
+    ) -> ProcessTransactionBatchOutput {
+        debug_assert_eq!(bank.bank_id(), admission.bank_id);
+        debug_assert_eq!(admission.results.len(), txs.len());
+
+        let (transaction_qos_cost_results, cost_model_us) =
+            measure_us!(QosService::compute_transaction_costs(
+                &bank.feature_set,
+                txs.iter(),
+                admission.results.iter().cloned(),
+            ));
+        debug_assert_eq!(
+            transaction_qos_cost_results
+                .iter()
+                .filter_map(|cost| cost.as_ref().ok())
+                .map(|cost| cost.sum())
+                .sum::<u64>(),
+            admission.reserved_cost,
+            "recomputed costs must reproduce the scheduler's reservation"
+        );
+        let cost_model_throttled_transactions_count =
+            txs.len().saturating_sub(admission.num_admitted()) as u64;
+
+        let lock_pre_results = txs.iter().zip(max_ages).map(|(tx, max_age)| {
+            bank.resanitize_transaction_minimally(
+                tx,
+                max_age.sanitized_epoch,
+                max_age.alt_invalidation_slot,
+            )
+        });
+
+        self.process_and_record_cost_selected(
+            bank,
+            txs,
+            &transaction_qos_cost_results,
+            lock_pre_results,
+            cost_model_throttled_transactions_count,
+            cost_model_us,
+            flags,
+            bundle_account_locker,
+            revert_on_error,
+        )
+    }
+
+    fn process_and_record_transactions_with_pre_results<Tx: TransactionWithMeta>(
+        &self,
+        bank: &Bank,
+        txs: &[Tx],
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         flags: &ExecutionFlags,
         bundle_account_locker: Option<&BundleAccountLocker>,
@@ -263,6 +330,38 @@ impl Consumer {
             pre_results,
         ));
 
+        self.process_and_record_cost_selected(
+            bank,
+            txs,
+            &transaction_qos_cost_results,
+            std::iter::repeat(Ok(())),
+            cost_model_throttled_transactions_count,
+            cost_model_us,
+            flags,
+            bundle_account_locker,
+            revert_on_error,
+        )
+    }
+
+    /// Locks, executes, commits, and settles cost reservations for transactions whose cost-model
+    /// admission (`transaction_qos_cost_results`) has already been decided on `bank`.
+    ///
+    /// `lock_pre_results` is one extra per-transaction gate applied at lock time. The local
+    /// admission path passes `Ok(())` for every transaction because its pre-results were already
+    /// folded into the cost results; the pre-admitted path passes fresh resanitization results.
+    #[allow(clippy::too_many_arguments)]
+    fn process_and_record_cost_selected<Tx: TransactionWithMeta>(
+        &self,
+        bank: &Bank,
+        txs: &[Tx],
+        transaction_qos_cost_results: &[Result<TransactionCost<'_, Tx>, TransactionError>],
+        lock_pre_results: impl Iterator<Item = Result<(), TransactionError>>,
+        cost_model_throttled_transactions_count: u64,
+        cost_model_us: u64,
+        flags: &ExecutionFlags,
+        bundle_account_locker: Option<&BundleAccountLocker>,
+        revert_on_error: bool,
+    ) -> ProcessTransactionBatchOutput {
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
         // same account state.
@@ -273,8 +372,11 @@ impl Consumer {
                 transaction_qos_cost_results
                     .iter()
                     .zip(txs.iter())
-                    .map(|(r, tx)| match r {
-                        Ok(_cost) => {
+                    .zip(lock_pre_results)
+                    .map(|((r, tx), lock_pre_result)| match (r, lock_pre_result) {
+                        (Err(err), _) => Err(err.clone()),
+                        (Ok(_cost), Err(err)) => Err(err),
+                        (Ok(_cost), Ok(())) => {
                             let Some(l_bundle_account_locker) = &l_bundle_account_locker else {
                                 return Ok(());
                             };
@@ -294,7 +396,6 @@ impl Consumer {
                             }
                             Ok(())
                         }
-                        Err(err) => Err(err.clone()),
                     }),
             )
         );

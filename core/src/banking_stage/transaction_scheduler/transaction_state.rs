@@ -59,6 +59,11 @@ impl<Tx> TransactionState<Tx> {
         self.cost
     }
 
+    /// Return the sanitization age bounds the transaction was buffered with.
+    pub(crate) fn max_age(&self) -> MaxAge {
+        self.max_age
+    }
+
     /// Return the nonce address of the transaction, if one exists.
     pub(crate) fn nonce_address(&self) -> Option<&Pubkey> {
         self.nonce_address.as_ref()

@@ -4,11 +4,13 @@
 //!
 
 use {
-    super::committer::CommitTransactionDetails,
+    super::{committer::CommitTransactionDetails, scheduler_messages::CostAdmission},
     agave_feature_set::FeatureSet,
     smallvec::SmallVec,
     solana_cost_model::{
-        cost_model::CostModel, cost_tracker::UpdatedCosts, transaction_cost::TransactionCost,
+        cost_model::CostModel,
+        cost_tracker::{CostTrackerError, UpdatedCosts},
+        transaction_cost::TransactionCost,
     },
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -30,6 +32,16 @@ type TransactionCostResults<'a, Tx> = SmallVec<
 // it wants.
 //
 pub struct QosService;
+
+/// Outcome of a scheduler-side [`QosService::try_admit_transactions`] call.
+#[derive(Debug)]
+pub(crate) enum CostAdmissionAttempt {
+    /// Reservations were made for every `Ok(())` result; `Err` results are final.
+    Admitted(CostAdmission),
+    /// A block-limit rejection short by `shortfall` cost units could be covered once inflight
+    /// work on the same bank settles. Nothing was reserved.
+    Deferred { shortfall: u64 },
+}
 
 impl QosService {
     /// Calculate cost of transactions, if not already filtered out, determine which ones to
@@ -54,9 +66,89 @@ impl QosService {
         )
     }
 
+    /// Reserves the estimated costs of `transactions` in `bank`'s cost tracker on the calling
+    /// thread, in order, exactly as `select_and_accumulate_transaction_costs` would, and returns
+    /// the per-transaction decisions for a worker to execute against.
+    ///
+    /// The one difference is the block limit: a `WouldExceedBlockMaxLimit` whose shortfall is at
+    /// most `inflight_reserved_cost` (estimates already reserved on this bank by dispatched work
+    /// that has not settled yet) rolls the whole attempt back and returns
+    /// [`CostAdmissionAttempt::Deferred`], because settling that work may free enough budget.
+    /// Every other rejection is final and recorded in the returned results, as today.
+    pub(crate) fn try_admit_transactions<'a, Tx: TransactionWithMeta + 'a>(
+        bank: &Bank,
+        transactions: impl Iterator<Item = &'a Tx>,
+        pre_results: impl Iterator<Item = transaction::Result<()>>,
+        inflight_reserved_cost: u64,
+    ) -> CostAdmissionAttempt {
+        let transaction_costs =
+            Self::compute_transaction_costs(&bank.feature_set, transactions, pre_results);
+
+        let mut cost_tracker = bank.write_cost_tracker().unwrap();
+        let mut results = Vec::with_capacity(transaction_costs.len());
+        let mut reserved_cost: u64 = 0;
+        for cost_result in transaction_costs.iter() {
+            let cost = match cost_result {
+                Ok(cost) => cost,
+                Err(err) => {
+                    results.push(Err(err.clone()));
+                    continue;
+                }
+            };
+            match cost_tracker.try_add(cost) {
+                Ok(_) => {
+                    reserved_cost = reserved_cost.saturating_add(cost.sum());
+                    results.push(Ok(()));
+                }
+                Err(CostTrackerError::WouldExceedBlockMaxLimit) => {
+                    let shortfall = cost_tracker
+                        .block_cost()
+                        .saturating_add(cost.sum())
+                        .saturating_sub(cost_tracker.block_cost_limit());
+                    if shortfall <= inflight_reserved_cost {
+                        // Undo what this attempt reserved so far; nothing is left in flight.
+                        for (result, cost) in results.iter().zip(transaction_costs.iter()) {
+                            if let (Ok(()), Ok(cost)) = (result, cost) {
+                                cost_tracker.remove(cost);
+                            }
+                        }
+                        return CostAdmissionAttempt::Deferred { shortfall };
+                    }
+                    results.push(Err(TransactionError::from(
+                        CostTrackerError::WouldExceedBlockMaxLimit,
+                    )));
+                }
+                Err(err) => results.push(Err(TransactionError::from(err))),
+            }
+        }
+        let admission = CostAdmission {
+            bank_id: bank.bank_id(),
+            results,
+            reserved_cost,
+        };
+        cost_tracker.add_transactions_in_flight(admission.num_admitted());
+        CostAdmissionAttempt::Admitted(admission)
+    }
+
+    /// Releases every reservation in `admission` from `bank`'s cost tracker for work that will
+    /// never reach a worker. Costs are recomputed; they are a pure function of the transaction
+    /// and the bank's feature set, so this reproduces the reservation exactly.
+    pub(crate) fn release_admitted_costs<'a, Tx: TransactionWithMeta + 'a>(
+        bank: &Bank,
+        transactions: impl Iterator<Item = &'a Tx>,
+        admission: &CostAdmission,
+    ) {
+        let transaction_costs = Self::compute_transaction_costs(
+            &bank.feature_set,
+            transactions,
+            admission.results.iter().cloned(),
+        );
+        Self::remove_unrecorded_transaction_costs(transaction_costs.iter(), bank);
+    }
+
     // invoke cost_model to calculate cost for the given list of transactions that have not
     // been filtered out already.
-    fn compute_transaction_costs<'a, Tx: TransactionWithMeta>(
+    pub(crate) fn compute_transaction_costs<'a, Tx: TransactionWithMeta>(
         feature_set: &FeatureSet,
         transactions: impl Iterator<Item = &'a Tx>,
         pre_results: impl Iterator<Item = transaction::Result<()>>,

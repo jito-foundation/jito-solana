@@ -93,6 +93,9 @@ pub(crate) trait StateContainer<Tx: StaticTransactionWithMeta> {
     /// Panics if the transaction does not exist.
     fn get_transaction(&self, id: TransactionId) -> Option<&Tx>;
 
+    /// Get the `MaxAge` a buffered transaction was inserted with, without taking it.
+    fn get_transaction_max_age(&self, id: TransactionId) -> Option<MaxAge>;
+
     /// Get the transaction ids and metadata for a batch id.
     ///
     /// `BamReceiveAndBuffer::prevalidate_batches` rejects `AtomicTxnBatch`es with
@@ -225,6 +228,13 @@ impl<Tx: StaticTransactionWithMeta> StateContainer<Tx> for TransactionStateConta
         match batch_or_txn {
             BatchIdOrTransactionState::Batch { .. } => None,
             BatchIdOrTransactionState::TransactionState(state) => Some(state.transaction()),
+        }
+    }
+
+    fn get_transaction_max_age(&self, id: TransactionId) -> Option<MaxAge> {
+        match self.id_to_transaction_state.get(id)? {
+            BatchIdOrTransactionState::Batch { .. } => None,
+            BatchIdOrTransactionState::TransactionState(state) => Some(state.max_age()),
         }
     }
 

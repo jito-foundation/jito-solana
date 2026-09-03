@@ -147,7 +147,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     #[allow(clippy::result_large_err)]
     fn consume(
         &self,
-        work: ConsumeWork<Tx>,
+        mut work: ConsumeWork<Tx>,
     ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
@@ -182,19 +182,40 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
-        let output = self
-            .consumer
-            .process_and_record_aged_transactions_with_policy(
+        let flags = ExecutionFlags {
+            drop_on_failure: work.revert_on_error,
+            all_or_nothing: work.revert_on_error,
+        };
+        // The scheduler already reserved cost on this exact bank, in scheduling order. Taking
+        // the admission out of the work marks the reservation as settled by this worker; work
+        // that goes back still carrying one is released by the scheduler.
+        let admission = work.admission.take_if(|admission| {
+            admission.bank_id == bank.bank_id()
+                && admission.results.len() == work.transactions.len()
+        });
+        let output = match admission {
+            Some(admission) => self.consumer.process_and_record_preadmitted(
                 bank,
                 &work.transactions,
                 &work.max_ages,
-                &ExecutionFlags {
-                    drop_on_failure: work.revert_on_error,
-                    all_or_nothing: work.revert_on_error,
-                },
+                &admission,
+                &flags,
                 None, // bundle account locker checked in scheduler
                 work.revert_on_error,
-            );
+            ),
+            // Ordinary workers, or a bank replaced within the slot: admit locally as before. A
+            // stale admission stays attached so the scheduler releases it from its own bank.
+            None => self
+                .consumer
+                .process_and_record_aged_transactions_with_policy(
+                    bank,
+                    &work.transactions,
+                    &work.max_ages,
+                    &flags,
+                    None, // bundle account locker checked in scheduler
+                    work.revert_on_error,
+                ),
+        };
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
@@ -1889,7 +1910,7 @@ fn try_drain_iter<T>(work: T, receiver: &Receiver<T>) -> impl Iterator<Item = T>
 }
 
 /// Returns an active leader state if available, otherwise None.
-fn active_leader_state(
+pub(crate) fn active_leader_state(
     shared_leader_state: &SharedLeaderState,
 ) -> Option<arc_swap::Guard<Arc<LeaderState>>> {
     let guard = shared_leader_state.load();
@@ -2449,7 +2470,8 @@ mod tests {
         crate::{
             banking_stage::{
                 committer::Committer,
-                scheduler_messages::{MaxAge, TransactionBatchId},
+                qos_service::QosService,
+                scheduler_messages::{CostAdmission, MaxAge, TransactionBatchId},
                 tests::{create_slow_genesis_config, sanitize_transactions},
             },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -2463,6 +2485,7 @@ mod tests {
         crossbeam_channel::{bounded, unbounded},
         solana_account::Account,
         solana_clock::Slot,
+        solana_cost_model::cost_tracker::CostTrackerLimits,
         solana_genesis_config::GenesisConfig,
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_keypair::Keypair,
@@ -2650,6 +2673,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            admission: None,
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -2699,6 +2723,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    admission: None,
                 })
                 .unwrap();
         }
@@ -2761,6 +2786,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -2827,6 +2853,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            admission: None,
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -2834,6 +2861,329 @@ mod tests {
         assert_eq!(consumed.work.ids, vec![id]);
         assert_eq!(consumed.work.max_ages, vec![max_age]);
         assert_eq!(consumed.retryable_indexes, Vec::new());
+
+        drop(test_frame);
+        let _ = worker_thread.join().unwrap();
+    }
+
+    /// Estimated cost of `transactions[0]` on `bank`, as both scheduler and worker compute it.
+    fn estimated_cost(
+        bank: &Bank,
+        transactions: &[RuntimeTransaction<SanitizedTransaction>],
+    ) -> u64 {
+        QosService::compute_transaction_costs(
+            &bank.feature_set,
+            transactions.iter(),
+            std::iter::repeat(Ok(())),
+        )[0]
+        .as_ref()
+        .unwrap()
+        .sum()
+    }
+
+    /// What the scheduler does before dispatch: reserve the estimate on `bank`.
+    fn reserve_on_bank(bank: &Bank, transactions: &[RuntimeTransaction<SanitizedTransaction>]) {
+        let costs = QosService::compute_transaction_costs(
+            &bank.feature_set,
+            transactions.iter(),
+            std::iter::repeat(Ok(())),
+        );
+        let mut tracker = bank.write_cost_tracker().unwrap();
+        for cost in costs.iter().flatten() {
+            tracker.try_add(cost).unwrap();
+        }
+        tracker.add_transactions_in_flight(costs.len());
+    }
+
+    fn preadmitted_work(
+        bank: &Bank,
+        transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
+        admission: CostAdmission,
+    ) -> ConsumeWork<RuntimeTransaction<SanitizedTransaction>> {
+        let max_age = MaxAge {
+            sanitized_epoch: bank.epoch(),
+            alt_invalidation_slot: bank.slot(),
+        };
+        ConsumeWork {
+            target_slot: bank.slot(),
+            batch_id: TransactionBatchId::new(0),
+            ids: (0..transactions.len()).collect(),
+            max_ages: vec![max_age; transactions.len()],
+            transactions,
+            revert_on_error: false,
+            respond_with_extra_info: true,
+            max_schedule_slot: Some(bank.slot()),
+            admission: Some(admission),
+        }
+    }
+
+    #[test]
+    fn test_worker_consume_preadmitted_executes_without_reserving_again() {
+        let (mut test_frame, worker) = setup_test_frame(false);
+        let TestFrame {
+            mint_keypair,
+            genesis_config,
+            bank,
+            record_receiver,
+            shared_leader_state,
+            consume_sender,
+            consumed_receiver,
+            ..
+        } = &mut test_frame;
+        let worker_thread = std::thread::spawn(move || worker.run());
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+        record_receiver.restart(bank.bank_id());
+
+        let pubkey1 = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            mint_keypair,
+            &pubkey1,
+            1,
+            genesis_config.hash(),
+        )]);
+        let estimate = estimated_cost(bank, &transactions);
+
+        // The scheduler reserved the estimate, and the block has room for nothing else: a second
+        // `try_add` of the same transaction would fail with WouldExceedMaxBlockCostLimit.
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(CostTrackerLimits {
+                account_cost: u64::MAX,
+                block_cost: estimate,
+                allocated_data_size: u64::MAX,
+            });
+        reserve_on_bank(bank, &transactions);
+
+        consume_sender
+            .send(preadmitted_work(
+                bank,
+                transactions,
+                CostAdmission {
+                    bank_id: bank.bank_id(),
+                    results: vec![Ok(())],
+                    reserved_cost: estimate,
+                },
+            ))
+            .unwrap();
+
+        let consumed = consumed_receiver.recv().unwrap();
+        assert_eq!(consumed.retryable_indexes, vec![]);
+        assert!(
+            consumed.work.admission.is_none(),
+            "the worker settled the reservation and must say so"
+        );
+        let results = consumed.extra_info.unwrap().processed_results;
+        assert!(
+            matches!(&results[0], TransactionResult::Committed(committed) if committed.execution_success),
+            "expected a committed transaction, got {results:?}"
+        );
+        assert_eq!(bank.get_balance(&pubkey1), 1);
+
+        // The reservation was settled once: adjusted to actual usage and no longer in flight.
+        let tracker = bank.read_cost_tracker().unwrap();
+        assert!(tracker.block_cost() <= estimate);
+        assert!(tracker.block_cost() > 0);
+        assert_eq!(tracker.in_flight_transaction_count(), 0);
+        drop(tracker);
+
+        drop(test_frame);
+        let _ = worker_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_worker_consume_preadmitted_rejected_transaction_is_not_executed() {
+        let (mut test_frame, worker) = setup_test_frame(false);
+        let TestFrame {
+            mint_keypair,
+            genesis_config,
+            bank,
+            record_receiver,
+            shared_leader_state,
+            consume_sender,
+            consumed_receiver,
+            ..
+        } = &mut test_frame;
+        let worker_thread = std::thread::spawn(move || worker.run());
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+        record_receiver.restart(bank.bank_id());
+
+        let pubkey1 = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            mint_keypair,
+            &pubkey1,
+            1,
+            genesis_config.hash(),
+        )]);
+
+        consume_sender
+            .send(preadmitted_work(
+                bank,
+                transactions,
+                CostAdmission {
+                    bank_id: bank.bank_id(),
+                    results: vec![Err(TransactionError::WouldExceedMaxBlockCostLimit)],
+                    reserved_cost: 0,
+                },
+            ))
+            .unwrap();
+
+        let consumed = consumed_receiver.recv().unwrap();
+        assert_eq!(
+            consumed.retryable_indexes,
+            vec![RetryableIndex::new(0, false)]
+        );
+        let results = consumed.extra_info.unwrap().processed_results;
+        assert!(
+            matches!(
+                &results[0],
+                TransactionResult::NotCommitted(NotCommittedReason::Error(
+                    TransactionError::WouldExceedMaxBlockCostLimit
+                ))
+            ),
+            "expected the admission error, got {results:?}"
+        );
+        assert_eq!(bank.get_balance(&pubkey1), 0);
+        let tracker = bank.read_cost_tracker().unwrap();
+        assert_eq!(tracker.block_cost(), 0);
+        assert_eq!(tracker.in_flight_transaction_count(), 0);
+        drop(tracker);
+
+        drop(test_frame);
+        let _ = worker_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_worker_consume_preadmitted_on_other_bank_admits_locally() {
+        let (mut test_frame, worker) = setup_test_frame(false);
+        let TestFrame {
+            mint_keypair,
+            genesis_config,
+            bank,
+            record_receiver,
+            shared_leader_state,
+            consume_sender,
+            consumed_receiver,
+            ..
+        } = &mut test_frame;
+        let worker_thread = std::thread::spawn(move || worker.run());
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+        record_receiver.restart(bank.bank_id());
+
+        let pubkey1 = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            mint_keypair,
+            &pubkey1,
+            1,
+            genesis_config.hash(),
+        )]);
+        let estimate = estimated_cost(bank, &transactions);
+
+        // Admitted on a bank that was replaced: the worker's bank holds no reservation, so the
+        // worker must reserve locally as before instead of trusting the stale admission.
+        consume_sender
+            .send(preadmitted_work(
+                bank,
+                transactions,
+                CostAdmission {
+                    bank_id: bank.bank_id().wrapping_add(1),
+                    results: vec![Ok(())],
+                    reserved_cost: estimate,
+                },
+            ))
+            .unwrap();
+
+        let consumed = consumed_receiver.recv().unwrap();
+        assert_eq!(consumed.retryable_indexes, vec![]);
+        // The stale reservation on the other bank is still the scheduler's to release.
+        assert!(consumed.work.admission.is_some());
+        let results = consumed.extra_info.unwrap().processed_results;
+        assert!(matches!(&results[0], TransactionResult::Committed(_)));
+        assert_eq!(bank.get_balance(&pubkey1), 1);
+        let tracker = bank.read_cost_tracker().unwrap();
+        assert!(tracker.block_cost() > 0);
+        assert_eq!(tracker.in_flight_transaction_count(), 0);
+        drop(tracker);
+
+        drop(test_frame);
+        let _ = worker_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_worker_consume_preadmitted_on_complete_bank_returns_admission_untouched() {
+        let (mut test_frame, worker) = setup_test_frame(false);
+        let TestFrame {
+            mint_keypair,
+            genesis_config,
+            bank,
+            shared_leader_state,
+            consume_sender,
+            consumed_receiver,
+            ..
+        } = &mut test_frame;
+        let worker_thread = std::thread::spawn(move || worker.run());
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+
+        let pubkey1 = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            mint_keypair,
+            &pubkey1,
+            1,
+            genesis_config.hash(),
+        )]);
+        let estimate = estimated_cost(bank, &transactions);
+        reserve_on_bank(bank, &transactions);
+        let admission = CostAdmission {
+            bank_id: bank.bank_id(),
+            results: vec![Ok(())],
+            reserved_cost: estimate,
+        };
+
+        // The slot ends before the worker dequeues the work.
+        bank.fill_bank_with_ticks_for_tests();
+        assert!(bank.is_complete());
+
+        consume_sender
+            .send(preadmitted_work(bank, transactions, admission.clone()))
+            .unwrap();
+
+        let consumed = consumed_receiver.recv().unwrap();
+        assert_eq!(
+            consumed.retryable_indexes,
+            vec![RetryableIndex::new(0, true)]
+        );
+        // Nothing executed and nothing settled: the admission goes back for the scheduler to
+        // release on this bank.
+        assert_eq!(consumed.work.admission, Some(admission));
+        let results = consumed.extra_info.unwrap().processed_results;
+        assert!(matches!(
+            &results[0],
+            TransactionResult::NotCommitted(NotCommittedReason::PohTimeout)
+        ));
+        assert_eq!(bank.get_balance(&pubkey1), 0);
+        let tracker = bank.read_cost_tracker().unwrap();
+        assert_eq!(tracker.block_cost(), estimate);
+        assert_eq!(tracker.in_flight_transaction_count(), 1);
+        drop(tracker);
 
         drop(test_frame);
         let _ = worker_thread.join().unwrap();
@@ -2886,6 +3236,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -2956,6 +3307,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -2969,6 +3321,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -3115,6 +3468,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -3217,6 +3571,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: true,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
