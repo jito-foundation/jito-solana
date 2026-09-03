@@ -117,7 +117,7 @@ jobs:
           VARIANT: ${{ matrix.variant }}
         run: |
           ./docker-output/agave-validator --version
-          validator_help="$(./docker-output/agave-validator run --help)"
+          validator_help="$(./docker-output/agave-validator --help)"
           if [[ "$TIP_ROUTER" == "true" ]]; then
             if ! grep -Fq -- '--enable-tip-router-snapshot-service' \
               <<< "$validator_help"; then
