@@ -399,6 +399,7 @@ dependencies = [
  "fd-lock",
  "indicatif",
  "itertools 0.14.0",
+ "jito-tip-router-snapshot-service",
  "jsonrpc-core",
  "jsonrpc-core-client",
  "jsonrpc-derive",
@@ -4267,6 +4268,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-priority-fee-distribution-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+]
+
+[[package]]
 name = "jito-protos"
 version = "4.2.1"
 dependencies = [
@@ -4277,6 +4288,70 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "jito-stake-meta-types"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solana-clock",
+ "solana-pubkey 4.2.0",
+]
+
+[[package]]
+name = "jito-tip-distribution-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+ "solana-pubkey 4.2.0",
+]
+
+[[package]]
+name = "jito-tip-payment-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+]
+
+[[package]]
+name = "jito-tip-router-snapshot-service"
+version = "4.2.1"
+dependencies = [
+ "agave-feature-set",
+ "bincode",
+ "borsh",
+ "clap 2.33.3",
+ "crossbeam-channel",
+ "jito-priority-fee-distribution-sdk",
+ "jito-stake-meta-types",
+ "jito-tip-distribution-sdk",
+ "jito-tip-payment-sdk",
+ "log",
+ "serde_json",
+ "solana-account 4.3.1",
+ "solana-accounts-db",
+ "solana-clap-utils",
+ "solana-clock",
+ "solana-epoch-schedule",
+ "solana-hash 4.4.0",
+ "solana-metrics",
+ "solana-pubkey 4.2.0",
+ "solana-rpc",
+ "solana-runtime",
+ "solana-signer",
+ "solana-stake-interface",
+ "solana-vote",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
