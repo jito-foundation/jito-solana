@@ -10,9 +10,12 @@ use {
         vote_packet_receiver::VotePacketReceiver,
         vote_storage::VoteStorage,
     },
-    crate::banking_stage::{
-        consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
-        transaction_scheduler::transaction_state_container::RuntimeTransactionView,
+    crate::{
+        banking_stage::{
+            consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
+            transaction_scheduler::transaction_state_container::RuntimeTransactionView,
+        },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     agave_transaction_view::{
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
@@ -60,6 +63,7 @@ pub struct VoteWorker {
     storage: VoteStorage,
     bank_forks: Arc<RwLock<BankForks>>,
     consumer: Consumer,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl VoteWorker {
@@ -72,6 +76,7 @@ impl VoteWorker {
         storage: VoteStorage,
         bank_forks: Arc<RwLock<BankForks>>,
         consumer: Consumer,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             exit,
@@ -82,6 +87,7 @@ impl VoteWorker {
             storage,
             bank_forks,
             consumer,
+            bundle_account_locker,
         }
     }
 
@@ -298,9 +304,13 @@ impl VoteWorker {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
     ) -> ProcessTransactionsSummary {
-        let (mut process_transactions_summary, process_transactions_us) = measure_us!(
-            Self::process_transactions(&self.consumer, bank, sanitized_transactions)
-        );
+        let (mut process_transactions_summary, process_transactions_us) =
+            measure_us!(Self::process_transactions(
+                &self.consumer,
+                bank,
+                sanitized_transactions,
+                &self.bundle_account_locker
+            ));
         slot_metrics_tracker.increment_process_transactions_us(process_transactions_us);
         banking_stage_stats
             .transaction_processing_elapsed
@@ -351,9 +361,15 @@ impl VoteWorker {
         consumer: &Consumer,
         bank: &Bank,
         transactions: &[impl TransactionWithMeta],
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
-        let process_transaction_batch_output =
-            consumer.process_and_record_transactions(bank, transactions);
+        let process_transaction_batch_output = consumer
+            .process_and_record_transactions_with_policy(
+                bank,
+                transactions,
+                Some(bundle_account_locker),
+                false,
+            );
 
         let ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,
@@ -628,7 +644,12 @@ mod tests {
         )]);
 
         // Process some transactions on a bank that hasn't finished.
-        let summary = VoteWorker::process_transactions(&consumer, &bank, &transactions);
+        let summary = VoteWorker::process_transactions(
+            &consumer,
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         // Assert - Transaction were prcoessed.
         assert!(summary.transaction_counts.committed_transactions_count.0 > 0);

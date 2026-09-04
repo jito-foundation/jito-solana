@@ -136,6 +136,7 @@ mod transaction {
 }
 
 pub mod account_resolver;
+mod bundles;
 
 type RpcCustomResult<T> = std::result::Result<T, RpcCustomError>;
 
@@ -346,6 +347,13 @@ impl JsonRpcRequestProcessor {
         Ok(accounts)
     }
 
+    fn bank_from_slot(&self, slot: Slot) -> Option<Arc<Bank>> {
+        debug!("bank_from_slot: {slot}");
+
+        let r_bank_forks = self.bank_forks.read().unwrap();
+        r_bank_forks.get(slot)
+    }
+
     #[allow(deprecated)]
     fn bank(&self, commitment: Option<CommitmentConfig>) -> Arc<Bank> {
         debug!("RPC commitment_config: {commitment:?}");
@@ -470,7 +478,6 @@ impl JsonRpcRequestProcessor {
             ClusterInfo::new(contact_info, keypair, socket_addr_space)
         });
 
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let (transaction_sender, transaction_receiver) = bounded(1024);
 
         let config = JsonRpcConfig::default();
@@ -482,7 +489,7 @@ impl JsonRpcRequestProcessor {
         } = config;
         let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
         let (tpu_sender, _client) =
-            create_client_for_tests(runtime.handle().clone(), my_tpu_address, None, 1);
+            create_client_for_tests(runtime.handle().clone(), cluster_info.clone(), None, 1);
 
         SendTransactionService::new(
             bank_forks.clone(),
@@ -3551,8 +3558,12 @@ pub mod rpc_full {
     use {
         super::*,
         solana_message::{SanitizedVersionedMessage, VersionedMessage},
+        solana_rpc_client_api::bundles::{
+            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+        },
         solana_transaction_status::{UiLoadedAddresses, parse_ui_inner_instructions},
     };
+
     #[rpc]
     pub trait Full {
         type Metadata;
@@ -3613,6 +3624,14 @@ pub mod rpc_full {
             data: String,
             config: Option<RpcSimulateTransactionConfig>,
         ) -> Result<RpcResponse<RpcSimulateTransactionResult>>;
+
+        #[rpc(meta, name = "simulateBundle")]
+        fn simulate_bundle(
+            &self,
+            meta: Self::Metadata,
+            rpc_bundle_request: RpcBundleRequest,
+            config: Option<RpcSimulateBundleConfig>,
+        ) -> Result<RpcResponse<RpcSimulateBundleResult>>;
 
         #[rpc(meta, name = "minimumLedgerSlot")]
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot>;
@@ -3757,7 +3776,7 @@ pub mod rpc_full {
                             (
                                 Some(version.to_string()),
                                 Some(version.feature_set()),
-                                Some(version.client().clone()),
+                                Some(*version.client()),
                             )
                         } else {
                             (None, None, None)
@@ -4198,6 +4217,14 @@ pub mod rpc_full {
             ))
         }
 
+        fn simulate_bundle(
+            &self,
+            meta: Self::Metadata,
+            rpc_bundle_request: RpcBundleRequest,
+            config: Option<RpcSimulateBundleConfig>,
+        ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
+            bundles::simulate_bundle(meta, rpc_bundle_request, config)
+        }
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot> {
             debug!("minimum_ledger_slot rpc request received");
             meta.minimum_ledger_slot()
@@ -4518,6 +4545,31 @@ fn sanitize_transaction(
     .map_err(|err| Error::invalid_params(format!("invalid transaction: {err}")))
 }
 
+/// Outer vector is for each transaction, inner vector is for each account
+pub fn account_configs_to_accounts(
+    accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
+) -> Result<Vec<Vec<Pubkey>>> {
+    let mut execution_accounts = Vec::with_capacity(accounts_config.len());
+    for account_config in accounts_config {
+        let accounts = match account_config {
+            Some(account_config) => {
+                let mut accounts = Vec::with_capacity(account_config.addresses.len());
+                for address in &account_config.addresses {
+                    accounts.push(Pubkey::from_str(address).map_err(|_| {
+                        Error::invalid_params(format!(
+                            "invalid pubkey for pre/post accounts provided: {address}"
+                        ))
+                    })?);
+                }
+                accounts
+            }
+            _ => Vec::new(),
+        };
+        execution_accounts.push(accounts);
+    }
+    Ok(execution_accounts)
+}
+
 pub fn create_validator_exit(exit: Arc<AtomicBool>) -> Arc<RwLock<Exit>> {
     let mut validator_exit = Exit::default();
     validator_exit.register_exit(Box::new(move || exit.store(true, Ordering::Relaxed)));
@@ -4708,7 +4760,7 @@ pub mod tests {
     };
 
     const TEST_MINT_LAMPORTS: u64 = 1_000_000_000;
-    const TEST_SIGNATURE_FEE: u64 = 5_000;
+    pub(super) const TEST_SIGNATURE_FEE: u64 = 5_000;
     const TEST_SLOTS_PER_EPOCH: u64 = 256;
 
     pub(crate) fn new_test_cluster_info() -> ClusterInfo {
@@ -4755,7 +4807,7 @@ pub mod tests {
         }
     }
 
-    fn expected_loaded_accounts_data_size(bank: &Bank, tx: &Transaction) -> u32 {
+    pub(super) fn expected_loaded_accounts_data_size(bank: &Bank, tx: &Transaction) -> u32 {
         let mut loaded_accounts_data_size = 0;
         for key in tx.message.account_keys.iter() {
             if let Some(account) = bank.get_account(key) {
@@ -4863,11 +4915,11 @@ pub mod tests {
         }
     }
 
-    struct RpcHandler {
-        io: MetaIoHandler<JsonRpcRequestProcessor>,
-        meta: JsonRpcRequestProcessor,
+    pub(super) struct RpcHandler {
+        pub(super) io: MetaIoHandler<JsonRpcRequestProcessor>,
+        pub(super) meta: JsonRpcRequestProcessor,
         identity: Pubkey,
-        mint_keypair: Keypair,
+        pub(super) mint_keypair: Keypair,
         leader_vote_keypair: Arc<Keypair>,
         blockstore: Arc<Blockstore>,
         bank_forks: Arc<RwLock<BankForks>>,
@@ -4877,7 +4929,7 @@ pub mod tests {
     }
 
     impl RpcHandler {
-        fn start() -> Self {
+        pub(super) fn start() -> Self {
             Self::start_with_config(JsonRpcConfig {
                 enable_rpc_transaction_history: true,
                 ..JsonRpcConfig::default()
@@ -5180,7 +5232,7 @@ pub mod tests {
             self.meta.prioritization_fee_cache.as_deref().unwrap()
         }
 
-        fn working_bank(&self) -> Arc<Bank> {
+        pub(super) fn working_bank(&self) -> Arc<Bank> {
             self.bank_forks.read().unwrap().working_bank()
         }
 
@@ -5321,7 +5373,7 @@ pub mod tests {
             "pubsub": "127.0.0.1:8900",
             "version": format!("{version}"),
             "featureSet": version.feature_set(),
-            "clientId": "Agave",
+            "clientId": "JitoLabs",
         }, {
             "pubkey": rpc.leader_pubkey().to_string(),
             "gossip": "127.0.0.1:1235",
@@ -5337,7 +5389,7 @@ pub mod tests {
             "pubsub": "127.0.0.1:8900",
             "version": format!("{version}"),
             "featureSet": version.feature_set(),
-            "clientId": "Agave",
+            "clientId": "JitoLabs",
         }]);
         assert_eq!(result, expected);
     }
@@ -7027,7 +7079,6 @@ pub mod tests {
             );
             ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified)
         });
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let config = JsonRpcConfig::default();
         let JsonRpcConfig {
             rpc_threads,
@@ -7044,7 +7095,7 @@ pub mod tests {
             blockstore,
             validator_exit,
             health.clone(),
-            cluster_info,
+            cluster_info.clone(),
             Hash::default(),
             None,
             optimistically_confirmed_bank,
@@ -7057,7 +7108,7 @@ pub mod tests {
         );
 
         let (tpu_sender, _client) =
-            create_client_for_tests(runtime.handle().clone(), my_tpu_address, None, 1);
+            create_client_for_tests(runtime.handle().clone(), cluster_info.clone(), None, 1);
         SendTransactionService::new(
             bank_forks.clone(),
             receiver,
@@ -7338,7 +7389,7 @@ pub mod tests {
         )));
 
         let cluster_info = Arc::new(new_test_cluster_info());
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
+
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
         let config = JsonRpcConfig::default();
@@ -7350,7 +7401,7 @@ pub mod tests {
         } = config;
         let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
         let (tpu_sender, _client) =
-            create_client_for_tests(runtime.handle().clone(), my_tpu_address, None, 1);
+            create_client_for_tests(runtime.handle().clone(), cluster_info.clone(), None, 1);
         let (request_processor, receiver) = JsonRpcRequestProcessor::new(
             config,
             None,
@@ -7359,7 +7410,7 @@ pub mod tests {
             blockstore.clone(),
             validator_exit,
             RpcHealth::stub(optimistically_confirmed_bank.clone(), blockstore),
-            cluster_info,
+            cluster_info.clone(),
             Hash::default(),
             None,
             optimistically_confirmed_bank,
