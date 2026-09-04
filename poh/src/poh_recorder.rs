@@ -207,7 +207,7 @@ pub struct PohRecorder {
     tick_cache: Vec<(Entry, u64)>, // cache of entry and its tick_height
     /// This stores the current working bank + scheduler and other metadata,
     /// if they exist.
-    /// This field MUST be kept consistent with the `shared_leader_state` field.
+    /// This field MUST match `shared_leader_state` outside bank replacement.
     working_bank: Option<WorkingBank>,
     shared_leader_state: SharedLeaderState,
     working_bank_sender: Sender<WorkingBankEntryOrMarker>,
@@ -560,6 +560,10 @@ impl PohRecorder {
         }
 
         self.notify_replay_wakeup();
+    }
+
+    pub fn set_bank_replacement(&mut self) {
+        self.shared_leader_state.set_bank_replacement();
     }
 
     /// Returns tick_height - does not update the internal state for tick_height.
@@ -1194,6 +1198,7 @@ impl SharedLeaderState {
     ) -> Self {
         let inner = LeaderState {
             working_bank: None,
+            bank_replacement: AtomicBool::new(false),
             atomic_batches_enabled: AtomicBool::new(true),
             tick_height: AtomicU64::new(tick_height),
             leader_first_tick_height,
@@ -1211,6 +1216,12 @@ impl SharedLeaderState {
         self.0.store(state)
     }
 
+    /// Marks a same-slot bank replacement.
+    #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
+    fn set_bank_replacement(&self) {
+        self.load().bank_replacement.store(true, Ordering::Relaxed);
+    }
+
     #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
     fn increment_tick_height(&self) {
         let inner = self.0.load();
@@ -1220,6 +1231,7 @@ impl SharedLeaderState {
 
 pub struct LeaderState {
     working_bank: Option<Arc<Bank>>,
+    bank_replacement: AtomicBool,
     atomic_batches_enabled: AtomicBool,
     tick_height: AtomicU64,
     leader_first_tick_height: Option<u64>,
@@ -1253,6 +1265,7 @@ impl LeaderState {
     ) -> Self {
         Self {
             working_bank,
+            bank_replacement: AtomicBool::new(false),
             atomic_batches_enabled: AtomicBool::new(atomic_batches_enabled),
             tick_height: AtomicU64::new(tick_height),
             leader_first_tick_height,
@@ -1261,7 +1274,13 @@ impl LeaderState {
     }
 
     pub fn working_bank(&self) -> Option<&Arc<Bank>> {
-        self.working_bank.as_ref()
+        self.working_bank
+            .as_ref()
+            .filter(|_| !self.bank_replacement.load(Ordering::Relaxed))
+    }
+
+    pub fn bank_slot(&self) -> Option<Slot> {
+        self.working_bank.as_ref().map(|bank| bank.slot())
     }
 
     pub fn atomic_batches_enabled(&self) -> bool {

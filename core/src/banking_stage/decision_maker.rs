@@ -65,6 +65,8 @@ impl DecisionMaker {
             } else {
                 BufferedPacketsDecision::Consume(working_bank.clone())
             }
+        } else if state.bank_slot().is_some() {
+            BufferedPacketsDecision::Hold
         } else if let Some(leader_first_tick_height) = state.leader_first_tick_height() {
             let current_tick_height = state.tick_height();
             let ticks_until_leader = leader_first_tick_height.saturating_sub(current_tick_height);
@@ -154,6 +156,12 @@ mod tests {
             decision_maker.make_atomic_consume_or_forward_decision(),
             BufferedPacketsDecision::Hold
         );
+
+        shared_leader_state.set_bank_replacement();
+        assert!(matches!(
+            decision_maker.make_consume_or_forward_decision(),
+            BufferedPacketsDecision::Hold
+        ));
         shared_leader_state.store(Arc::new(LeaderState::new(None, 0, None, None)));
 
         // Will be leader shortly - Hold
