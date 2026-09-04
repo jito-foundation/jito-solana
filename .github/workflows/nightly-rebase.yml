@@ -1,0 +1,197 @@
+name: Nightly Agave Rebase
+
+# Rebases each channel in .github/rebase-channels.json onto its Agave branch.
+# "landing: auto" channels are force-pushed after Buildkite passes; the App
+# must be a bypass actor on that branch's rulesets. "landing: draft" channels
+# get a bot-owned draft PR for a human to land.
+#
+# Secrets: REBASE_APP_ID, REBASE_APP_PRIVATE_KEY (GitHub App with contents,
+# issues and pull-requests write), GPG_PRIVATE_KEY, GPG_PASSPHRASE (may be
+# empty; the key's uid is the committer identity and must be registered on
+# that GitHub account), SLACK_WEBHOOK_URL.
+
+on:
+  schedule:
+    - cron: "00 19 * * 1-5"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nightly-agave-rebase-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  channels:
+    name: Load channels
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      channels: ${{ steps.config.outputs.channels }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate channel configuration
+        id: config
+        run: |
+          channels=$(jq -ce 'if all(.[]; .landing | IN("auto", "draft")) then . else error("landing must be auto or draft") end' .github/rebase-channels.json)
+          echo "channels=${channels}" >> "${GITHUB_OUTPUT}"
+
+
+  rebase:
+    name: Rebase ${{ matrix.channel.channel }}
+    needs: channels
+    runs-on: ubuntu-24.04
+    # All writes go through the App token; GITHUB_TOKEN stays read-only.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.channels.outputs.channels) }}
+    steps:
+      - name: Mint App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REBASE_APP_ID }}
+          private-key: ${{ secrets.REBASE_APP_PRIVATE_KEY }}
+
+      - name: Check out workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow-source
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Check out channel
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.channel.channel }}
+          fetch-depth: 0
+          path: channel
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Import signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          printf '%s' "${GPG_PRIVATE_KEY}" | gpg --batch --import
+          printf '%s' "${GPG_PASSPHRASE}" >| "${RUNNER_TEMP}/gpg-passphrase"
+          chmod 600 "${RUNNER_TEMP}/gpg-passphrase"
+          cat >| "${RUNNER_TEMP}/gpg-wrapper" <<EOF
+          #!/bin/sh
+          exec gpg --batch --pinentry-mode loopback --passphrase-file "${RUNNER_TEMP}/gpg-passphrase" "\$@"
+          EOF
+          chmod 700 "${RUNNER_TEMP}/gpg-wrapper"
+
+          key_id=$(gpg --list-secret-keys --with-colons | awk -F: '$1 == "sec" { print $5; exit }')
+          uid=$(gpg --list-secret-keys --with-colons | awk -F: '$1 == "uid" { print $10; exit }')
+          name=${uid%% <*}
+          email=${uid##*<}
+          email=${email%>}
+
+          git config --global gpg.program "${RUNNER_TEMP}/gpg-wrapper"
+          git config --global user.signingkey "${key_id}"
+          git config --global commit.gpgsign true
+          git config --global user.name "${name}"
+          git config --global user.email "${email}"
+
+      - name: Stage nightly rebase
+        working-directory: channel
+        env:
+          CHANNEL: ${{ matrix.channel.channel }}
+          CHANNEL_OWNER: ${{ matrix.channel.owner }}
+          LANDING: ${{ matrix.channel.landing }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
+          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
+        run: ../workflow-source/.github/scripts/nightly-rebase.sh
+
+      - name: Upload channel result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-rebase-${{ matrix.channel.channel }}
+          path: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+
+  summary:
+    name: Post run summary
+    if: always()
+    needs:
+      - channels
+      - rebase
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download channel results
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-rebase-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/nightly-rebase-results
+
+      - name: Build Slack summary
+        id: summary
+        env:
+          CHANNELS_RESULT: ${{ needs.channels.result }}
+          REBASE_RESULT: ${{ needs.rebase.result }}
+          RESULTS_DIR: ${{ runner.temp }}/nightly-rebase-results
+        run: |
+          message="Nightly Agave rebase"
+          message="${message}\nJobs: channels=${CHANNELS_RESULT}, rebase=${REBASE_RESULT}"
+
+          if [[ -d "${RESULTS_DIR}" ]]; then
+            mapfile -t result_files < <(find "${RESULTS_DIR}" -type f -name '*.json' | sort)
+          else
+            result_files=()
+          fi
+
+          if [[ ${#result_files[@]} -eq 0 ]]; then
+            message="${message}\nNo channel results were produced."
+          else
+            for result_file in "${result_files[@]}"; do
+              channel=$(jq -r .channel "${result_file}")
+              status=$(jq -r .status "${result_file}")
+              detail=$(jq -r .detail "${result_file}")
+              url=$(jq -r .url "${result_file}")
+              line="${channel}: ${status} - ${detail}"
+              if [[ -n "${url}" ]]; then
+                line="${line} - ${url}"
+              fi
+              message="${message}\n${line}"
+            done
+          fi
+
+          message="${message}\nRun: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            echo "message<<EOF"
+            printf '%b\n' "${message}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Post Slack summary
+        env:
+          MESSAGE: ${{ steps.summary.outputs.message }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(jq -n --arg text "${MESSAGE}" '{text: $text}')
+          curl -sS --fail-with-body -X POST \
+            -H "Content-Type: application/json" \
+            --data "${payload}" \
+            "${SLACK_WEBHOOK_URL}"
+
