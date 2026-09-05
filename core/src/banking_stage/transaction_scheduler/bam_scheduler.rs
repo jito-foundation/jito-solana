@@ -309,17 +309,19 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     admission: None,
                 });
             work.ids.extend(batch_ids);
-            for txn_id in &work.ids {
-                let (transaction, max_age) = container
-                    .get_mut_transaction_state(*txn_id)
-                    .unwrap()
-                    .take_transaction_for_scheduling();
+            let preparation_error = work.ids.iter().enumerate().find_map(|(index, txn_id)| {
+                let Some(state) = container.get_mut_transaction_state(*txn_id) else {
+                    return Some((index, TransactionError::SanitizeFailure));
+                };
+                let (transaction, max_age) = state.take_transaction_for_scheduling();
                 work.transactions.push(transaction);
                 work.max_ages.push(max_age);
-            }
+                None
+            });
 
-            // Validate the work directly, before reserving its cost.
-            if let Some((index, err)) = self.check_transactions(admission_bank, &work.transactions)
+            // Reject incomplete batches before reserving cost or executing a partial bundle.
+            if let Some((index, err)) = preparation_error
+                .or_else(|| self.check_transactions(admission_bank, &work.transactions))
             {
                 self.recycle_work_object(work);
                 container.remove_by_id(id.id);
@@ -1293,6 +1295,95 @@ mod tests {
     }
 
     // ---- scheduler-side cost admission (JSA-72) ----
+
+    #[test_case::test_case(&[0]; "missing_first")]
+    #[test_case::test_case(&[1]; "missing_last")]
+    #[test_case::test_case(&[0, 1]; "all_missing")]
+    fn test_missing_transaction_rejects_batch_and_unblocks_dependents(missing: &[usize]) {
+        let (mut test, bank) = admission_scheduler();
+        let payer = Keypair::new();
+        let transaction = || {
+            (
+                prioritized_tranfers(&payer, [Pubkey::new_unique()], 1000, 0),
+                MaxAge::MAX,
+            )
+        };
+        let mut container = TransactionStateContainer::with_capacity(8);
+        let malformed = container
+            .insert_new_batch(
+                [transaction(), transaction()].into_iter().collect(),
+                u64::MAX,
+                true,
+                u64::MAX,
+                0,
+            )
+            .unwrap();
+        let dependent = container
+            .insert_new_batch(
+                std::iter::once(transaction()).collect(),
+                u64::MAX - 1,
+                false,
+                u64::MAX,
+                1,
+            )
+            .unwrap();
+        let malformed_ids = container.get_batch(malformed).unwrap().0.clone();
+        let dependent_ids = container.get_batch(dependent).unwrap().0.clone();
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        test.scheduler.pull_into_prio_graph(&mut container);
+        // Keep the graph dependency and batch IDs, but remove the referenced transaction states.
+        for &index in missing {
+            container.remove_by_id(malformed_ids[index]);
+        }
+
+        assert_eq!(test.scheduler.send_to_workers(&mut container).unwrap(), 1);
+        let (seq_id, NotCommitted(result)) = next_result(&mut test.response_receiver) else {
+            panic!("expected rejection of the incomplete batch");
+        };
+        assert_eq!(seq_id, 0);
+        assert_eq!(
+            result.reason,
+            Some(Reason::TransactionError(
+                jito_protos::proto::bam_types::TransactionError {
+                    index: missing[0] as u32,
+                    reason: jito_protos::proto::bam_types::TransactionErrorReason::SanitizeFailure
+                        as i32,
+                }
+            ))
+        );
+        assert!(container.get_batch(malformed).is_none());
+        assert!(
+            malformed_ids
+                .iter()
+                .all(|id| container.get_transaction(*id).is_none())
+        );
+        let work = test.consume_work_receiver.try_recv().unwrap();
+        assert_eq!(work.ids.as_slice(), dependent_ids.as_slice());
+        assert_eq!(work.transactions.len(), 1);
+        assert_eq!(work.max_ages.len(), 1);
+        assert!(test.consume_work_receiver.try_recv().is_err());
+        assert_eq!(block_cost_and_in_flight(&bank), (estimated_cost(&bank), 1));
+        assert!(test.scheduler.pending_admission.is_none());
+
+        // Return the unexecuted dependent so the scheduler releases its reservation.
+        test.finished_consume_work_sender
+            .send(FinishedConsumeWork {
+                work,
+                retryable_indexes: vec![],
+                extra_info: None,
+            })
+            .unwrap();
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        assert_eq!(block_cost_and_in_flight(&bank), (0, 0));
+        assert_eq!(container.buffer_size(), 0);
+        assert!(test.scheduler.prio_graph.is_empty());
+        assert!(test.scheduler.inflight_batch_info.is_empty());
+    }
 
     /// Two independent batches plus a bank the scheduler can admit on, with `slot` set.
     fn setup_two_batches(
