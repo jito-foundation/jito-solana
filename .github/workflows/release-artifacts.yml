@@ -1,0 +1,170 @@
+# Build the normal and tip-router release tarballs with ./f and attach them
+# (+ manifests and SHA-256 checksums) to the tag's GitHub release, so deploys
+# download instead of building from source.
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*-jito"
+  # Self-test: PR runs build but never touch a release.
+  pull_request:
+    paths:
+      - ".github/workflows/release-artifacts.yml"
+      - "f"
+      - "dev/Dockerfile"
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+        required: true
+        description: git ref to build (tag, branch, or SHA)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ github.event.pull_request.number || inputs.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.variant }} artifact
+    # Skip fork PRs: they cannot use org larger runners and would queue forever.
+    if: >-
+      github.repository == 'jito-foundation/jito-solana' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard validator
+            basename: jito-solana-release
+            tip_router: false
+          - variant: tip-router validator
+            basename: jito-solana-tip-router-release
+            tip_router: true
+    runs-on: big-runner-1
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      # Always check out the workflow's own ref; dispatch refs are built via
+      # ./f --checkout below so old tags get current build tooling.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      # Empty tag = not a release build; artifact keeps ./f's derived name
+      # and is uploaded as a workflow artifact instead.
+      - name: Resolve release tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          DISPATCH_REF: ${{ inputs.ref }}
+        run: |
+          tag=""
+          if [[ "$EVENT" == "push" ]]; then
+            tag="$PUSH_TAG"
+          elif [[ -n "$DISPATCH_REF" ]] \
+            && gh release view "$DISPATCH_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            tag="$DISPATCH_REF"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build release tarball
+        env:
+          BASENAME: ${{ matrix.basename }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ inputs.ref }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TIP_ROUTER: ${{ matrix.tip_router }}
+        run: |
+          args=(--basename "$BASENAME")
+          if [[ "$TIP_ROUTER" == "true" ]]; then
+            args+=(--tip-router)
+          fi
+          if [[ -n "$TAG" ]]; then
+            args+=(--tag "$TAG")
+          fi
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            git fetch --depth=1 origin "$DISPATCH_REF"
+            sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+            short="$(git rev-parse --short "$sha")"
+            args+=(--checkout "$sha")
+            if [[ -z "$TAG" ]]; then
+              # Keep the human-readable ref in the artifact name. A SHA ref
+              # is already the commit, so use it alone.
+              name="${DISPATCH_REF//\//_}"
+              if [[ "$sha" == "$name"* ]]; then
+                name="$short"
+              else
+                name="${name}-${short}"
+              fi
+              args+=(--tag "$name")
+            fi
+          fi
+          ./f "${args[@]}"
+
+      - name: Checksum and summarize
+        env:
+          TIP_ROUTER: ${{ matrix.tip_router }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          ./docker-output/agave-validator --version
+          validator_help="$(./docker-output/agave-validator --help)"
+          if [[ "$TIP_ROUTER" == "true" ]]; then
+            if ! grep -Fq -- '--enable-tip-router-snapshot-service' \
+              <<< "$validator_help"; then
+              echo "Tip-router validator is missing tip-router support" >&2
+              exit 1
+            fi
+          elif grep -Fq -- '--enable-tip-router-snapshot-service' \
+            <<< "$validator_help"; then
+            echo "Standard validator unexpectedly contains tip-router support" >&2
+            exit 1
+          fi
+          cd dist
+          for f in *.tar.bz2; do
+            sha256sum "$f" > "$f.sha256"
+          done
+          {
+            echo "## $VARIANT release artifact"
+            echo '```'
+            ../docker-output/agave-validator --version
+            echo '```'
+            echo "### Version manifest"
+            echo '```'
+            cat ./*.yml
+            echo '```'
+            echo "### SHA-256"
+            echo '```'
+            cat ./*.sha256
+            echo '```'
+            echo "### Contents"
+            echo '```'
+            tar -tjf ./*.tar.bz2
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -lh
+
+      - name: Publish to GitHub release
+        if: steps.meta.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        # release.yml creates the release on tag push; fail if it is missing
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload workflow artifact
+        if: steps.meta.outputs.tag == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ matrix.basename }}
+          path: dist/
+          compression-level: 0  # contents are already bzip2
