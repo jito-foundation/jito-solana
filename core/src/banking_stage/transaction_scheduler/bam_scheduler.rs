@@ -63,14 +63,6 @@ fn passthrough_priority(
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
 
-// Sized from 30 days of mainnet data ending 2026-08-18. Atomic-only ClickHouse counts of distinct
-// `(source, seq_id)` batches per validator-slot had p99=149, p99.9=236, 99.94% <=256, and max=540.
-// The full-slot count conservatively upper-bounds the pre-ParentReady subset stored here.
-// Mainnet-validator Influx `bam_connection-metrics.bundle_received` active 25 ms samples, which
-// also include non-atomic batches, had p99=183, p99.9=272, 99.86% <=256, and max=881. Thus 256
-// keeps the atomic p99.9 inline in 4 KiB while rarer bursts spill safely.
-const DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY: usize = 256;
-
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
@@ -82,6 +74,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     /// seq_id is the key
     insertion_to_prio_graph_time: IntMap<u32, Instant>,
     time_in_priograph_us: Histogram,
+    /// Start of the current hold of queued work for bank resolution.
+    hold_start: Option<Instant>,
     time_in_worker_us: Histogram,
     time_between_schedule_us: Histogram,
     last_schedule_time: Instant,
@@ -89,8 +83,6 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
-    deferred_atomic_batches:
-        SmallVec<[TransactionPriorityId; DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY]>,
 
     extra_checks_enabled: bool,
     bank_forks: Arc<RwLock<BankForks>>,
@@ -124,12 +116,12 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             prio_graph: PrioGraph::new(passthrough_priority),
             insertion_to_prio_graph_time: IntMap::default(),
             time_in_priograph_us: Histogram::new(),
+            hold_start: None,
             time_in_worker_us: Histogram::new(),
             time_between_schedule_us: Histogram::new(),
             last_schedule_time: Instant::now(),
             slot: None,
             reusable_consume_work: Vec::new(),
-            deferred_atomic_batches: SmallVec::new(),
             extra_checks_enabled: true,
             bank_forks,
             shared_leader_state,
@@ -157,23 +149,23 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             return;
         };
 
+        if !self.shared_leader_state.load().atomic_batches_enabled() {
+            if !container.is_empty() {
+                self.hold_start.get_or_insert_with(Instant::now);
+            }
+            return;
+        }
+
         let working_bank = self.bank_forks.read().unwrap().working_bank();
-        let atomic_batches_enabled = self.shared_leader_state.load().atomic_batches_enabled();
-        self.deferred_atomic_batches.clear();
 
         while let Some(next_batch_id) = container.pop() {
-            let Some((batch_ids, revert_on_error, max_schedule_slot, seq_id)) =
+            let Some((batch_ids, _, max_schedule_slot, seq_id)) =
                 container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
                 container.remove_by_id(next_batch_id.id);
                 continue;
             };
-
-            if revert_on_error && !atomic_batches_enabled {
-                self.deferred_atomic_batches.push(next_batch_id);
-                continue;
-            }
 
             if max_schedule_slot < slot {
                 // If the slot has changed, we cannot schedule this batch
@@ -226,10 +218,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 Self::get_transactions_account_access(txns.into_iter()),
             );
         }
-
-        // Atomic batches must wait until ParentReady confirms or replaces the provisional bank.
-        // Non-atomic batches can still be rescheduled after sad handover.
-        container.push_ids_into_queue(self.deferred_atomic_batches.drain(..));
     }
 
     fn send_to_workers(
@@ -237,6 +225,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         container: &mut impl StateContainer<Tx>,
         num_scheduled: &mut usize,
     ) {
+        if self.prio_graph.is_empty() {
+            return;
+        }
         let Some(slot) = self.slot else {
             warn!("Slot is not set, cannot schedule transactions");
             return;
@@ -245,8 +236,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         let now = Instant::now();
         let working_bank = self.bank_forks.read().unwrap().working_bank();
         while let Some(id) = self.prio_graph.pop() {
-            let (batch_ids, revert_on_error, max_schedule_slot, seq_id) =
-                container.get_batch(id.id).unwrap();
+            let (batch_ids, revert_on_error, _, seq_id) = container.get_batch(id.id).unwrap();
 
             // Update time in prio-graph metric
             if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
@@ -255,15 +245,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     .increment(now.duration_since(insertion_time).as_micros() as u64);
             };
 
-            // Filter on slot
-            if max_schedule_slot < slot {
-                self.prio_graph.unblock(&id);
-                self.send_no_leader_slot_bundle_result(seq_id);
-                container.remove_by_id(id.id);
-                continue;
-            }
-
-            // Filter on check_transactions
+            // Slot expiry was checked before graph insertion, and a slot change clears the graph.
+            // Bank state can change while work is blocked, so repeat check_transactions here.
             if self.extra_checks_enabled {
                 let mut sanitized_txs: SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]> = SmallVec::new();
                 let mut lock_results: SmallVec<
@@ -306,7 +289,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
             // Schedule it
             let mut work = self.get_or_create_work_object();
-            let batch_id = self.get_next_schedule_id();
+            let batch_id = TransactionBatchId::new(self.next_batch_id);
+            self.next_batch_id += 1;
             *num_scheduled += batch_ids.len();
             Self::populate_consume_work(
                 &mut work,
@@ -316,33 +300,22 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 container,
                 slot,
             );
-            self.send_to_worker(SmallVec::from([(id, seq_id)]), work, slot);
+            if let Some(hold_start) = self.hold_start.take() {
+                datapoint_info!(
+                    "bam_scheduler-bank_resolution_hold",
+                    ("hold_us", hold_start.elapsed().as_micros() as u64, i64)
+                );
+            }
+            let _ = self.consume_work_sender.send(work);
+            self.inflight_batch_info.insert(
+                batch_id,
+                InflightBatchInfo {
+                    schedule_time: Instant::now(),
+                    batch_priority_ids: SmallVec::from([(id, seq_id)]),
+                    slot,
+                },
+            );
         }
-    }
-
-    fn send_to_worker(
-        &mut self,
-        // SmallVec 1: scheduler currently sends a single batch id per work item.
-        priority_ids: SmallVec<[(TransactionPriorityId, u32); 1]>,
-        work: ConsumeWork<Tx>,
-        slot: Slot,
-    ) {
-        let batch_id = work.batch_id;
-        let _ = self.consume_work_sender.send(work);
-        self.inflight_batch_info.insert(
-            batch_id,
-            InflightBatchInfo {
-                schedule_time: Instant::now(),
-                batch_priority_ids: priority_ids,
-                slot,
-            },
-        );
-    }
-
-    fn get_next_schedule_id(&mut self) -> TransactionBatchId {
-        let result = TransactionBatchId::new(self.next_batch_id);
-        self.next_batch_id += 1;
-        result
     }
 
     fn get_or_create_work_object(&mut self) -> ConsumeWork<Tx> {
@@ -533,8 +506,18 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         decision: &BufferedPacketsDecision,
         container: &mut impl StateContainer<Tx>,
     ) {
+        // Held work leaves the queue only by dispatch or a disconnect drain; both end the hold.
+        if container.is_empty() {
+            self.hold_start = None;
+        }
+
         // Check if no bank or slot has changed
         let bank_slot = decision.bank().map(|bank| bank.slot());
+        if matches!(decision, BufferedPacketsDecision::ForwardAndHold) {
+            // A sad handover temporarily removes the unresolved bank. Keep the previous slot and
+            // queued work so the same-slot replacement is not mistaken for a slot boundary.
+            return;
+        }
         if bank_slot == self.slot {
             return;
         }
@@ -852,7 +835,7 @@ mod tests {
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::Message,
-        solana_poh::poh_recorder::SharedLeaderState,
+        solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, bank_forks::BankForks},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -977,6 +960,74 @@ mod tests {
     }
 
     #[test]
+    fn test_unresolved_bank_behavior() {
+        let (bank_forks, _) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(bank.clone()),
+            0,
+            None,
+            None,
+            false,
+        )));
+        let mut test = create_test_scheduler(1, &bank_forks);
+        test.scheduler.shared_leader_state = shared_leader_state.clone();
+        test.scheduler.extra_checks_enabled = false;
+        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+        for (fifo_index, (revert_on_error, seq_id)) in
+            [(true, 71), (false, 72)].into_iter().enumerate()
+        {
+            let transaction = prioritized_tranfers(
+                &Keypair::new(),
+                [Pubkey::new_unique()],
+                1_000,
+                u64::from(seq_id),
+            );
+            container
+                .insert_new_batch(
+                    smallvec::smallvec![(transaction, MaxAge::MAX)],
+                    u64::MAX - fifo_index as u64,
+                    revert_on_error,
+                    u64::MAX,
+                    seq_id,
+                )
+                .unwrap();
+        }
+        test.scheduler
+            .receive_completed(
+                &mut container,
+                &BufferedPacketsDecision::Consume(bank.clone()),
+            )
+            .unwrap();
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        assert_eq!(container.queue_size(), 2);
+        assert!(test.scheduler.hold_start.is_some());
+        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert!(test.response_receiver.try_recv().is_err());
+
+        // The replacement may publish after the decision is sampled but before it is handled.
+        // ForwardAndHold remains authoritative for this controller iteration.
+        shared_leader_state.load().enable_atomic_batches();
+        test.scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::ForwardAndHold)
+            .unwrap();
+        assert_eq!(test.scheduler.slot, Some(bank.slot()));
+        assert_eq!(container.queue_size(), 2);
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        assert_eq!(container.queue_size(), 0);
+        assert!(test.scheduler.hold_start.is_none());
+        let atomic_work = test.consume_work_receivers[0].try_recv().unwrap();
+        let non_atomic_work = test.consume_work_receivers[0].try_recv().unwrap();
+        assert!(atomic_work.revert_on_error);
+        assert!(!non_atomic_work.revert_on_error);
+        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert!(test.response_receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn test_scheduler_basic() {
         let (bank_forks, _) = test_bank_forks();
         let TestScheduler {
@@ -992,6 +1043,7 @@ mod tests {
         let first_fifo_recipient = Pubkey::new_unique();
         let blocked_recipient = Pubkey::new_unique();
         let second_recipient = Pubkey::new_unique();
+        let bank = bank_forks.read().unwrap().working_bank();
 
         // First two batches conflict on fee payer and span the seq_id wrap boundary.
         // FIFO should schedule u32::MAX before 0.
@@ -1003,8 +1055,8 @@ mod tests {
                 u32::MAX,
                 u64::MAX,
             ),
-            (&keypair_a, vec![blocked_recipient], 1500, 0, u64::MAX),
-            (&keypair_a, vec![Pubkey::new_unique()], 1500, 2, u64::MAX),
+            (&keypair_a, vec![blocked_recipient], 1500, 0, bank.slot()),
+            (&keypair_a, vec![Pubkey::new_unique()], 1500, 2, bank.slot()),
             (&Keypair::new(), vec![second_recipient], 2000, 3, u64::MAX),
         ]);
 
@@ -1013,7 +1065,7 @@ mod tests {
             "Scheduler slot should be None initially"
         );
 
-        let decision = BufferedPacketsDecision::Consume(bank_forks.read().unwrap().working_bank());
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
 
         // Init scheduler with bank start info
         scheduler
@@ -1204,9 +1256,14 @@ mod tests {
             }
         }
 
-        // Receive the finished work
+        // The remaining batch expires at this bank's slot. A direct slot change must drain it.
+        let next_bank = Arc::new(Bank::new_from_parent(
+            bank.clone(),
+            solana_leader_schedule::SlotLeader::new_unique(),
+            bank.slot() + 1,
+        ));
         let (num_transactions, _) = scheduler
-            .receive_completed(&mut container, &BufferedPacketsDecision::Forward)
+            .receive_completed(&mut container, &BufferedPacketsDecision::Consume(next_bank))
             .unwrap();
         assert_eq!(num_transactions, 0);
 

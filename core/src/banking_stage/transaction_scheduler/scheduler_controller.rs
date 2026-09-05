@@ -287,18 +287,18 @@ where
 
         while !self.exit.load(Ordering::Relaxed) {
             let now = Instant::now();
-            // BufferedPacketsDecision is shared with legacy BankingStage, which will forward
-            // packets. Initially, not renaming these decision variants but the actions taken
-            // are different, since new BankingStage will not forward packets.
-            // For `Forward` and `ForwardAndHold`, we want to receive packets but will not
-            // forward them to the next leader. In this case, `ForwardAndHold` is
-            // indistinguishable from `Hold`.
+            // BufferedPacketsDecision is shared with legacy BankingStage. This controller does
+            // not forward packets. For non-BAM traffic, `ForwardAndHold` and `Hold` both retain
+            // packets. `Forward` drops buffered packets and skips sanitizing incoming packets.
             //
-            // `Forward` will drop packets from the buffer instead of forwarding.
-            // During receiving, since packets would be dropped from buffer anyway, we can
-            // bypass sanitization and buffering and immediately drop the packets.
-            let (decision, decision_time_us) =
-                measure_us!(self.decision_maker.make_consume_or_forward_decision());
+            // For BAM, `Forward` returns batches to BAM. `Hold` buffers incoming batches near
+            // leadership but still allows normal slot-end cleanup. `ForwardAndHold` identifies
+            // a replacement gap: retain batches and the scheduler's previous slot, skipping
+            // slot-end cleanup until the gap resolves.
+            let (decision, decision_time_us) = measure_us!(
+                self.decision_maker
+                    .make_consume_or_forward_decision_inner(false, self.bam_controller)
+            );
             self.timing_metrics.update(|timing_metrics| {
                 timing_metrics.decision_time_us += decision_time_us;
             });
@@ -1482,7 +1482,7 @@ mod tests {
             bundle_receiver,
             response_sender.clone(),
             bank_forks.clone(),
-            None,
+            shared_leader_state.clone(),
             HashSet::default(),
         );
 

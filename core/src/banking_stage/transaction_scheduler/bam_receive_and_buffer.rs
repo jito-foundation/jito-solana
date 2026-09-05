@@ -1,7 +1,8 @@
-//! An implementation of the `ReceiveAndBuffer` trait that receives messages from BAM
-//! and buffers from into the the `TransactionStateContainer`. Key thing to note:
-//! this implementation only functions during the `Consume/Hold` phase; otherwise it will send them back
-//! to BAM with a `Retryable` result.
+//! Receives batches from BAM and buffers them in `TransactionStateContainer`.
+//!
+//! While BAM is connected, `Consume`, `Hold`, and `ForwardAndHold` buffer batches.
+//! For BAM, `ForwardAndHold` identifies the temporary gap before a replacement bank is published.
+//! `Forward` returns batches to BAM with a retryable result.
 use {
     super::{
         receive_and_buffer::ReceiveAndBuffer,
@@ -104,7 +105,7 @@ impl BamReceiveAndBuffer {
         bundle_receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
-        shared_leader_state: Option<SharedLeaderState>,
+        shared_leader_state: SharedLeaderState,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         let (parsed_batch_sender, parsed_batch_receiver) =
@@ -148,7 +149,7 @@ impl BamReceiveAndBuffer {
         recv_stats_sender: crossbeam_channel::Sender<ReceivingStats>,
         response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
-        shared_leader_state: Option<SharedLeaderState>,
+        shared_leader_state: SharedLeaderState,
         blacklisted_accounts: HashSet<Pubkey>,
     ) {
         let sigverify_thread_pool = rayon::ThreadPoolBuilder::new()
@@ -193,14 +194,11 @@ impl BamReceiveAndBuffer {
                 }
             }
 
-            let (current_slot, enable_tx_v1) = shared_leader_state
-                .as_ref()
-                .and_then(|leader_state| {
-                    let leader_state = leader_state.load();
-                    leader_state
-                        .working_bank()
-                        .map(|bank| (bank.slot(), bank.feature_set.snapshot().enable_tx_v1))
-                })
+            let leader_state = shared_leader_state.load();
+            let bank_checks_enabled = leader_state.atomic_batches_enabled();
+            let (current_slot, enable_tx_v1) = leader_state
+                .working_bank()
+                .map(|bank| (bank.slot(), bank.feature_set.snapshot().enable_tx_v1))
                 .unwrap_or_else(|| {
                     let working_bank = bank_forks.read().unwrap().working_bank();
                     (
@@ -264,6 +262,7 @@ impl BamReceiveAndBuffer {
                                 max_schedule_slot,
                                 &bank_forks,
                                 &blacklisted_accounts,
+                                bank_checks_enabled,
                                 &mut metrics,
                             ));
                         stats.accumulate(parse_stats);
@@ -340,6 +339,7 @@ impl BamReceiveAndBuffer {
         max_schedule_slot: u64,
         bank_forks: &Arc<RwLock<BankForks>>,
         blacklisted_accounts: &HashSet<Pubkey>,
+        bank_checks_enabled: bool,
         metrics: &mut BamReceiveAndBufferMetrics,
     ) -> (Result<ParsedBatch, Reason>, ReceivingStats) {
         let mut stats = ReceivingStats::default();
@@ -494,33 +494,36 @@ impl BamReceiveAndBuffer {
                 );
             }
 
+            // Checks 4 and 5 depend on the working fork. While the bank is unresolved, the
+            // scheduler holds the batch; the scheduler and worker validate the resolved bank.
             // Check 4: Ensure valid blockhash and blockhash is not too old
-            let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
-            let (check_results, duration_us) = measure_us!(working_bank.check_transactions(
-                std::slice::from_ref(&view),
-                &lock_results,
-                MAX_PROCESSING_AGE,
-                true,
-                &mut TransactionErrorMetrics::default(),
-            ));
-            metrics.increment_check_transactions_us(duration_us);
-            if let Some(Err(err)) = check_results.first() {
-                let reason = convert_txn_error_to_proto(err.clone());
-                stats.num_dropped_on_age += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+            if bank_checks_enabled {
+                let (check_results, duration_us) = measure_us!(working_bank.check_transactions(
+                    std::slice::from_ref(&view),
+                    &[Ok(())],
+                    MAX_PROCESSING_AGE,
+                    true,
+                    &mut TransactionErrorMetrics::default(),
+                ));
+                metrics.increment_check_transactions_us(duration_us);
+                if let Some(Err(err)) = check_results.into_iter().next() {
+                    let reason = convert_txn_error_to_proto(err);
+                    stats.num_dropped_on_age += 1;
+                    return (
+                        Err(Reason::TransactionError(
+                            jito_protos::proto::bam_types::TransactionError {
+                                index: index as u32,
+                                reason: reason as i32,
+                            },
+                        )),
+                        stats,
+                    );
+                }
             }
 
             // Check 5: Ensure the seed fee payer has enough to pay for transaction fees.
             // Downstream fee payers may be funded by earlier transactions in the same bundle.
-            if index == 0 {
+            if bank_checks_enabled && index == 0 {
                 let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
                     &working_bank,
                     &view,
@@ -812,13 +815,18 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         match decision {
             // Preserve batches during the short Block Engine handoff. Connecting may be
             // long-lived, so retain the existing drain behavior for that state.
-            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
+            BufferedPacketsDecision::Consume(_)
+            | BufferedPacketsDecision::ForwardAndHold
+            | BufferedPacketsDecision::Hold
                 if matches!(
                     bam_state,
                     BamConnectionState::DrainingBlockEngine
                         | BamConnectionState::BlockEngineDrained
                 ) => {}
-            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold => loop {
+            // ForwardAndHold is the BAM-only signal for a sad handover's temporary no-bank gap.
+            BufferedPacketsDecision::Consume(_)
+            | BufferedPacketsDecision::ForwardAndHold
+            | BufferedPacketsDecision::Hold => loop {
                 let batch = match self.parsed_batch_receiver.try_recv() {
                     Ok(batch) => batch,
                     Err(TryRecvError::Disconnected) => return Err(DisconnectedError::Receiver),
@@ -857,7 +865,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 }
                 self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
             },
-            BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Forward => {
+            BufferedPacketsDecision::Forward => {
                 // Ensure nothing is left in the container
                 while let Some(next_batch_id) = container.pop() {
                     if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
@@ -1119,6 +1127,7 @@ mod tests {
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::{Message, VersionedMessage, v1},
+        solana_poh::poh_recorder::LeaderState,
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
         solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -1210,6 +1219,7 @@ mod tests {
     fn setup_bam_receive_and_buffer(
         receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
+        resolved: bool,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         Arc<AtomicBool>,
@@ -1220,13 +1230,17 @@ mod tests {
         let exit: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let (response_sender, response_receiver) =
             tokio::sync::mpsc::channel::<BamOutboundMessage>(100);
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            None, 0, None, None, resolved,
+        )));
         let receive_and_buffer = BamReceiveAndBuffer::new(
             exit.clone(),
             Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
             receiver,
             response_sender,
             bank_forks,
-            None,
+            shared_leader_state,
             blacklisted_accounts,
         );
         let container = TransactionStateContainer::with_capacity(100);
@@ -1408,7 +1422,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (exit, mut receive_and_buffer, mut container, _response_receiver) =
-            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
+            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), true, HashSet::new());
         let bam_enabled = receive_and_buffer.bam_enabled.clone();
         bam_enabled.store(
             BamConnectionState::DrainingBlockEngine as u8,
@@ -1473,7 +1487,7 @@ mod tests {
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (sender, receiver) = unbounded();
         let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
-            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
+            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), true, HashSet::new());
 
         let bundle = AtomicTxnBatch {
             seq_id: 1,
@@ -1540,7 +1554,7 @@ mod tests {
         let (bank_forks, mint_keypair) = test_bank_forks_with_tx_v1();
         let (sender, receiver) = unbounded();
         let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
-            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
+            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), true, HashSet::new());
         let transaction = large_v1_transfer_transaction(
             &mint_keypair,
             bank_forks.read().unwrap().root_bank().last_blockhash(),
@@ -1655,6 +1669,7 @@ mod tests {
                 max_schedule_slot,
                 &bank_forks,
                 &HashSet::new(),
+                true,
                 &mut stats,
             );
 
@@ -1662,6 +1677,43 @@ mod tests {
             assert_eq!(stats.num_dropped_on_fee_payer, 1);
             assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
         }
+    }
+
+    #[test]
+    fn test_unresolved_bank_defers_bank_checks_and_buffers_during_gap() {
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let transaction = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank.last_blockhash(),
+        );
+        bank.process_transaction(&transaction).unwrap();
+        let (sender, receiver) = unbounded();
+        let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
+            setup_bam_receive_and_buffer(receiver, bank_forks, false, HashSet::new());
+        let transaction = VersionedTransaction::from(transaction);
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![batch_with_transaction(&transaction)],
+            })
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while container.is_empty() {
+            receive_and_buffer
+                .receive_and_buffer_packets(
+                    &mut container,
+                    &BufferedPacketsDecision::ForwardAndHold,
+                )
+                .unwrap();
+            assert!(Instant::now() < deadline);
+        }
+
+        verify_container(&mut container, 1);
+        assert!(response_receiver.try_recv().is_err());
+        exit.store(true, Ordering::Relaxed);
     }
 
     #[test]
@@ -1713,6 +1765,7 @@ mod tests {
                 max_schedule_slot,
                 &bank_forks,
                 &HashSet::new(),
+                true,
                 &mut stats,
             );
 
@@ -1810,6 +1863,7 @@ mod tests {
                 max_schedule_slot,
                 &bank_forks,
                 &blacklisted_accounts,
+                true,
                 &mut stats,
             );
 
@@ -1868,6 +1922,7 @@ mod tests {
                 max_schedule_slot,
                 &bank_forks,
                 &HashSet::new(),
+                true,
                 &mut stats,
             );
 

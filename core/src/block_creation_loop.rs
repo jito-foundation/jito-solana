@@ -1047,7 +1047,17 @@ fn handle_parent_ready(
         *block_timer,
         entry_bytes_consumed,
     )
-    .map_err(|_| PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot))?;
+    .map_err(|_| {
+        // No replacement will be published for this slot. Resolve the no-bank state so BAM
+        // bounces its held work now instead of holding it until the next leader window.
+        ctx.poh_recorder
+            .read()
+            .unwrap()
+            .shared_leader_state()
+            .load()
+            .enable_atomic_batches();
+        PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot)
+    })?;
     update_leader_window_clock(ctx, slot, *block_timer);
 
     // Re-inject accumulated transactions back to banking stage for rescheduling
@@ -1491,7 +1501,6 @@ mod tests {
         },
         agave_banking_stage_ingress_types::BankingPacketReceiver,
         crossbeam_channel::{bounded, unbounded},
-        jito_protos::proto::bam_types::atomic_txn_batch_result::Result::NotCommitted,
         solana_bls_signatures::{BLS_SIGNATURE_AFFINE_SIZE, Signature as BLSSignature},
         solana_entry::{block_component::VersionedUpdateParent, entry_or_marker::EntryOrMarker},
         solana_keypair::Keypair,
@@ -2063,13 +2072,9 @@ mod tests {
         let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
         let optimistic_leader_state = shared_leader_state.load();
 
-        // Both atomic transactions are valid on the optimistic fork: they reference its
-        // unique recent blockhash, which the replacement fork does not know. (Account state
-        // cannot distinguish the forks in the same-parent-slot variant because same-slot
-        // banks share accounts-db storage.) The scheduler must hold them until ParentReady
-        // resolves the fork.
+        // Use the common blockhash so replacement-bank prechecks dispatch both batch types
+        // after ParentReady.
         let first_recipient = Pubkey::new_unique();
-        let optimistic_blockhash = optimistic_bank.last_blockhash();
         let recent_blockhash = root_bank.last_blockhash();
         let runtime_transfer = |payer, recipient, recent_blockhash| {
             RuntimeTransaction::from_transaction_for_tests(system_transaction::transfer(
@@ -2080,8 +2085,8 @@ mod tests {
             ))
         };
         let txns_max_age = [
-            runtime_transfer(&genesis.mint_keypair, first_recipient, optimistic_blockhash),
-            runtime_transfer(&fork_payer, Pubkey::new_unique(), optimistic_blockhash),
+            runtime_transfer(&genesis.mint_keypair, first_recipient, recent_blockhash),
+            runtime_transfer(&fork_payer, Pubkey::new_unique(), recent_blockhash),
         ]
         .into_iter()
         .map(|transaction| (transaction, MaxAge::MAX))
@@ -2107,7 +2112,7 @@ mod tests {
 
         let (consume_work_sender, consume_work_receiver) = unbounded();
         let (finished_work_sender, finished_work_receiver) = unbounded();
-        let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel(1);
+        let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel(2);
         let mut bam_scheduler = BamScheduler::new(
             consume_work_sender,
             finished_work_receiver,
@@ -2120,8 +2125,8 @@ mod tests {
             .receive_completed(&mut container, &optimistic_decision)
             .unwrap();
         bam_scheduler.schedule(&mut container, 0, u64::MAX).unwrap();
-        assert_eq!(container.queue_size(), 1);
-        assert!(!consume_work_receiver.try_recv().unwrap().revert_on_error);
+        assert_eq!(container.queue_size(), 2);
+        assert!(consume_work_receiver.try_recv().is_err());
         assert!(response_receiver.try_recv().is_err());
 
         let accumulated_tx = versioned_transfer(1);
@@ -2171,17 +2176,25 @@ mod tests {
         assert_eq!(new_bank.slot(), leader_slot);
         assert_eq!(new_bank.parent_slot(), new_parent_slot);
         assert!(!optimistic_leader_state.atomic_batches_enabled());
-        assert!(
-            ctx.poh_recorder
-                .read()
-                .unwrap()
-                .shared_leader_state()
-                .load()
-                .atomic_batches_enabled()
+        assert!(shared_leader_state.load().atomic_batches_enabled());
+        assert_eq!(
+            new_bank.entry_bytes_budget().consumed(),
+            ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER
         );
 
-        // The replacement fork does not contain `fork_payer`. Verify the real consume worker
-        // rejects the entire atomic batch rather than committing its valid prefix.
+        let replacement_decision = BufferedPacketsDecision::Consume(new_bank.clone());
+        bam_scheduler
+            .receive_completed(&mut container, &replacement_decision)
+            .unwrap();
+        bam_scheduler.schedule(&mut container, 0, u64::MAX).unwrap();
+        assert_eq!(container.queue_size(), 0);
+        assert_eq!(consume_work_receiver.len(), 2);
+
+        // Verify both batches execute exactly once against the replacement.
+        assert_eq!(
+            shared_leader_state.load().working_bank().unwrap().bank_id(),
+            new_bank.bank_id()
+        );
         let (replay_vote_sender, _replay_vote_receiver) = bounded(1);
         let worker_exit = Arc::new(AtomicBool::default());
         let worker = ConsumeWorker::new(
@@ -2194,48 +2207,42 @@ mod tests {
                 None,
             ),
             finished_work_sender,
-            shared_leader_state,
+            shared_leader_state.clone(),
         );
         let worker_handle = thread::spawn(move || worker.run());
 
-        let replacement_decision = BufferedPacketsDecision::Consume(new_bank.clone());
-        bam_scheduler
-            .receive_completed(&mut container, &replacement_decision)
-            .unwrap();
-        bam_scheduler.schedule(&mut container, 0, u64::MAX).unwrap();
-
         let result_deadline = Instant::now() + Duration::from_secs(5);
-        let response = loop {
+        let mut response_seq_ids = Vec::with_capacity(2);
+        while response_seq_ids.len() < 2 {
             bam_scheduler
                 .receive_completed(&mut container, &replacement_decision)
                 .unwrap();
-            if let Ok(response) = response_receiver.try_recv() {
-                break response;
+            while let Ok(BamOutboundMessage::AtomicTxnBatchResult(result)) =
+                response_receiver.try_recv()
+            {
+                response_seq_ids.push(result.seq_id);
             }
             assert!(
                 Instant::now() < result_deadline,
-                "timed out waiting for atomic batch result"
+                "timed out waiting for BAM batch results"
             );
             thread::sleep(Duration::from_millis(1));
-        };
+        }
         worker_exit.store(true, Ordering::Relaxed);
         worker_handle.join().unwrap().unwrap();
 
-        let BamOutboundMessage::AtomicTxnBatchResult(result) = response else {
-            panic!("expected atomic transaction batch result");
-        };
-        assert_eq!(result.seq_id, 71);
-        assert!(matches!(result.result, Some(NotCommitted(_))));
-        assert_eq!(new_bank.get_balance(&first_recipient), 0);
+        assert_eq!(response_seq_ids, [71, 72]);
+        assert!(response_receiver.try_recv().is_err());
+        if optimistic_parent_slot != new_parent_slot {
+            assert_eq!(new_bank.get_balance(&first_recipient), 0);
+        }
 
-        assert_eq!(
-            new_bank.entry_bytes_budget().consumed(),
-            ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER
-        );
+        let entry_bytes_consumed = new_bank.entry_bytes_budget().consumed();
+        assert!(entry_bytes_consumed >= ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER);
         assert!(
             new_bank
                 .entry_bytes_budget()
-                .reserve(new_bank.max_entry_bytes_per_slot() - ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER)
+                .reserve(new_bank.max_entry_bytes_per_slot() - entry_bytes_consumed)
                 .is_ok()
         );
         assert!(new_bank.entry_bytes_budget().reserve(1).is_err());
@@ -2289,6 +2296,37 @@ mod tests {
         assert_eq!(rescheduled.len(), 2);
         assert!(rescheduled.contains(&accumulated_tx));
         assert!(rescheduled.contains(&drained_tx));
+
+        // Re-arm the slot as an unresolved bank, then fail the sad handover with an expired block
+        // timer so the replacement cannot be created. BCL must not leave BAM holding work for the
+        // abandoned slot: the no-bank state is published resolved.
+        {
+            let mut poh_recorder = ctx.poh_recorder.write().unwrap();
+            poh_recorder.clear_bank(true);
+            poh_recorder.set_bank_with_atomic_batches_enabled(
+                BankWithScheduler::new_without_scheduler(new_bank),
+                false,
+            );
+        }
+        assert!(!shared_leader_state.load().atomic_batches_enabled());
+        let result = handle_parent_ready(
+            &mut ctx,
+            &mut SlotMetrics::new(leader_slot, true),
+            LeaderWindowInfo {
+                block_timer: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+                ..parent_ready
+            },
+            Block {
+                slot: optimistic_parent_slot,
+                block_id: optimistic_parent_hash,
+            },
+            vec![],
+            &mut Instant::now(),
+        );
+        assert!(matches!(result, Err(PohRecorderError::ResetBankError(..))));
+        let abandoned_state = shared_leader_state.load();
+        assert!(abandoned_state.working_bank().is_none());
+        assert!(abandoned_state.atomic_batches_enabled());
 
         drop(leader_window_info_sender);
     }

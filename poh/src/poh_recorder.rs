@@ -308,6 +308,12 @@ impl PohRecorder {
 
     // synchronize PoH with a bank
     pub fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
+        // Resetting away from a working bank abandons it, which resolves the slot. With no working
+        // bank, keep the published state: a sad handover clears the unresolved bank and resets PoH
+        // to the new parent before publishing the replacement, and BAM must hold its work until
+        // then.
+        let atomic_batches_enabled =
+            self.working_bank.is_some() || self.shared_leader_state.load().atomic_batches_enabled();
         self.clear_bank(false);
         let tick_height = self.reset_poh(reset_bank, true);
 
@@ -318,12 +324,14 @@ impl PohRecorder {
         // Above call to `clear_bank` did not set the shared state,
         // nor did `reset_poh` update the tick_height.
         // Do the atomic swap of state here to reflect the reset.
-        self.shared_leader_state.store(Arc::new(LeaderState::new(
-            None,
-            tick_height,
-            leader_first_tick_height,
-            next_leader_slot,
-        )));
+        self.shared_leader_state
+            .store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+                None,
+                tick_height,
+                leader_first_tick_height,
+                next_leader_slot,
+                atomic_batches_enabled,
+            )));
 
         self.leader_last_tick_height = leader_last_tick_height;
     }
@@ -1220,6 +1228,7 @@ impl SharedLeaderState {
 
 pub struct LeaderState {
     working_bank: Option<Arc<Bank>>,
+    /// Despite its name, gates all BAM dispatch and bundle consumption until Bank resolution.
     atomic_batches_enabled: AtomicBool,
     tick_height: AtomicU64,
     leader_first_tick_height: Option<u64>,
@@ -1404,11 +1413,22 @@ mod tests {
         );
 
         poh_recorder.set_bank_with_atomic_batches_enabled(
-            BankWithScheduler::new_without_scheduler(bank),
+            BankWithScheduler::new_without_scheduler(bank.clone()),
             false,
         );
         assert!(poh_recorder.working_bank.is_some());
         poh_recorder.clear_bank(true);
+        assert!(poh_recorder.working_bank.is_none());
+        assert!(
+            !poh_recorder
+                .shared_leader_state
+                .load()
+                .atomic_batches_enabled()
+        );
+
+        // With no working bank, a reset preserves the pending-replacement state that a sad
+        // handover relies on between clearing the unresolved bank and publishing its replacement.
+        poh_recorder.reset(bank, Some((4, 4)));
         assert!(poh_recorder.working_bank.is_none());
         assert!(
             !poh_recorder
@@ -2096,10 +2116,20 @@ mod tests {
             Arc::new(AtomicBool::default()),
         );
 
-        poh_recorder.set_bank_for_test(bank.clone());
+        poh_recorder.set_bank_with_atomic_batches_enabled(
+            BankWithScheduler::new_without_scheduler(bank.clone()),
+            false,
+        );
         assert_eq!(bank.slot(), 0);
         poh_recorder.reset(bank, Some((4, 4)));
         assert!(poh_recorder.working_bank.is_none());
+        // A reset away from a working bank abandons it and resolves the slot.
+        assert!(
+            poh_recorder
+                .shared_leader_state
+                .load()
+                .atomic_batches_enabled()
+        );
     }
 
     #[test]

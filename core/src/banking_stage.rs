@@ -728,7 +728,7 @@ impl BankingStage {
                             bam_dependencies.batch_receiver.clone(),
                             bam_dependencies.outbound_sender.clone(),
                             bam_scheduler_bank_forks.clone(),
-                            Some(bam_shared_leader_state),
+                            bam_shared_leader_state,
                             jito_filter_keys.as_ref().clone(),
                         );
 
