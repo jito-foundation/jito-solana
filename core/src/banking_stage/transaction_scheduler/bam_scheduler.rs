@@ -12,7 +12,9 @@ use {
     crate::{
         bam_dependencies::BamOutboundMessage,
         banking_stage::{
+            consume_worker::active_leader_state,
             decision_maker::BufferedPacketsDecision,
+            qos_service::QosService,
             scheduler_messages::{
                 ConsumeWork, FinishedConsumeWork, NotCommittedReason, TransactionBatchId,
                 TransactionResult,
@@ -29,7 +31,8 @@ use {
     },
     prio_graph::{AccessKind, GraphNode, PrioGraph},
     smallvec::SmallVec,
-    solana_clock::{MAX_PROCESSING_AGE, Slot},
+    solana_clock::{BankId, MAX_PROCESSING_AGE, Slot},
+    solana_measure::measure_us,
     solana_nohash_hasher::IntMap,
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
@@ -95,6 +98,14 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     extra_checks_enabled: bool,
     bank_forks: Arc<RwLock<BankForks>>,
     shared_leader_state: SharedLeaderState,
+
+    /// Bank whose cost tracker holds the current reservations.
+    admission_bank: Option<(BankId, Slot)>,
+    /// Estimated cost reserved on `admission_bank` by dispatched work that has not settled.
+    inflight_reserved_cost: u64,
+    /// Deferred head-of-line batch and the inflight estimate at its last attempt.
+    pending_admission: Option<(TransactionPriorityId, u64)>,
+    admission_us: Histogram,
 }
 
 // A structure to hold information about inflight batches.
@@ -105,6 +116,8 @@ struct InflightBatchInfo {
     // SmallVec 1: each scheduled work item typically corresponds to one batch id.
     pub batch_priority_ids: SmallVec<[(TransactionPriorityId, u32 /* seq_id */); 1]>,
     pub slot: Slot,
+    /// Estimate the scheduler reserved for this work, held until completion.
+    pub reserved_cost: u64,
 }
 
 impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
@@ -133,6 +146,10 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             extra_checks_enabled: true,
             bank_forks,
             shared_leader_state,
+            admission_bank: None,
+            inflight_reserved_cost: 0,
+            pending_admission: None,
+            admission_us: Histogram::new(),
         }
     }
 
@@ -235,16 +252,49 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     fn send_to_workers(
         &mut self,
         container: &mut impl StateContainer<Tx>,
-        num_scheduled: &mut usize,
-    ) {
+    ) -> Result<usize, SchedulerError> {
         let Some(slot) = self.slot else {
             warn!("Slot is not set, cannot schedule transactions");
-            return;
+            return Ok(0);
         };
 
+        let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
+            return Ok(0);
+        };
+        let Some(admission_bank) = leader_state
+            .working_bank()
+            .filter(|bank| bank.slot() == slot)
+        else {
+            return Ok(0);
+        };
+
+        if self.admission_bank != Some((admission_bank.bank_id(), slot)) {
+            // Work admitted before a replacement may admit locally there in worker order.
+            // Keep later work behind it.
+            if !self.inflight_batch_info.is_empty() {
+                return Ok(0);
+            }
+            self.admission_bank = Some((admission_bank.bank_id(), slot));
+        }
+
         let now = Instant::now();
-        let working_bank = self.bank_forks.read().unwrap().working_bank();
-        while let Some(id) = self.prio_graph.pop() {
+        let mut num_scheduled = 0;
+        loop {
+            // A deferred batch holds the head of the line until work on its bank settles or the
+            // bank itself changes; either way it gets the next attempt before anything else.
+            let id = if let Some((id, attempted_inflight_cost)) = self.pending_admission {
+                if attempted_inflight_cost == self.inflight_reserved_cost {
+                    return Ok(num_scheduled);
+                }
+                self.pending_admission = None;
+                id
+            } else {
+                let Some(id) = self.prio_graph.pop() else {
+                    return Ok(num_scheduled);
+                };
+                id
+            };
+
             let (batch_ids, revert_on_error, max_schedule_slot, seq_id) =
                 container.get_batch(id.id).unwrap();
 
@@ -275,7 +325,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                         lock_results.push(Ok(()));
                     }
                 }
-                let check_result = working_bank.check_transactions::<Tx>(
+                let check_result = admission_bank.check_transactions::<Tx>(
                     &sanitized_txs,
                     &lock_results,
                     MAX_PROCESSING_AGE,
@@ -304,19 +354,54 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 };
             }
 
-            // Schedule it
             let mut work = self.get_or_create_work_object();
-            let batch_id = self.get_next_schedule_id();
-            *num_scheduled += batch_ids.len();
             Self::populate_consume_work(
                 &mut work,
-                batch_id,
+                TransactionBatchId::new(self.next_batch_id),
                 &[id],
                 revert_on_error,
                 container,
                 slot,
             );
-            self.send_to_worker(SmallVec::from([(id, seq_id)]), work, slot);
+
+            // Admit cost here, in pop order, so eight workers racing for the cost tracker cannot
+            // reorder it.
+            let (attempt, admission_us) = measure_us!(QosService::try_admit_transactions(
+                admission_bank,
+                &work.transactions,
+                work.transactions
+                    .iter()
+                    .zip(&work.max_ages)
+                    .map(|(tx, max_age)| {
+                        admission_bank.resanitize_transaction_minimally(
+                            tx,
+                            max_age.sanitized_epoch,
+                            max_age.alt_invalidation_slot,
+                        )
+                    }),
+                self.inflight_reserved_cost,
+            ));
+            let _ = self.admission_us.increment(admission_us);
+            let Some((results, reserved_cost)) = attempt else {
+                debug!(
+                    "deferring batch {seq_id}: {} in flight",
+                    self.inflight_reserved_cost
+                );
+                // The retry takes the transactions out again; hand them back until then.
+                for (txn_id, transaction) in work.ids.iter().zip(work.transactions.drain(..)) {
+                    container
+                        .get_mut_transaction_state(*txn_id)
+                        .unwrap()
+                        .retry_transaction(transaction);
+                }
+                self.recycle_work_object(work);
+                self.pending_admission = Some((id, self.inflight_reserved_cost));
+                return Ok(num_scheduled);
+            };
+            work.batch_id = self.get_next_schedule_id();
+            work.admission = Some((Arc::clone(admission_bank), results));
+            num_scheduled += work.ids.len();
+            self.send_to_worker(SmallVec::from([(id, seq_id)]), work, slot, reserved_cost)?;
         }
     }
 
@@ -326,17 +411,26 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         priority_ids: SmallVec<[(TransactionPriorityId, u32); 1]>,
         work: ConsumeWork<Tx>,
         slot: Slot,
-    ) {
+        reserved_cost: u64,
+    ) -> Result<(), SchedulerError> {
         let batch_id = work.batch_id;
-        let _ = self.consume_work_sender.send(work);
+        if let Err(err) = self.consume_work_sender.send(work) {
+            self.recycle_work_object(err.0);
+            return Err(SchedulerError::DisconnectedSendChannel(
+                "BAM worker disconnected",
+            ));
+        }
+        self.inflight_reserved_cost += reserved_cost;
         self.inflight_batch_info.insert(
             batch_id,
             InflightBatchInfo {
                 schedule_time: Instant::now(),
                 batch_priority_ids: priority_ids,
                 slot,
+                reserved_cost,
             },
         );
+        Ok(())
     }
 
     fn get_next_schedule_id(&mut self) -> TransactionBatchId {
@@ -357,12 +451,20 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 respond_with_extra_info: false,
                 target_slot: 0,
                 max_schedule_slot: None,
+                admission: None,
             }
         })
     }
 
     fn recycle_work_object(&mut self, mut work: ConsumeWork<Tx>) {
-        // Just in case, clear the work object
+        if let Some((bank, results)) = work.admission.take() {
+            let costs = QosService::compute_transaction_costs(
+                &bank.feature_set,
+                work.transactions.iter(),
+                results.into_iter(),
+            );
+            QosService::remove_or_update_costs(costs.iter(), None, &bank);
+        }
         work.ids.clear();
         work.transactions.clear();
         work.max_ages.clear();
@@ -538,6 +640,11 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         if bank_slot == self.slot {
             return;
         }
+        // A bankless boundary already unblocked and cleared the old graph. Keep its slot
+        // inactive until old completions drain so a same-slot replacement cannot unblock twice.
+        if self.slot.is_none() && !self.inflight_batch_info.is_empty() {
+            return;
+        }
         let prev_slot = self.slot;
         match bank_slot {
             Some(bank_slot) => {
@@ -557,6 +664,16 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             }
         }
 
+        // A batch deferred on cost admission was popped from the prio-graph but never
+        // dispatched. It gets the same result as everything still queued, and it must be
+        // unblocked so the drain below reaches its dependents.
+        if let Some((pending_id, _)) = self.pending_admission.take() {
+            self.prio_graph.unblock(&pending_id);
+            if let Some((_, _, _, seq_id)) = container.get_batch(pending_id.id) {
+                self.send_no_leader_slot_bundle_result(seq_id);
+            }
+            container.remove_by_id(pending_id.id);
+        }
         // Unblock all transactions blocked by inflight batches
         // and then drain the prio-graph
         for inflight_info in self.inflight_batch_info.values() {
@@ -697,8 +814,19 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 self.time_between_schedule_us.maximum().unwrap_or_default(),
                 i64
             ),
+            (
+                "admission_us_p99",
+                self.admission_us.percentile(99.0).unwrap_or_default(),
+                i64
+            ),
+            (
+                "admission_us_max",
+                self.admission_us.maximum().unwrap_or_default(),
+                i64
+            ),
         );
         self.time_between_schedule_us.clear();
+        self.admission_us.clear();
     }
 }
 
@@ -723,10 +851,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             .time_between_schedule_us
             .increment(time_since_last_schedule.as_micros() as u64);
 
-        let mut num_scheduled = 0;
-
         self.pull_into_prio_graph(container);
-        self.send_to_workers(container, &mut num_scheduled);
+        let num_scheduled = self.send_to_workers(container)?;
 
         // TODO(seg): Double check the zeros here
         Ok(SchedulingSummary {
@@ -765,6 +891,13 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             let Some(inflight_batch_info) = self.inflight_batch_info.remove(&batch_id) else {
                 continue;
             };
+
+            // Settled work may have freed budget for a batch deferred on this bank's block limit.
+            // Dispatch is held across a bank change until the old work drains, so everything in
+            // flight was admitted on `admission_bank`.
+            self.inflight_reserved_cost = self
+                .inflight_reserved_cost
+                .saturating_sub(inflight_batch_info.reserved_cost);
 
             let _ = self.time_in_worker_us.increment(
                 now.duration_since(inflight_batch_info.schedule_time)
@@ -828,9 +961,12 @@ mod tests {
         crate::{
             bam_dependencies::BamOutboundMessage,
             banking_stage::{
+                consumer::RetryableIndex,
                 decision_maker::BufferedPacketsDecision,
+                qos_service::QosService,
                 scheduler_messages::{
-                    ConsumeWork, FinishedConsumeWork, MaxAge, NotCommittedReason, TransactionResult,
+                    ConsumeWork, FinishedConsumeWork, FinishedConsumeWorkExtraInfo, MaxAge,
+                    NotCommittedReason, TransactionResult,
                 },
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
@@ -843,27 +979,36 @@ mod tests {
         crossbeam_channel::unbounded,
         itertools::Itertools,
         jito_protos::proto::bam_types::{
-            TransactionCommittedResult,
-            atomic_txn_batch_result::Result::{Committed, NotCommitted},
+            SchedulingError, TransactionCommittedResult,
+            atomic_txn_batch_result::{
+                self,
+                Result::{Committed, NotCommitted},
+            },
+            not_committed::Reason,
         },
         smallvec::SmallVec,
         solana_compute_budget_interface::ComputeBudgetInstruction,
+        solana_cost_model::cost_tracker::{CostTrackerError, CostTrackerLimits},
         solana_hash::Hash,
         solana_keypair::Keypair,
+        solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::Message,
-        solana_poh::poh_recorder::SharedLeaderState,
+        solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, bank_forks::BankForks},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
-        solana_system_interface::instruction::transfer_many,
+        solana_system_interface::instruction::{transfer, transfer_many},
         solana_transaction::{Transaction, sanitized::SanitizedTransaction},
+        solana_transaction_error::TransactionError,
         std::{
             borrow::Borrow,
             sync::{Arc, RwLock},
         },
     };
+
+    type Tx = RuntimeTransaction<SanitizedTransaction>;
 
     struct TestScheduler {
         scheduler: BamScheduler<RuntimeTransaction<SanitizedTransaction>>,
@@ -1025,6 +1170,17 @@ mod tests {
             "Scheduler slot should be set after receiving bank start"
         );
 
+        // A stale Consume decision must not dispatch without an active leader Bank.
+        assert_eq!(
+            scheduler
+                .schedule(&mut container, 0, 0)
+                .unwrap()
+                .num_scheduled,
+            0
+        );
+        assert!(consume_work_receivers[0].try_recv().is_err());
+        set_leader_bank(&mut scheduler.shared_leader_state, decision.bank().unwrap());
+
         // Schedule the transactions
         let result = scheduler.schedule(&mut container, 0, 0).unwrap();
 
@@ -1034,8 +1190,10 @@ mod tests {
         // Receive the scheduled work
         let work_1 = consume_work_receivers[0].try_recv().unwrap();
         assert_eq!(work_1.ids.len(), 1);
+        assert!(work_1.admission.is_some());
         let work_2 = consume_work_receivers[0].try_recv().unwrap();
         assert_eq!(work_2.ids.len(), 1);
+        assert!(work_2.admission.is_some());
 
         // Check that the first transaction is from keypair_a and first recipient is the first recipient
         assert_eq!(
@@ -1390,5 +1548,489 @@ mod tests {
             !scheduler.prio_graph.is_empty(),
             "bundle sharing a writable account should be inserted and schedulable"
         );
+
+        // A dispatch-time recheck rejects the default blockhash without reserving any cost.
+        set_leader_bank(&mut scheduler.shared_leader_state, &bank);
+        scheduler.extra_checks_enabled = true;
+        assert_eq!(scheduler.send_to_workers(&mut container).unwrap(), 0);
+        assert!(scheduler.prio_graph.is_empty());
+        assert_eq!(container.buffer_size(), 0);
+        assert_eq!(block_cost_and_in_flight(&bank), (0, 0));
+    }
+
+    fn set_leader_bank(shared_leader_state: &mut SharedLeaderState, bank: &Arc<Bank>) {
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+    }
+
+    fn set_block_cost_limit(bank: &Bank, block_cost: u64) {
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(CostTrackerLimits::new(u64::MAX, block_cost, u64::MAX));
+    }
+
+    fn estimated_cost(bank: &Bank) -> u64 {
+        let tx = prioritized_tranfers(&Keypair::new(), vec![Pubkey::new_unique()], 1000, 0);
+        QosService::compute_transaction_costs(
+            &bank.feature_set,
+            std::iter::once(&tx),
+            std::iter::once(Ok(())),
+        )[0]
+        .as_ref()
+        .unwrap()
+        .sum()
+    }
+
+    fn block_cost_and_in_flight(bank: &Bank) -> (u64, usize) {
+        let tracker = bank.read_cost_tracker().unwrap();
+        (tracker.block_cost(), tracker.in_flight_transaction_count())
+    }
+
+    fn settle_committed(bank: &Bank, work: &mut ConsumeWork<Tx>, actual_units: u64) {
+        let costs = QosService::compute_transaction_costs(
+            &bank.feature_set,
+            work.transactions.iter(),
+            std::iter::repeat(Ok(())),
+        );
+        let mut tracker = bank.write_cost_tracker().unwrap();
+        for cost in costs.iter().flatten() {
+            tracker.update_execution_cost(cost, actual_units, 0);
+        }
+        tracker.sub_transactions_in_flight(costs.len());
+        drop(tracker);
+        work.admission = None;
+    }
+
+    fn finish_committed(
+        test: &mut TestScheduler,
+        container: &mut TransactionStateContainer<Tx>,
+        decision: &BufferedPacketsDecision,
+        work: ConsumeWork<Tx>,
+        cus_consumed: u32,
+    ) {
+        let processed_results = vec![
+            TransactionResult::Committed(TransactionCommittedResult {
+                cus_consumed,
+                feepayer_balance_lamports: 0,
+                loaded_accounts_data_size: 0,
+                execution_success: true,
+            });
+            work.transactions.len()
+        ];
+        test.finished_consume_work_sender
+            .send(FinishedConsumeWork {
+                work,
+                retryable_indexes: vec![],
+                extra_info: Some(FinishedConsumeWorkExtraInfo { processed_results }),
+            })
+            .unwrap();
+        test.scheduler
+            .receive_completed(container, decision)
+            .unwrap();
+    }
+
+    fn next_result(
+        response_receiver: &mut tokio::sync::mpsc::Receiver<BamOutboundMessage>,
+    ) -> (u32, atomic_txn_batch_result::Result) {
+        let BamOutboundMessage::AtomicTxnBatchResult(result) = response_receiver
+            .try_recv()
+            .expect("a result should be queued")
+        else {
+            panic!("expected AtomicTxnBatchResult message");
+        };
+        (result.seq_id, result.result.expect("result should be set"))
+    }
+
+    fn admission_scheduler() -> (TestScheduler, Arc<Bank>) {
+        let (bank_forks, _) = test_bank_forks();
+        let mut test = create_test_scheduler(1, &bank_forks);
+        test.scheduler.extra_checks_enabled = false;
+        let bank = Arc::new(Bank::new_from_parent(
+            bank_forks.read().unwrap().working_bank(),
+            SlotLeader::new_unique(),
+            1,
+        ));
+        set_leader_bank(&mut test.scheduler.shared_leader_state, &bank);
+        (test, bank)
+    }
+
+    // ---- scheduler-side cost admission (JSA-72) ----
+
+    /// Two independent batches plus a bank the scheduler can admit on, with `slot` set.
+    fn setup_two_batches(
+        second_batch_size: usize,
+    ) -> (
+        TestScheduler,
+        TransactionStateContainer<Tx>,
+        Arc<Bank>,
+        BufferedPacketsDecision,
+    ) {
+        let (mut test, bank) = admission_scheduler();
+        let mut container = TransactionStateContainer::with_capacity(8);
+        for (seq_id, size) in [1, second_batch_size].into_iter().enumerate() {
+            container.insert_new_batch(
+                (0..size)
+                    .map(|_| {
+                        (
+                            prioritized_tranfers(&Keypair::new(), [Pubkey::new_unique()], 1000, 0),
+                            MaxAge::MAX,
+                        )
+                    })
+                    .collect(),
+                u64::MAX - seq_id as u64,
+                size > 1,
+                u64::MAX,
+                seq_id as u32,
+            );
+        }
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        (test, container, bank, decision)
+    }
+
+    /// Deterministic scheduler-level version of the JSA-72 live PoC.
+    ///
+    /// The PoC pauses the earlier, high-CU transaction after dequeue so a later cheap transfer
+    /// can reserve the Bank budget first. Scheduler-side admission makes that worker timing
+    /// irrelevant: only the high-priority work can be dispatched until its estimate settles.
+    #[test]
+    fn test_jsa72_poc_priority_survives_inverted_worker_timing() {
+        let (mut test, bank) = admission_scheduler();
+
+        // Match the live PoC shapes: the earlier transaction requests 200k CUs, while the later
+        // transaction is a plain transfer. Distinct payers and recipients keep the batches
+        // independent in the priority graph.
+        let poc_transfer = |compute_unit_limit: Option<u32>| {
+            let from = Keypair::new();
+            let mut instructions = compute_unit_limit
+                .map(ComputeBudgetInstruction::set_compute_unit_limit)
+                .into_iter()
+                .collect_vec();
+            instructions.push(transfer(&from.pubkey(), &Pubkey::new_unique(), 1));
+            RuntimeTransaction::from_transaction_for_tests(Transaction::new(
+                &[&from],
+                Message::new(&instructions, Some(&from.pubkey())),
+                Hash::default(),
+            ))
+        };
+        let high_transaction = poc_transfer(Some(200_000));
+        let low_transaction = poc_transfer(None);
+        let transaction_costs = QosService::compute_transaction_costs(
+            &bank.feature_set,
+            [&high_transaction, &low_transaction].into_iter(),
+            std::iter::repeat(Ok(())),
+        );
+        let high_cost = transaction_costs[0].as_ref().unwrap();
+        let low_cost = transaction_costs[1].as_ref().unwrap();
+        let high_estimate = high_cost.sum();
+        let low_estimate = low_cost.sum();
+
+        // As in the PoC, the block limit is exactly the high transaction's reservation. If the
+        // low transaction reserved first, the high transaction would be rejected even though
+        // both fit after the high estimate settles to actual execution cost.
+        set_block_cost_limit(&bank, high_estimate);
+        {
+            let mut tracker = bank.write_cost_tracker().unwrap();
+            tracker.try_add(low_cost).unwrap();
+            assert!(matches!(
+                tracker.try_add(high_cost),
+                Err(CostTrackerError::WouldExceedBlockMaxLimit)
+            ));
+            assert_eq!(tracker.block_cost(), low_estimate);
+            assert!(tracker.block_cost() < tracker.block_cost_limit());
+            tracker.remove(low_cost);
+        }
+        drop(transaction_costs);
+
+        let mut container = TransactionStateContainer::with_capacity(8);
+        for (transaction, priority, seq_id) in [(high_transaction, 2, 0), (low_transaction, 1, 1)] {
+            assert!(
+                container
+                    .insert_new_batch(
+                        std::iter::once((transaction, MaxAge::MAX)).collect(),
+                        priority,
+                        false,
+                        u64::MAX,
+                        seq_id,
+                    )
+                    .is_some()
+            );
+        }
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        let mut high_work = test.consume_work_receivers[0].try_recv().unwrap();
+        let high_info = &test.scheduler.inflight_batch_info[&high_work.batch_id];
+        assert_eq!(high_info.batch_priority_ids[0].1, 0);
+        assert!(test.scheduler.pending_admission.is_some());
+        assert_eq!(block_cost_and_in_flight(&bank), (high_estimate, 1));
+        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert_eq!(
+            test.scheduler
+                .schedule(&mut container, 0, 0)
+                .unwrap()
+                .num_scheduled,
+            0,
+            "a pending batch must not spin or retry before a completion"
+        );
+
+        // Complete the high transaction below its estimate. This is the event the live PoC
+        // delayed; here it is explicit, so the test has no sleeps or scheduling races.
+        settle_committed(&bank, &mut high_work, 150);
+        let settled_high_cost = bank.read_cost_tracker().unwrap().block_cost();
+        assert!(settled_high_cost + low_estimate <= high_estimate);
+        finish_committed(&mut test, &mut container, &decision, high_work, 150);
+        let (seq_id, result) = next_result(&mut test.response_receiver);
+        assert_eq!(seq_id, 0);
+        assert!(matches!(result, Committed(_)));
+
+        // Only after the earlier reservation settles can the lower-priority work be dispatched.
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        let mut low_work = test.consume_work_receivers[0].try_recv().unwrap();
+        let low_info = &test.scheduler.inflight_batch_info[&low_work.batch_id];
+        assert_eq!(low_info.batch_priority_ids[0].1, 1);
+        assert_eq!(
+            block_cost_and_in_flight(&bank),
+            (settled_high_cost + low_estimate, 1)
+        );
+
+        settle_committed(&bank, &mut low_work, 150);
+        finish_committed(&mut test, &mut container, &decision, low_work, 150);
+        let (seq_id, result) = next_result(&mut test.response_receiver);
+        assert_eq!(seq_id, 1);
+        assert!(matches!(result, Committed(_)));
+        assert_eq!(block_cost_and_in_flight(&bank).1, 0);
+        assert!(test.scheduler.inflight_batch_info.is_empty());
+    }
+
+    #[test_case::test_case(1; "single_transaction")]
+    #[test_case::test_case(2; "partial_batch_rollback")]
+    fn test_deferred_batch_is_final_once_inflight_settles_without_freeing_budget(
+        second_batch_size: usize,
+    ) {
+        let (mut test, mut container, bank, decision) = setup_two_batches(second_batch_size);
+        let estimate = estimated_cost(&bank);
+        set_block_cost_limit(&bank, estimate * second_batch_size as u64 + estimate / 2);
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        let mut work_a = test.consume_work_receivers[0].try_recv().unwrap();
+        assert!(test.scheduler.pending_admission.is_some());
+        // B must roll back any earlier admissions in its batch without touching A's reservation.
+        assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
+        assert!(test.consume_work_receivers[0].try_recv().is_err());
+
+        // A commits at exactly its estimate: nothing is freed. The worker settled it.
+        bank.write_cost_tracker()
+            .unwrap()
+            .sub_transactions_in_flight(1);
+        work_a.admission = None;
+        finish_committed(
+            &mut test,
+            &mut container,
+            &decision,
+            work_a,
+            estimate as u32,
+        );
+
+        // Nothing inflight can cover the shortfall any more, so B is dispatched with the final
+        // per-transaction error, exactly as the worker would have produced it.
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        assert!(test.scheduler.pending_admission.is_none());
+        let work_b = test.consume_work_receivers[0].try_recv().unwrap();
+        assert_eq!(
+            work_b.admission.as_ref().unwrap().1,
+            std::iter::repeat_n(Ok(()), second_batch_size - 1)
+                .chain([Err(TransactionError::WouldExceedMaxBlockCostLimit)])
+                .collect_vec()
+        );
+        assert_eq!(
+            block_cost_and_in_flight(&bank),
+            (estimate * second_batch_size as u64, second_batch_size - 1)
+        );
+        test.scheduler.recycle_work_object(work_b);
+        assert_eq!(block_cost_and_in_flight(&bank), (estimate, 0));
+    }
+
+    #[test]
+    fn test_deferred_batch_and_its_dependents_are_drained_at_slot_boundary() {
+        let (mut test, bank) = admission_scheduler();
+        let estimate = estimated_cost(&bank);
+        set_block_cost_limit(&bank, estimate + estimate / 2);
+
+        // A and B are independent; C shares B's fee payer and is blocked behind it.
+        let keypair_b = Keypair::new();
+        let mut container = create_container(vec![
+            (
+                &Keypair::new(),
+                vec![Pubkey::new_unique()],
+                1000,
+                0,
+                u64::MAX,
+            ),
+            (&keypair_b, vec![Pubkey::new_unique()], 1000, 1, u64::MAX),
+            (&keypair_b, vec![Pubkey::new_unique()], 1000, 2, u64::MAX),
+        ]);
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.consume_work_receivers[0].try_recv().unwrap();
+        assert!(test.scheduler.pending_admission.is_some());
+
+        // Slot ends: the deferred batch and the batch it was blocking both go back to BAM.
+        test.scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Forward)
+            .unwrap();
+        assert!(test.scheduler.pending_admission.is_none());
+        assert!(test.scheduler.prio_graph.is_empty());
+        assert!(container.pop().is_none());
+
+        let mut seq_ids = vec![];
+        for _ in 0..2 {
+            let (seq_id, result) = next_result(&mut test.response_receiver);
+            assert!(matches!(
+                result,
+                NotCommitted(not_committed)
+                    if not_committed.reason == Some(Reason::SchedulingError(
+                        SchedulingError::OutsideLeaderSlot as i32
+                    ))
+            ));
+            seq_ids.push(seq_id);
+        }
+        seq_ids.sort_unstable();
+        assert_eq!(seq_ids, vec![1, 2]);
+        assert!(test.response_receiver.try_recv().is_err());
+        // A is still inflight; its result arrives with the worker's response as before.
+        assert_eq!(test.scheduler.inflight_batch_info.len(), 1);
+    }
+
+    #[test]
+    fn test_bank_replacement_within_slot_restarts_admission_on_new_bank() {
+        let (mut test, mut container, bank_1, _) = setup_two_batches(1);
+        let estimate = estimated_cost(&bank_1);
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        let work_a = test.consume_work_receivers[0].try_recv().unwrap();
+        let work_b = test.consume_work_receivers[0].try_recv().unwrap();
+        assert_eq!(block_cost_and_in_flight(&bank_1), (estimate * 2, 2));
+
+        // The bankless handover clears the graph. Work arriving in the gap must remain queued.
+        test.scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Forward)
+            .unwrap();
+        assert_eq!(test.scheduler.slot, None);
+        let transaction = prioritized_tranfers(&Keypair::new(), [Pubkey::new_unique()], 1000, 0);
+        assert!(
+            container
+                .insert_new_batch(
+                    std::iter::once((transaction, MaxAge::MAX)).collect(),
+                    u64::MAX,
+                    false,
+                    u64::MAX,
+                    2,
+                )
+                .is_some()
+        );
+
+        // ParentReady installs a replacement for the same slot. Do not adopt it or dispatch C
+        // until both old-bank batches have returned.
+        let bank_1b = Arc::new(Bank::new_from_parent(
+            bank_1.parent().unwrap(),
+            SlotLeader::new_unique(),
+            bank_1.slot(),
+        ));
+        assert_ne!(bank_1b.bank_id(), bank_1.bank_id());
+        set_leader_bank(&mut test.scheduler.shared_leader_state, &bank_1b);
+        let decision = BufferedPacketsDecision::Consume(bank_1b.clone());
+        // Old work returned with its admission attached must drain before C can dispatch.
+        for (work, remaining) in [(work_a, 1), (work_b, 0)] {
+            test.scheduler
+                .receive_completed(&mut container, &decision)
+                .unwrap();
+            test.scheduler.schedule(&mut container, 0, 0).unwrap();
+            assert!(test.consume_work_receivers[0].try_recv().is_err());
+            assert_eq!(test.scheduler.slot, None);
+            finish_committed(&mut test, &mut container, &decision, work, 150);
+            assert_eq!(
+                block_cost_and_in_flight(&bank_1),
+                (estimate * remaining as u64, remaining)
+            );
+        }
+
+        // With both old-bank batches drained, adopt the new bank and admit C.
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        let work_c = test.consume_work_receivers[0].try_recv().unwrap();
+        let admission = work_c.admission.as_ref().unwrap();
+        assert_eq!(admission.0.bank_id(), bank_1b.bank_id());
+        assert_eq!(test.scheduler.inflight_reserved_cost, estimate);
+        assert_eq!(block_cost_and_in_flight(&bank_1b), (estimate, 1));
+    }
+
+    #[test_case::test_case(false; "returned_work")]
+    #[test_case::test_case(true; "disconnected_worker")]
+    fn test_unprocessed_work_releases_reservation_on_its_bank(disconnected: bool) {
+        let (mut test, mut container, bank, decision) = setup_two_batches(1);
+        let estimate = estimated_cost(&bank);
+        set_block_cost_limit(&bank, estimate);
+
+        if disconnected {
+            drop(test.consume_work_receivers);
+            assert!(matches!(
+                test.scheduler.schedule(&mut container, 0, 0),
+                Err(super::SchedulerError::DisconnectedSendChannel(_))
+            ));
+            assert_eq!(block_cost_and_in_flight(&bank), (0, 0));
+            assert_eq!(test.scheduler.inflight_reserved_cost, 0);
+            assert!(!test.scheduler.has_in_flight_transactions());
+            return;
+        }
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        let work_a = test.consume_work_receivers[0].try_recv().unwrap();
+        assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
+
+        // The worker found the bank complete and returned A untouched, admission attached.
+        test.finished_consume_work_sender
+            .send(FinishedConsumeWork {
+                work: work_a,
+                retryable_indexes: vec![RetryableIndex::new(0, true)],
+                extra_info: Some(FinishedConsumeWorkExtraInfo {
+                    processed_results: vec![TransactionResult::NotCommitted(
+                        NotCommittedReason::PohTimeout,
+                    )],
+                }),
+            })
+            .unwrap();
+        test.scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        assert_eq!(block_cost_and_in_flight(&bank), (0, 0));
+        assert_eq!(test.scheduler.inflight_reserved_cost, 0);
+        // The released admission must not keep the bank alive from the reuse pool.
+        assert!(
+            test.scheduler
+                .reusable_consume_work
+                .iter()
+                .all(|work| work.admission.is_none())
+        );
+        assert!(matches!(
+            next_result(&mut test.response_receiver),
+            (0, NotCommitted(not_committed))
+                if not_committed.reason
+                    == Some(Reason::SchedulingError(SchedulingError::PohTimeout as i32))
+        ));
     }
 }

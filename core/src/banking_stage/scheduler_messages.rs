@@ -2,8 +2,9 @@ use {
     crate::banking_stage::consumer::RetryableIndex,
     jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_clock::{Epoch, Slot},
-    solana_transaction_error::TransactionError,
-    std::fmt::Display,
+    solana_runtime::bank::Bank,
+    solana_transaction_error::{TransactionError, TransactionResult as CostResult},
+    std::{fmt::Display, sync::Arc},
 };
 
 /// A unique identifier for a transaction batch.
@@ -57,6 +58,8 @@ pub struct ConsumeWork<Tx> {
     pub revert_on_error: bool,
     pub respond_with_extra_info: bool,
     pub max_schedule_slot: Option<Slot>,
+    /// Admission bank and cost results, taken when settled or returned for release.
+    pub admission: Option<(Arc<Bank>, Vec<CostResult<()>>)>,
 }
 
 /// Message: [Worker -> Scheduler]
