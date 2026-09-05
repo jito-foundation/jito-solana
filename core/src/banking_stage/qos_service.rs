@@ -26,11 +26,7 @@ type TransactionCostResults<'a, Tx> = SmallVec<
         super::consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH],
 >;
 
-// QosService is local to each banking thread, each instance of QosService provides services to
-// one banking thread.
-// Banking thread calls `report_metrics(slot)` at end of `process_and_record_transaction()`, or any time
-// it wants.
-//
+/// Transaction cost admission and settlement.
 pub struct QosService;
 
 impl QosService {

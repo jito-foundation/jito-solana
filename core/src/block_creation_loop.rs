@@ -2195,6 +2195,7 @@ mod tests {
             ),
             finished_work_sender,
             shared_leader_state,
+            None,
         );
         let worker_handle = thread::spawn(move || worker.run());
 

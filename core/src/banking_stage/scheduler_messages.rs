@@ -8,18 +8,12 @@ use {
 };
 
 /// A unique identifier for a transaction batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TransactionBatchId(pub u64);
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct TransactionBatchId(u64);
 
 impl TransactionBatchId {
     pub fn new(index: u64) -> Self {
         Self(index)
-    }
-}
-
-impl std::hash::Hash for TransactionBatchId {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0)
     }
 }
 
@@ -67,12 +61,7 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<RetryableIndex>,
-    pub extra_info: Option<FinishedConsumeWorkExtraInfo>,
-}
-
-#[derive(Debug)]
-pub struct FinishedConsumeWorkExtraInfo {
-    pub processed_results: Vec<TransactionResult>,
+    pub extra_info: Option<Vec<TransactionResult>>,
 }
 
 #[derive(Clone, Debug)]
