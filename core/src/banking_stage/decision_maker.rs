@@ -46,17 +46,18 @@ impl DecisionMaker {
 
     #[inline]
     pub(crate) fn make_consume_or_forward_decision(&self) -> BufferedPacketsDecision {
-        self.make_consume_or_forward_decision_inner(false)
+        self.make_consume_or_forward_decision_inner(false, false)
     }
 
     #[inline]
     pub(crate) fn make_atomic_consume_or_forward_decision(&self) -> BufferedPacketsDecision {
-        self.make_consume_or_forward_decision_inner(true)
+        self.make_consume_or_forward_decision_inner(true, false)
     }
 
-    fn make_consume_or_forward_decision_inner(
+    pub(super) fn make_consume_or_forward_decision_inner(
         &self,
         require_atomic_bank: bool,
+        identify_pending_bank: bool,
     ) -> BufferedPacketsDecision {
         let state = self.shared_leader_state.load();
         if let Some(working_bank) = state.working_bank() {
@@ -65,6 +66,10 @@ impl DecisionMaker {
             } else {
                 BufferedPacketsDecision::Consume(working_bank.clone())
             }
+        } else if identify_pending_bank && !state.atomic_batches_enabled() {
+            // ForwardAndHold is otherwise normalized to Forward for BAM below, making this the
+            // unambiguous, snapshot-consistent signal for the transient replacement gap.
+            BufferedPacketsDecision::ForwardAndHold
         } else if let Some(leader_first_tick_height) = state.leader_first_tick_height() {
             let current_tick_height = state.tick_height();
             let ticks_until_leader = leader_first_tick_height.saturating_sub(current_tick_height);
@@ -72,7 +77,12 @@ impl DecisionMaker {
                 <= (FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET - 1) * DEFAULT_TICKS_PER_SLOT
             {
                 BufferedPacketsDecision::Hold
-            } else if ticks_until_leader < HOLD_TRANSACTIONS_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT {
+            } else if !identify_pending_bank
+                && ticks_until_leader < HOLD_TRANSACTIONS_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT
+            {
+                // BAM reserves ForwardAndHold for the replacement gap. In this wider leader-soon
+                // window, BAM falls through to Forward, preserving its behavior of returning
+                // batches. The nearer-leader Hold case above still applies to BAM.
                 BufferedPacketsDecision::ForwardAndHold
             } else {
                 BufferedPacketsDecision::Forward
@@ -126,6 +136,10 @@ mod tests {
             decision_maker.make_atomic_consume_or_forward_decision(),
             BufferedPacketsDecision::Forward
         );
+        assert_matches!(
+            decision_maker.make_consume_or_forward_decision_inner(false, true),
+            BufferedPacketsDecision::ForwardAndHold
+        );
 
         // Active bank.
         shared_leader_state.store(Arc::new(LeaderState::new(
@@ -148,6 +162,10 @@ mod tests {
         )));
         assert_matches!(
             decision_maker.make_consume_or_forward_decision(),
+            BufferedPacketsDecision::Consume(_)
+        );
+        assert_matches!(
+            decision_maker.make_consume_or_forward_decision_inner(false, true),
             BufferedPacketsDecision::Consume(_)
         );
         assert_matches!(
@@ -187,6 +205,10 @@ mod tests {
             assert!(
                 matches!(decision, BufferedPacketsDecision::ForwardAndHold),
                 "next_leader_slot_offset: {next_leader_slot_offset}",
+            );
+            assert_matches!(
+                decision_maker.make_consume_or_forward_decision_inner(false, true),
+                BufferedPacketsDecision::Forward
             );
         }
 
