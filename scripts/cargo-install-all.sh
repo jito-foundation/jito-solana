@@ -234,18 +234,13 @@ check_dcou() {
   # output after turning rustc into the nightly mode with RUSTC_BOOTSTRAP=1.
   # In this way, additional requirement of nightly rustc toolchian is avoided.
   # Note that `cargo tree` can't be used, because it doesn't support `--bin`.
-  if ! check_dcou false "${productionBuildArgs[@]}"; then
-     echo 'Production DCOU check failed!' >&2
-     exit 1
-  fi
+  check_dcou false "${productionBuildArgs[@]}" || exit 1
 
   # Likewise, make sure the dev tools really do activate dcou. Done before
   # building so that `--dcou-check-only` can verify both expectations up front.
   if [[ ${#dcouBinArgs[@]} -gt 0 ]]; then
-    if ! check_dcou true --manifest-path "dev-bins/Cargo.toml" "${dcouBinArgs[@]}"; then
-       echo 'Development-tool DCOU check failed!' >&2
-       exit 1
-    fi
+    check_dcou true --manifest-path "dev-bins/Cargo.toml" \
+      "${dcouBinArgs[@]}" || exit 1
   fi
 
   # Stop here if we only want to check the dcou feature activation.

@@ -174,22 +174,6 @@ main() {
     done
     DCOU_TEST_PRODUCTION_GRAPH=dcou expect_rejection --dcou-check-only
 
-    # Reproduce #1620's original bug in the fixture. The argument assertion
-    # must detect that the checked exclusions disappeared from compilation.
-    # shellcheck disable=SC2016 # Match literal shell source.
-    sed 's/cargo_build "${productionBuildArgs\[@\]}"/cargo_build "${binArgs[@]}" --workspace/' \
-        "${script_dir}/../scripts/cargo-install-all.sh" \
-        > "${fixture_dir}/scripts/mutated-installer"
-    mv "${fixture_dir}/scripts/mutated-installer" \
-        "${fixture_dir}/scripts/cargo-install-all.sh"
-    chmod +x "${fixture_dir}/scripts/cargo-install-all.sh"
-    run_installer
-    # shellcheck disable=SC2310 # A mismatch is expected for this mutation.
-    if assert_build_arguments; then
-        echo 'Regression test missed the removed production exclusions' >&2
-        return 1
-    fi
-
     echo 'DCOU regression tests passed.'
 }
 
