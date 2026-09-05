@@ -195,13 +195,31 @@ cargo_build() {
   "$cargo" $maybeRustVersion build $buildProfileArg "$@"
 }
 
-# This is called to detect both of unintended activation AND deactivation of
-# dcou, in order to make this rather fragile grep more resilient to bitrot...
+# Check the graph separately from the expected feature state: a failed Cargo
+# invocation or invalid JSON must never be interpreted as DCOU being disabled.
 check_dcou() {
-  RUSTC_BOOTSTRAP=1 \
-    cargo_build -Z unstable-options --unit-graph "$@" | \
-    jq -r 'any(.units[].features[]?; . == "dev-context-only-utils")' | \
-    grep -q -F "true"
+  local expected="$1"
+  local graph
+  shift
+
+  if ! graph=$(RUSTC_BOOTSTRAP=1 \
+    cargo_build -Z unstable-options --unit-graph "$@"); then
+    echo 'Failed to obtain DCOU unit graph.' >&2
+    return 1
+  fi
+
+  # Require one nonempty graph with feature arrays on every unit. Slurping
+  # also makes empty output and multiple JSON documents fail validation.
+  if ! jq -e -s --argjson expected "$expected" '
+    select(length == 1) | .[0]
+    | select(.units | type == "array" and length > 0)
+    | select(all(.units[];
+        .features | type == "array" and all(.[]; type == "string")))
+    | any(.units[].features[]; . == "dev-context-only-utils") == $expected
+  ' <<< "$graph" > /dev/null; then
+    echo "Invalid DCOU unit graph or unexpected feature activation (expected: $expected)." >&2
+    return 1
+  fi
 }
 
 # Some binaries (like the notable agave-ledger-tool) need to activate
@@ -212,23 +230,17 @@ check_dcou() {
 # unification happens even if cargo build is run only with `--bin` targets
 # which don't depend on dcou as part of dependencies at all.
 (
-  set -x
   # Make sure dcou is really disabled by peeking the (unstable) build plan
   # output after turning rustc into the nightly mode with RUSTC_BOOTSTRAP=1.
   # In this way, additional requirement of nightly rustc toolchian is avoided.
   # Note that `cargo tree` can't be used, because it doesn't support `--bin`.
-  if check_dcou "${productionBuildArgs[@]}"; then
-     echo 'dcou feature activation is incorrectly activated!'
-     exit 1
-  fi
+  check_dcou false "${productionBuildArgs[@]}" || exit 1
 
   # Likewise, make sure the dev tools really do activate dcou. Done before
-  # building so that `--dcou-check` can verify both expectations up front.
+  # building so that `--dcou-check-only` can verify both expectations up front.
   if [[ ${#dcouBinArgs[@]} -gt 0 ]]; then
-    if ! check_dcou --manifest-path "dev-bins/Cargo.toml" "${dcouBinArgs[@]}"; then
-       echo 'dcou feature activation is incorrectly deactivated!'
-       exit 1
-    fi
+    check_dcou true --manifest-path "dev-bins/Cargo.toml" \
+      "${dcouBinArgs[@]}" || exit 1
   fi
 
   # Stop here if we only want to check the dcou feature activation.
@@ -237,6 +249,7 @@ check_dcou() {
     exit 0
   fi
 
+  set -x
   # Build our production binaries without dcou.
   if [[ ${#binArgs[@]} -gt 0 ]]; then
     cargo_build "${productionBuildArgs[@]}"
