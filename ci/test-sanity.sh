@@ -91,7 +91,7 @@ EOF
   fi
 )
 
-./ci/test-dcou.sh
+python3 ci/test-dcou.py
 ./scripts/cargo-install-all.sh --dcou-check-only
 
 echo --- ok
