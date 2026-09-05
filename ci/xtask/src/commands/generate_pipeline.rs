@@ -84,16 +84,11 @@ fn generate_private_pipeline() -> Result<buildkite::Pipeline> {
     pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
 
     pipeline.add_step(default_checks_step());
-
-    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
-
-    pipeline.add_step(default_stable_step(3));
     pipeline.add_step(default_local_cluster_step(10));
+    pipeline.add_step(default_stable_step(3));
     pipeline.add_step(default_docs_check_step());
     pipeline.add_step(default_localnet_step());
     pipeline.add_step(default_xdp_test_step());
-
-    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
 
     pipeline.add_step(default_stable_sbf_step());
     pipeline.add_step(default_shuttle_step());
@@ -222,6 +217,9 @@ impl PullRequestPipelineFlags {
                 || rust_changed
                 || changed_files.iter().any(|file| {
                     file.ends_with("ci/stable/run-local-cluster-partially.sh")
+                        || file.ends_with("ci/stable/partition_local_cluster.py")
+                        || file.ends_with("ci/stable/test_partition_local_cluster.py")
+                        || file.ends_with("ci/stable/local-cluster-durations.json")
                         || file.ends_with("ci/stable/common.sh")
                         || file.ends_with("ci/common/shared-functions.sh")
                 }),
@@ -282,7 +280,10 @@ async fn generate_pull_request_pipeline(
 ) -> Result<buildkite::Pipeline> {
     let changed_files = github::get_changed_files(repo, pr_number).await?;
     let flags = PullRequestPipelineFlags::from_changed_files(&changed_files);
+    Ok(pull_request_pipeline(flags))
+}
 
+fn pull_request_pipeline(flags: PullRequestPipelineFlags) -> buildkite::Pipeline {
     let mut pipeline = buildkite::Pipeline::new();
 
     pipeline.add_step(default_sanity_step());
@@ -296,6 +297,16 @@ async fn generate_pull_request_pipeline(
     if flags.checks {
         pipeline.add_step(default_checks_step());
     }
+    // Start long tests early; these jobs do not consume each other's outputs.
+    if flags.local_cluster {
+        pipeline.add_step(default_local_cluster_step(10));
+    }
+    if flags.coverage {
+        pipeline.add_step(default_coverage_step(3));
+    }
+    if flags.stable {
+        pipeline.add_step(default_stable_step(3));
+    }
     if flags.feature_check {
         pipeline.add_step(default_feature_check_step(5));
     }
@@ -304,15 +315,6 @@ async fn generate_pull_request_pipeline(
     }
     if flags.frozen_abi {
         pipeline.add_step(default_frozen_abi_step());
-    }
-
-    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
-
-    if flags.stable {
-        pipeline.add_step(default_stable_step(3));
-    }
-    if flags.local_cluster {
-        pipeline.add_step(default_local_cluster_step(10));
     }
     if flags.docs {
         pipeline.add_step(default_docs_check_step());
@@ -324,25 +326,19 @@ async fn generate_pull_request_pipeline(
         pipeline.add_step(default_xdp_test_step());
     }
 
-    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
-
     if flags.stable_sbf {
         pipeline.add_step(default_stable_sbf_step());
     }
     if flags.shuttle {
         pipeline.add_step(default_shuttle_step());
     }
-    if flags.coverage {
-        pipeline.add_step(default_coverage_step(3));
-    }
-
     if flags.checks {
         pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
 
         pipeline.add_step(default_audit_step());
     }
 
-    Ok(pipeline)
+    pipeline
 }
 
 fn generate_full_pipeline() -> Result<buildkite::Pipeline> {
@@ -354,24 +350,20 @@ fn generate_full_pipeline() -> Result<buildkite::Pipeline> {
 
     pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
 
+    // Start long tests early; these jobs do not consume each other's outputs.
     pipeline.add_step(default_checks_step());
+    pipeline.add_step(default_local_cluster_step(10));
+    pipeline.add_step(default_coverage_step(3));
+    pipeline.add_step(default_stable_step(3));
     pipeline.add_step(default_feature_check_step(5));
     pipeline.add_step(default_miri_step());
     pipeline.add_step(default_frozen_abi_step());
-
-    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
-
-    pipeline.add_step(default_stable_step(3));
-    pipeline.add_step(default_local_cluster_step(10));
     pipeline.add_step(default_docs_check_step());
     pipeline.add_step(default_localnet_step());
     pipeline.add_step(default_xdp_test_step());
 
-    pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
-
     pipeline.add_step(default_stable_sbf_step());
     pipeline.add_step(default_shuttle_step());
-    pipeline.add_step(default_coverage_step(3));
     // Jito does not publish workspace crates to crates.io.
     // pipeline.add_step(default_crate_publish_test_step());
 
@@ -691,6 +683,104 @@ mod tests {
     fn flags(files: &[&str]) -> PullRequestPipelineFlags {
         let owned: Vec<String> = files.iter().map(|s| s.to_string()).collect();
         PullRequestPipelineFlags::from_changed_files(&owned)
+    }
+
+    fn phases(pipeline: &buildkite::Pipeline) -> Vec<Vec<&str>> {
+        pipeline
+            .steps
+            .split(|step| matches!(step, buildkite::Step::Wait(_)))
+            .map(|steps| {
+                steps
+                    .iter()
+                    .map(|step| match step {
+                        buildkite::Step::Command(command) => command.name.as_str(),
+                        buildkite::Step::Group(group) => group.name.as_str(),
+                        buildkite::Step::Trigger(trigger) => trigger.name.as_str(),
+                        buildkite::Step::Wait(_) => unreachable!(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_full_pipeline_runs_independent_work_in_one_phase() {
+        let pipeline = generate_full_pipeline().unwrap();
+        let phases = phases(&pipeline);
+        assert_eq!(phases.len(), 4);
+        assert_eq!(
+            phases[0],
+            ["sanity", "channel-info-divergence", "shellcheck"]
+        );
+        assert_eq!(
+            phases[1],
+            [
+                "check",
+                "local-cluster",
+                "coverage",
+                "stable",
+                "feature-checks",
+                "miri",
+                "frozen-abi",
+                "doctest",
+                "localnet",
+                "xdp-test",
+                "stable-sbf",
+                "shuttle",
+            ]
+        );
+        assert_eq!(phases[2], ["cargo audit"]);
+        assert_eq!(phases[3], ["Trigger Build on agave-secondary"]);
+    }
+
+    #[test]
+    fn test_private_pipeline_runs_tests_after_sanity() {
+        let pipeline = generate_private_pipeline().unwrap();
+        let phases = phases(&pipeline);
+        assert_eq!(phases.len(), 3);
+        assert_eq!(
+            phases[0],
+            ["sanity", "channel-info-divergence", "shellcheck"]
+        );
+        assert_eq!(
+            phases[1],
+            [
+                "check",
+                "local-cluster",
+                "stable",
+                "doctest",
+                "localnet",
+                "xdp-test",
+                "stable-sbf",
+                "shuttle",
+            ]
+        );
+        assert_eq!(phases[2], ["cargo audit"]);
+    }
+
+    #[test]
+    fn test_pull_request_preserves_selected_work_and_final_audit() {
+        let full = generate_full_pipeline().unwrap();
+        let pr = pull_request_pipeline(flags(&["ci/docker/Dockerfile", "ci/test-sanity.sh"]));
+        assert_eq!(phases(&pr), phases(&full)[..3]);
+
+        let readme = pull_request_pipeline(flags(&["README.md"]));
+        assert_eq!(
+            phases(&readme),
+            [vec!["sanity", "channel-info-divergence"], vec![]]
+        );
+    }
+
+    #[test]
+    fn test_partition_changes_run_local_cluster() {
+        for file in [
+            "ci/stable/partition_local_cluster.py",
+            "ci/stable/test_partition_local_cluster.py",
+            "ci/stable/local-cluster-durations.json",
+        ] {
+            let pipeline = pull_request_pipeline(flags(&[file]));
+            assert!(phases(&pipeline)[1].contains(&"local-cluster"), "{file}");
+        }
     }
 
     #[test]
