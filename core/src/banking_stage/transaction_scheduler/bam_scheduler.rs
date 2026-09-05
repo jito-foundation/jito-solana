@@ -27,7 +27,8 @@ use {
     crossbeam_channel::{Receiver, Sender},
     histogram::Histogram,
     jito_protos::proto::bam_types::{
-        SchedulingError, atomic_txn_batch_result, not_committed::Reason,
+        AtomicTxnBatchResult, Committed, NotCommitted, SchedulingError, atomic_txn_batch_result,
+        not_committed::Reason,
     },
     prio_graph::{AccessKind, GraphNode, PrioGraph},
     smallvec::SmallVec,
@@ -36,10 +37,9 @@ use {
     solana_nohash_hasher::IntMap,
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
-    solana_runtime::bank_forks::BankForks,
+    solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-    solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction_error::TransactionError,
     std::{
         borrow::Borrow,
@@ -55,14 +55,6 @@ type SchedulerPrioGraph = PrioGraph<
     TransactionPriorityId,
     fn(&TransactionPriorityId, &GraphNode<TransactionPriorityId>) -> TransactionPriorityId,
 >;
-
-#[inline(always)]
-fn passthrough_priority(
-    id: &TransactionPriorityId,
-    _graph_node: &GraphNode<TransactionPriorityId>,
-) -> TransactionPriorityId {
-    *id
-}
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
 
@@ -108,16 +100,13 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     admission_us: Histogram,
 }
 
-// A structure to hold information about inflight batches.
-// A batch can either be one 'revert_on_error' batch or multiple
-// 'non-revert_on_error' batches that are scheduled together.
+// Each work item contains one BAM batch, which may contain multiple transactions.
 struct InflightBatchInfo {
-    pub schedule_time: Instant,
-    // SmallVec 1: each scheduled work item typically corresponds to one batch id.
-    pub batch_priority_ids: SmallVec<[(TransactionPriorityId, u32 /* seq_id */); 1]>,
-    pub slot: Slot,
+    schedule_time: Instant,
+    priority_id: TransactionPriorityId,
+    seq_id: u32,
     /// Estimate the scheduler reserved for this work, held until completion.
-    pub reserved_cost: u64,
+    reserved_cost: u64,
 }
 
 impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
@@ -134,7 +123,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             response_sender,
             next_batch_id: 0,
             inflight_batch_info: IntMap::default(),
-            prio_graph: PrioGraph::new(passthrough_priority),
+            prio_graph: PrioGraph::new(|id, _| *id),
             insertion_to_prio_graph_time: IntMap::default(),
             time_in_priograph_us: Histogram::new(),
             time_in_worker_us: Histogram::new(),
@@ -153,30 +142,36 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         }
     }
 
-    fn get_transactions_account_access<'a>(
-        transactions: impl Iterator<Item = &'a (impl SVMMessage + 'a)> + 'a,
-    ) -> impl Iterator<Item = (Pubkey, AccessKind)> + 'a {
-        transactions.flat_map(|txn| {
-            txn.account_keys().iter().enumerate().map(|(index, key)| {
-                if txn.is_writable(index) {
-                    (*key, AccessKind::Write)
-                } else {
-                    (*key, AccessKind::Read)
-                }
-            })
-        })
+    #[inline]
+    fn check_transactions(
+        &self,
+        bank: &Bank,
+        txns: &[impl Borrow<Tx>],
+    ) -> Option<(usize, TransactionError)> {
+        if !self.extra_checks_enabled {
+            return None;
+        }
+        let lock_results = SmallVec::<[_; MAX_PACKETS_PER_BUNDLE]>::from_elem(Ok(()), txns.len());
+        bank.check_transactions::<Tx>(
+            txns,
+            &lock_results,
+            MAX_PROCESSING_AGE,
+            true,
+            &mut TransactionErrorMetrics::default(),
+        )
+        .into_iter()
+        .enumerate()
+        .find_map(|(i, res)| res.err().map(|err| (i, err)))
     }
 
     /// Insert all incoming transactions into the `PrioGraph`.
     fn pull_into_prio_graph<S: StateContainer<Tx>>(&mut self, container: &mut S) {
         let Some(slot) = self.slot else {
-            warn!("Slot is not set, cannot pull transactions into prio-graph");
             return;
         };
 
         let working_bank = self.bank_forks.read().unwrap().working_bank();
         let atomic_batches_enabled = self.shared_leader_state.load().atomic_batches_enabled();
-        self.deferred_atomic_batches.clear();
 
         while let Some(next_batch_id) = container.pop() {
             let Some((batch_ids, revert_on_error, max_schedule_slot, seq_id)) =
@@ -204,43 +199,30 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
                 .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
-            if self.extra_checks_enabled {
-                let lock_results: SmallVec<
-                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
-                > = SmallVec::from_elem(Ok(()), txns.len());
-                let check_result = working_bank.check_transactions::<Tx>(
-                    &txns,
-                    &lock_results,
-                    MAX_PROCESSING_AGE,
-                    true,
-                    &mut TransactionErrorMetrics::default(),
-                );
-                if let Some((index, err)) = check_result
-                    .iter()
-                    .enumerate()
-                    .find_map(|(i, res)| res.as_ref().err().cloned().map(|err| (i, err)))
-                {
-                    drop(txns);
-                    container.remove_by_id(next_batch_id.id);
+            if let Some((index, err)) = self.check_transactions(&working_bank, &txns) {
+                drop(txns);
+                container.remove_by_id(next_batch_id.id);
 
-                    let result = atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Self::convert_reason_to_proto(
-                                index,
-                                NotCommittedReason::Error(err),
-                            )),
-                        },
-                    );
-                    self.send_back_result(seq_id, result);
-                    continue;
-                };
+                self.send_back_result(
+                    seq_id,
+                    Self::not_committed_result(index, NotCommittedReason::Error(err)),
+                );
+                continue;
             }
 
             self.insertion_to_prio_graph_time
                 .insert(seq_id, Instant::now());
             self.prio_graph.insert_transaction(
                 next_batch_id,
-                Self::get_transactions_account_access(txns.into_iter()),
+                txns.into_iter().flat_map(|txn| {
+                    txn.account_keys().iter().enumerate().map(|(index, key)| {
+                        if txn.is_writable(index) {
+                            (*key, AccessKind::Write)
+                        } else {
+                            (*key, AccessKind::Read)
+                        }
+                    })
+                }),
             );
         }
 
@@ -254,7 +236,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         container: &mut impl StateContainer<Tx>,
     ) -> Result<usize, SchedulerError> {
         let Some(slot) = self.slot else {
-            warn!("Slot is not set, cannot schedule transactions");
             return Ok(0);
         };
 
@@ -313,56 +294,43 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 continue;
             }
 
-            // Filter on check_transactions
-            if self.extra_checks_enabled {
-                let mut sanitized_txs: SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]> = SmallVec::new();
-                let mut lock_results: SmallVec<
-                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
-                > = SmallVec::new();
-                for txn_id in batch_ids.iter() {
-                    if let Some(txn) = container.get_transaction(*txn_id) {
-                        sanitized_txs.push(txn.borrow());
-                        lock_results.push(Ok(()));
-                    }
-                }
-                let check_result = admission_bank.check_transactions::<Tx>(
-                    &sanitized_txs,
-                    &lock_results,
-                    MAX_PROCESSING_AGE,
-                    true,
-                    &mut TransactionErrorMetrics::default(),
-                );
-                if let Some((index, err)) = check_result
-                    .iter()
-                    .enumerate()
-                    .find_map(|(i, res)| res.as_ref().err().cloned().map(|err| (i, err)))
-                {
-                    drop(sanitized_txs);
-                    container.remove_by_id(id.id);
-                    self.prio_graph.unblock(&id);
-
-                    let result = atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Self::convert_reason_to_proto(
-                                index,
-                                NotCommittedReason::Error(err),
-                            )),
-                        },
-                    );
-                    self.send_back_result(seq_id, result);
-                    continue;
-                };
+            let mut work = self
+                .reusable_consume_work
+                .pop()
+                .unwrap_or_else(|| ConsumeWork {
+                    batch_id: TransactionBatchId::new(0),
+                    ids: Vec::with_capacity(1),
+                    transactions: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
+                    max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
+                    revert_on_error: false,
+                    respond_with_extra_info: true,
+                    target_slot: 0,
+                    max_schedule_slot: None,
+                    admission: None,
+                });
+            work.ids.extend(batch_ids);
+            for txn_id in &work.ids {
+                let (transaction, max_age) = container
+                    .get_mut_transaction_state(*txn_id)
+                    .unwrap()
+                    .take_transaction_for_scheduling();
+                work.transactions.push(transaction);
+                work.max_ages.push(max_age);
             }
 
-            let mut work = self.get_or_create_work_object();
-            Self::populate_consume_work(
-                &mut work,
-                TransactionBatchId::new(self.next_batch_id),
-                &[id],
-                revert_on_error,
-                container,
-                slot,
-            );
+            // Validate the work directly, before reserving its cost.
+            if let Some((index, err)) = self.check_transactions(admission_bank, &work.transactions)
+            {
+                self.recycle_work_object(work);
+                container.remove_by_id(id.id);
+                self.prio_graph.unblock(&id);
+
+                self.send_back_result(
+                    seq_id,
+                    Self::not_committed_result(index, NotCommittedReason::Error(err)),
+                );
+                continue;
+            }
 
             // Admit cost here, in pop order, so eight workers racing for the cost tracker cannot
             // reorder it.
@@ -398,62 +366,31 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 self.pending_admission = Some((id, self.inflight_reserved_cost));
                 return Ok(num_scheduled);
             };
-            work.batch_id = self.get_next_schedule_id();
+            let batch_id = TransactionBatchId::new(self.next_batch_id);
+            self.next_batch_id += 1;
+            work.batch_id = batch_id;
+            work.revert_on_error = revert_on_error;
+            work.target_slot = slot;
+            work.max_schedule_slot = Some(slot);
             work.admission = Some((Arc::clone(admission_bank), results));
             num_scheduled += work.ids.len();
-            self.send_to_worker(SmallVec::from([(id, seq_id)]), work, slot, reserved_cost)?;
-        }
-    }
-
-    fn send_to_worker(
-        &mut self,
-        // SmallVec 1: scheduler currently sends a single batch id per work item.
-        priority_ids: SmallVec<[(TransactionPriorityId, u32); 1]>,
-        work: ConsumeWork<Tx>,
-        slot: Slot,
-        reserved_cost: u64,
-    ) -> Result<(), SchedulerError> {
-        let batch_id = work.batch_id;
-        if let Err(err) = self.consume_work_sender.send(work) {
-            self.recycle_work_object(err.0);
-            return Err(SchedulerError::DisconnectedSendChannel(
-                "BAM worker disconnected",
-            ));
-        }
-        self.inflight_reserved_cost += reserved_cost;
-        self.inflight_batch_info.insert(
-            batch_id,
-            InflightBatchInfo {
-                schedule_time: Instant::now(),
-                batch_priority_ids: priority_ids,
-                slot,
-                reserved_cost,
-            },
-        );
-        Ok(())
-    }
-
-    fn get_next_schedule_id(&mut self) -> TransactionBatchId {
-        let result = TransactionBatchId::new(self.next_batch_id);
-        self.next_batch_id += 1;
-        result
-    }
-
-    fn get_or_create_work_object(&mut self) -> ConsumeWork<Tx> {
-        self.reusable_consume_work.pop().unwrap_or_else(|| {
-            // These values will be overwritten by `populate_consume_work`
-            ConsumeWork {
-                batch_id: TransactionBatchId::new(0),
-                ids: Vec::with_capacity(1),
-                transactions: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
-                max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
-                revert_on_error: false,
-                respond_with_extra_info: false,
-                target_slot: 0,
-                max_schedule_slot: None,
-                admission: None,
+            if let Err(err) = self.consume_work_sender.send(work) {
+                self.recycle_work_object(err.0);
+                return Err(SchedulerError::DisconnectedSendChannel(
+                    "BAM worker disconnected",
+                ));
             }
-        })
+            self.inflight_reserved_cost += reserved_cost;
+            self.inflight_batch_info.insert(
+                batch_id,
+                InflightBatchInfo {
+                    schedule_time: Instant::now(),
+                    priority_id: id,
+                    seq_id,
+                    reserved_cost,
+                },
+            );
+        }
     }
 
     fn recycle_work_object(&mut self, mut work: ConsumeWork<Tx>) {
@@ -471,65 +408,22 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         self.reusable_consume_work.push(work);
     }
 
-    /// Populates a reusable `ConsumeWork` from scheduled `priority_ids` and stamps
-    /// scheduling metadata for worker execution.
-    fn populate_consume_work(
-        output: &mut ConsumeWork<Tx>,
-        batch_id: TransactionBatchId,
-        priority_ids: &[TransactionPriorityId],
-        revert_on_error: bool,
-        container: &mut impl StateContainer<Tx>,
-        slot: Slot,
-    ) {
-        output.ids.clear();
-        output.ids.extend(
-            priority_ids
-                .iter()
-                .filter_map(|priority_id| container.get_batch(priority_id.id))
-                .flat_map(|(batch_ids, _, _, _)| batch_ids.into_iter())
-                .copied(),
-        );
-
-        output.transactions.clear();
-        output.max_ages.clear();
-        for (txn, max_age) in output.ids.iter().filter_map(|txn_id| {
-            let result = container.get_mut_transaction_state(*txn_id)?;
-            let result = result.take_transaction_for_scheduling();
-            Some(result)
-        }) {
-            output.transactions.push(txn);
-            output.max_ages.push(max_age);
-        }
-
-        output.batch_id = batch_id;
-        output.revert_on_error = revert_on_error;
-        output.target_slot = slot;
-        output.max_schedule_slot = Some(slot);
-        output.respond_with_extra_info = true;
-    }
-
     fn send_no_leader_slot_bundle_result(&self, seq_id: u32) {
-        let _ = self
-            .response_sender
-            .try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                jito_protos::proto::bam_types::AtomicTxnBatchResult {
-                    seq_id,
-                    result: Some(atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Reason::SchedulingError(
-                                SchedulingError::OutsideLeaderSlot as i32,
-                            )),
-                        },
-                    )),
-                },
-            ));
+        self.send_back_result(
+            seq_id,
+            atomic_txn_batch_result::Result::NotCommitted(NotCommitted {
+                reason: Some(Reason::SchedulingError(
+                    SchedulingError::OutsideLeaderSlot as i32,
+                )),
+            }),
+        );
     }
 
     fn send_back_result(&self, seq_id: u32, result: atomic_txn_batch_result::Result) {
         let _ = self
             .response_sender
             .try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                jito_protos::proto::bam_types::AtomicTxnBatchResult {
+                AtomicTxnBatchResult {
                     seq_id,
                     result: Some(result),
                 },
@@ -537,8 +431,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     /// Generates a `bundle_result::Result` based on the processed results for 'revert_on_error' batches.
-    fn generate_revert_on_error_bundle_result<I: IntoIterator<Item = TransactionResult>>(
-        processed_results: I,
+    fn generate_revert_on_error_bundle_result(
+        processed_results: impl IntoIterator<Item = TransactionResult>,
     ) -> atomic_txn_batch_result::Result {
         let mut saw_commit_cancelled = false;
         let processed_results = processed_results.into_iter();
@@ -547,87 +441,44 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             match result {
                 TransactionResult::Committed(processed) => transaction_results.push(processed),
                 // TransactionError::CommitCancelled indicates another transaction in this bundle errored out.
-                TransactionResult::NotCommitted(NotCommittedReason::Error(err))
-                    if err != TransactionError::CommitCancelled =>
-                {
-                    return atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Self::convert_reason_to_proto(
-                                i,
-                                NotCommittedReason::Error(err),
-                            )),
-                        },
-                    );
-                }
-                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout) => {
-                    return atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Self::convert_reason_to_proto(
-                                i,
-                                NotCommittedReason::PohTimeout,
-                            )),
-                        },
-                    );
-                }
-                TransactionResult::NotCommitted(NotCommittedReason::Error(_)) => {
+                TransactionResult::NotCommitted(NotCommittedReason::Error(
+                    TransactionError::CommitCancelled,
+                )) => {
                     saw_commit_cancelled = true;
+                }
+                TransactionResult::NotCommitted(reason) => {
+                    return Self::not_committed_result(i, reason);
                 }
             }
         }
 
         if saw_commit_cancelled {
-            return atomic_txn_batch_result::Result::NotCommitted(
-                jito_protos::proto::bam_types::NotCommitted {
-                    reason: Some(Self::convert_reason_to_proto(
-                        0,
-                        NotCommittedReason::PohTimeout,
-                    )),
-                },
-            );
+            return Self::not_committed_result(0, NotCommittedReason::PohTimeout);
         }
 
-        atomic_txn_batch_result::Result::Committed(jito_protos::proto::bam_types::Committed {
+        atomic_txn_batch_result::Result::Committed(Committed {
             transaction_results,
         })
     }
 
-    /// Generates a `bundle_result::Result` based on the processed result of a single transaction.
-    fn generate_bundle_result(processed: TransactionResult) -> atomic_txn_batch_result::Result {
-        match processed {
-            TransactionResult::Committed(result) => atomic_txn_batch_result::Result::Committed(
-                jito_protos::proto::bam_types::Committed {
-                    transaction_results: vec![result],
-                },
-            ),
-            TransactionResult::NotCommitted(reason) => {
-                atomic_txn_batch_result::Result::NotCommitted(
-                    jito_protos::proto::bam_types::NotCommitted {
-                        reason: Some(Self::convert_reason_to_proto(0, reason)),
-                    },
-                )
-            }
-        }
-    }
-
-    fn convert_reason_to_proto(
+    fn not_committed_result(
         index: usize,
         reason: NotCommittedReason,
-    ) -> jito_protos::proto::bam_types::not_committed::Reason {
-        match reason {
+    ) -> atomic_txn_batch_result::Result {
+        let reason = match reason {
             NotCommittedReason::PohTimeout => {
-                jito_protos::proto::bam_types::not_committed::Reason::SchedulingError(
-                    SchedulingError::PohTimeout as i32,
-                )
+                Reason::SchedulingError(SchedulingError::PohTimeout as i32)
             }
             NotCommittedReason::Error(err) => {
-                jito_protos::proto::bam_types::not_committed::Reason::TransactionError(
-                    jito_protos::proto::bam_types::TransactionError {
-                        index: index as u32,
-                        reason: convert_txn_error_to_proto(err) as i32,
-                    },
-                )
+                Reason::TransactionError(jito_protos::proto::bam_types::TransactionError {
+                    index: index as u32,
+                    reason: convert_txn_error_to_proto(err) as i32,
+                })
             }
-        }
+        };
+        atomic_txn_batch_result::Result::NotCommitted(NotCommitted {
+            reason: Some(reason),
+        })
     }
 
     fn maybe_bank_boundary_actions(
@@ -676,11 +527,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         }
         // Unblock all transactions blocked by inflight batches
         // and then drain the prio-graph
-        for inflight_info in self.inflight_batch_info.values() {
-            for (priority_id, _) in &inflight_info.batch_priority_ids {
-                if prev_slot == Some(inflight_info.slot) {
-                    self.prio_graph.unblock(priority_id);
-                }
+        if prev_slot == self.admission_bank.map(|(_, slot)| slot) {
+            for inflight_info in self.inflight_batch_info.values() {
+                self.prio_graph.unblock(&inflight_info.priority_id);
             }
         }
         let now = Instant::now();
@@ -711,36 +560,13 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     fn report_histogram_metrics(&mut self) {
+        let percentile = |p| self.time_in_priograph_us.percentile(p).unwrap_or_default();
         datapoint_info!(
             "bam_scheduler_bank_boundary-metrics",
-            (
-                "time_in_priograph_us_p50",
-                self.time_in_priograph_us
-                    .percentile(50.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_in_priograph_us_p75",
-                self.time_in_priograph_us
-                    .percentile(75.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_in_priograph_us_p90",
-                self.time_in_priograph_us
-                    .percentile(90.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_in_priograph_us_p99",
-                self.time_in_priograph_us
-                    .percentile(99.0)
-                    .unwrap_or_default(),
-                i64
-            ),
+            ("time_in_priograph_us_p50", percentile(50.0), i64),
+            ("time_in_priograph_us_p75", percentile(75.0), i64),
+            ("time_in_priograph_us_p90", percentile(90.0), i64),
+            ("time_in_priograph_us_p99", percentile(99.0), i64),
             (
                 "time_in_priograph_us_max",
                 self.time_in_priograph_us.maximum().unwrap_or_default(),
@@ -749,28 +575,13 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         );
         self.time_in_priograph_us.clear();
 
+        let percentile = |p| self.time_in_worker_us.percentile(p).unwrap_or_default();
         datapoint_info!(
             "bam_scheduler_worker_time_metrics",
-            (
-                "time_in_worker_us_p50",
-                self.time_in_worker_us.percentile(50.0).unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_in_worker_us_p75",
-                self.time_in_worker_us.percentile(75.0).unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_in_worker_us_p90",
-                self.time_in_worker_us.percentile(90.0).unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_in_worker_us_p99",
-                self.time_in_worker_us.percentile(99.0).unwrap_or_default(),
-                i64
-            ),
+            ("time_in_worker_us_p50", percentile(50.0), i64),
+            ("time_in_worker_us_p75", percentile(75.0), i64),
+            ("time_in_worker_us_p90", percentile(90.0), i64),
+            ("time_in_worker_us_p99", percentile(99.0), i64),
             (
                 "time_in_worker_us_max",
                 self.time_in_worker_us.maximum().unwrap_or_default(),
@@ -779,36 +590,17 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         );
         self.time_in_worker_us.clear();
 
+        let percentile = |p| {
+            self.time_between_schedule_us
+                .percentile(p)
+                .unwrap_or_default()
+        };
         datapoint_info!(
             "bam_scheduler_time_between_schedules_metrics",
-            (
-                "time_between_schedule_us_p50",
-                self.time_between_schedule_us
-                    .percentile(50.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_between_schedule_us_p75",
-                self.time_between_schedule_us
-                    .percentile(75.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_between_schedule_us_p90",
-                self.time_between_schedule_us
-                    .percentile(90.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "time_between_schedule_us_p99",
-                self.time_between_schedule_us
-                    .percentile(99.0)
-                    .unwrap_or_default(),
-                i64
-            ),
+            ("time_between_schedule_us_p50", percentile(50.0), i64),
+            ("time_between_schedule_us_p75", percentile(75.0), i64),
+            ("time_between_schedule_us_p90", percentile(90.0), i64),
+            ("time_between_schedule_us_p99", percentile(99.0), i64),
             (
                 "time_between_schedule_us_max",
                 self.time_between_schedule_us.maximum().unwrap_or_default(),
@@ -903,48 +695,34 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 now.duration_since(inflight_batch_info.schedule_time)
                     .as_micros() as u64,
             );
-            let mut processed_results = extra_info.map(|info| info.processed_results.into_iter());
-
-            // Should never not be 1; but just in case
-            let len = if revert_on_error {
-                1
-            } else {
-                inflight_batch_info.batch_priority_ids.len()
-            };
-            for (i, (priority_id, seq_id)) in inflight_batch_info
-                .batch_priority_ids
-                .iter()
-                .copied()
-                .enumerate()
-                .take(len)
-            {
-                // If we got extra info, we can send back the result
-                if revert_on_error {
-                    if let Some(processed_results) = processed_results.take() {
-                        let bundle_result =
-                            Self::generate_revert_on_error_bundle_result(processed_results);
-                        self.send_back_result(seq_id, bundle_result);
+            if let Some(extra_info) = extra_info {
+                let mut processed_results = extra_info.into_iter();
+                let bundle_result = if revert_on_error {
+                    Self::generate_revert_on_error_bundle_result(processed_results)
+                } else {
+                    match processed_results.next() {
+                        Some(TransactionResult::Committed(result)) => {
+                            atomic_txn_batch_result::Result::Committed(Committed {
+                                transaction_results: vec![result],
+                            })
+                        }
+                        Some(TransactionResult::NotCommitted(reason)) => {
+                            Self::not_committed_result(0, reason)
+                        }
+                        None => {
+                            warn!("Processed results for batch {batch_id} are missing for index 0");
+                            continue;
+                        }
                     }
-                } else if let Some(processed_results) = processed_results.as_mut() {
-                    let Some(txn_result) = processed_results.next() else {
-                        warn!(
-                            "Processed results for batch {} are missing for index {i}",
-                            batch_id.0
-                        );
-                        continue;
-                    };
-                    let bundle_result = Self::generate_bundle_result(txn_result);
-                    self.send_back_result(seq_id, bundle_result);
-                }
-
-                // If in the same slot, unblock the transaction
-                if Some(inflight_batch_info.slot) == self.slot {
-                    self.prio_graph.unblock(&priority_id);
-                }
-
-                // Remove the transaction from the container
-                container.remove_by_id(priority_id.id);
+                };
+                self.send_back_result(inflight_batch_info.seq_id, bundle_result);
             }
+
+            // The admission bank stays unchanged until every inflight batch returns.
+            if self.admission_bank.map(|(_, slot)| slot) == self.slot {
+                self.prio_graph.unblock(&inflight_batch_info.priority_id);
+            }
+            container.remove_by_id(inflight_batch_info.priority_id.id);
         }
 
         Ok((num_transactions, 0))
@@ -965,12 +743,11 @@ mod tests {
                 decision_maker::BufferedPacketsDecision,
                 qos_service::QosService,
                 scheduler_messages::{
-                    ConsumeWork, FinishedConsumeWork, FinishedConsumeWorkExtraInfo, MaxAge,
-                    NotCommittedReason, TransactionResult,
+                    ConsumeWork, FinishedConsumeWork, MaxAge, NotCommittedReason, TransactionResult,
                 },
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
-                    bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE},
+                    bam_scheduler::BamScheduler,
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -986,13 +763,11 @@ mod tests {
             },
             not_committed::Reason,
         },
-        smallvec::SmallVec,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_cost_model::cost_tracker::{CostTrackerError, CostTrackerLimits},
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
-        solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::Message,
         solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
         solana_pubkey::Pubkey,
@@ -1002,28 +777,19 @@ mod tests {
         solana_system_interface::instruction::{transfer, transfer_many},
         solana_transaction::{Transaction, sanitized::SanitizedTransaction},
         solana_transaction_error::TransactionError,
-        std::{
-            borrow::Borrow,
-            sync::{Arc, RwLock},
-        },
+        std::sync::{Arc, RwLock},
     };
 
     type Tx = RuntimeTransaction<SanitizedTransaction>;
 
     struct TestScheduler {
-        scheduler: BamScheduler<RuntimeTransaction<SanitizedTransaction>>,
-        consume_work_receivers:
-            Vec<crossbeam_channel::Receiver<ConsumeWork<RuntimeTransaction<SanitizedTransaction>>>>,
-        finished_consume_work_sender: crossbeam_channel::Sender<
-            FinishedConsumeWork<RuntimeTransaction<SanitizedTransaction>>,
-        >,
+        scheduler: BamScheduler<Tx>,
+        consume_work_receiver: crossbeam_channel::Receiver<ConsumeWork<Tx>>,
+        finished_consume_work_sender: crossbeam_channel::Sender<FinishedConsumeWork<Tx>>,
         response_receiver: tokio::sync::mpsc::Receiver<BamOutboundMessage>,
     }
 
-    fn create_test_scheduler(
-        num_threads: usize,
-        bank_forks: &Arc<RwLock<BankForks>>,
-    ) -> TestScheduler {
+    fn create_test_scheduler(bank_forks: &Arc<RwLock<BankForks>>) -> TestScheduler {
         let (consume_work_sender, consume_work_receiver) = unbounded();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
         let (response_sender, response_receiver) = tokio::sync::mpsc::channel(100);
@@ -1036,23 +802,112 @@ mod tests {
         );
         TestScheduler {
             scheduler,
-            consume_work_receivers: (0..num_threads)
-                .map(|_| consume_work_receiver.clone())
-                .collect(),
+            consume_work_receiver,
             finished_consume_work_sender,
             response_receiver,
         }
     }
 
+    /// Makes `bank` the bank workers would execute on, as `PohRecorder` does for the leader.
+    fn set_leader_bank(shared_leader_state: &mut SharedLeaderState, bank: &Arc<Bank>) {
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+    }
+
+    fn set_block_cost_limit(bank: &Bank, block_cost: u64) {
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(CostTrackerLimits::new(u64::MAX, block_cost, u64::MAX));
+    }
+
+    /// Estimated cost of one `prioritized_tranfers` transaction; every test transaction has the
+    /// same shape, so this is the reservation each batch makes.
+    fn estimated_cost(bank: &Bank) -> u64 {
+        let tx = prioritized_tranfers(&Keypair::new(), vec![Pubkey::new_unique()], 1000, 0);
+        QosService::compute_transaction_costs(
+            &bank.feature_set,
+            std::iter::once(&tx),
+            std::iter::once(Ok(())),
+        )[0]
+        .as_ref()
+        .unwrap()
+        .sum()
+    }
+
+    fn block_cost_and_in_flight(bank: &Bank) -> (u64, usize) {
+        let tracker = bank.read_cost_tracker().unwrap();
+        (tracker.block_cost(), tracker.in_flight_transaction_count())
+    }
+
+    /// What a worker does after committing `work` on `bank` with `actual_units` consumed:
+    /// settle the reservation the scheduler made and take the admission out of the work.
+    fn settle_committed(bank: &Bank, work: &mut ConsumeWork<Tx>, actual_units: u64) {
+        let costs = QosService::compute_transaction_costs(
+            &bank.feature_set,
+            work.transactions.iter(),
+            std::iter::repeat(Ok(())),
+        );
+        let mut tracker = bank.write_cost_tracker().unwrap();
+        for cost in costs.iter().flatten() {
+            tracker.update_execution_cost(cost, actual_units, 0);
+        }
+        tracker.sub_transactions_in_flight(costs.len());
+        drop(tracker);
+        work.admission = None;
+    }
+
+    fn finish_committed(
+        test: &mut TestScheduler,
+        container: &mut TransactionStateContainer<Tx>,
+        decision: &BufferedPacketsDecision,
+        work: ConsumeWork<Tx>,
+        cus_consumed: u32,
+    ) {
+        let processed_results = vec![
+            TransactionResult::Committed(TransactionCommittedResult {
+                cus_consumed,
+                feepayer_balance_lamports: 0,
+                loaded_accounts_data_size: 0,
+                execution_success: true,
+            });
+            work.transactions.len()
+        ];
+        test.finished_consume_work_sender
+            .send(FinishedConsumeWork {
+                work,
+                retryable_indexes: vec![],
+                extra_info: Some(processed_results),
+            })
+            .unwrap();
+        test.scheduler
+            .receive_completed(container, decision)
+            .unwrap();
+    }
+
+    fn next_result(
+        response_receiver: &mut tokio::sync::mpsc::Receiver<BamOutboundMessage>,
+    ) -> (u32, atomic_txn_batch_result::Result) {
+        let BamOutboundMessage::AtomicTxnBatchResult(result) = response_receiver
+            .try_recv()
+            .expect("a result should be queued")
+        else {
+            panic!("expected AtomicTxnBatchResult message");
+        };
+        (result.seq_id, result.result.expect("result should be set"))
+    }
+
     fn prioritized_tranfers(
         from_keypair: &Keypair,
-        to_pubkeys: impl IntoIterator<Item = impl Borrow<Pubkey>>,
+        to_pubkeys: impl IntoIterator<Item = Pubkey>,
         lamports: u64,
         priority: u64,
-    ) -> RuntimeTransaction<SanitizedTransaction> {
+    ) -> Tx {
         let to_pubkeys_lamports = to_pubkeys
             .into_iter()
-            .map(|pubkey| *pubkey.borrow())
             .zip(std::iter::repeat(lamports))
             .collect_vec();
         let mut ixs = transfer_many(&from_keypair.pubkey(), &to_pubkeys_lamports);
@@ -1064,57 +919,48 @@ mod tests {
     }
 
     fn create_container(
-        tx_infos: impl IntoIterator<
-            Item = (
-                impl Borrow<Keypair>,
-                impl IntoIterator<Item = impl Borrow<Pubkey>>,
-                u64,
-                u32,
-                u64,
-            ),
-        >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+        tx_infos: Vec<(&Keypair, Vec<Pubkey>, u64, u32, u64)>,
+    ) -> TransactionStateContainer<Tx> {
         let mut container = TransactionStateContainer::with_capacity(10 * 1024);
         for (fifo_index, (from_keypair, to_pubkeys, lamports, seq_id, max_schedule_slot)) in
             tx_infos.into_iter().enumerate()
         {
-            let transaction = prioritized_tranfers(
-                from_keypair.borrow(),
-                to_pubkeys,
-                lamports,
-                u64::from(seq_id),
+            let transaction =
+                prioritized_tranfers(from_keypair, to_pubkeys, lamports, u64::from(seq_id));
+            container.insert_new_batch(
+                std::iter::once((transaction, MaxAge::MAX)).collect(),
+                u64::MAX.saturating_sub(fifo_index as u64),
+                false,
+                max_schedule_slot,
+                seq_id,
             );
-            let mut txns_max_age: SmallVec<
-                [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
-            > = SmallVec::new();
-            txns_max_age.push((transaction, MaxAge::MAX));
-            let priority = u64::MAX.saturating_sub(fifo_index as u64);
-            container.insert_new_batch(txns_max_age, priority, false, max_schedule_slot, seq_id);
         }
 
         container
     }
 
-    fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_slow_genesis_config(u64::MAX);
+    fn test_bank_forks() -> Arc<RwLock<BankForks>> {
+        let genesis_config = create_slow_genesis_config(u64::MAX).genesis_config;
+        Bank::new_with_bank_forks_for_tests(&genesis_config).1
+    }
 
-        let (_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-        (bank_forks, mint_keypair)
+    fn admission_scheduler() -> (TestScheduler, Arc<Bank>) {
+        let bank_forks = test_bank_forks();
+        let mut test = create_test_scheduler(&bank_forks);
+        test.scheduler.extra_checks_enabled = false;
+        let bank = Arc::new(Bank::new_from_parent(
+            bank_forks.read().unwrap().working_bank(),
+            SlotLeader::new_unique(),
+            1,
+        ));
+        set_leader_bank(&mut test.scheduler.shared_leader_state, &bank);
+        (test, bank)
     }
 
     #[test]
     fn test_scheduler_empty() {
-        let (bank_forks, _) = test_bank_forks();
-        let TestScheduler {
-            mut scheduler,
-            consume_work_receivers: _,
-            finished_consume_work_sender: _,
-            response_receiver: _,
-        } = create_test_scheduler(4, &bank_forks);
+        let bank_forks = test_bank_forks();
+        let TestScheduler { mut scheduler, .. } = create_test_scheduler(&bank_forks);
 
         let mut container = TransactionStateContainer::with_capacity(100);
         let result = scheduler.schedule(&mut container, 0, 0).unwrap();
@@ -1123,13 +969,13 @@ mod tests {
 
     #[test]
     fn test_scheduler_basic() {
-        let (bank_forks, _) = test_bank_forks();
+        let bank_forks = test_bank_forks();
         let TestScheduler {
             mut scheduler,
-            consume_work_receivers,
+            consume_work_receiver,
             finished_consume_work_sender,
             mut response_receiver,
-        } = create_test_scheduler(4, &bank_forks);
+        } = create_test_scheduler(&bank_forks);
         scheduler.extra_checks_enabled = false;
 
         let keypair_a = Keypair::new();
@@ -1158,7 +1004,8 @@ mod tests {
             "Scheduler slot should be None initially"
         );
 
-        let decision = BufferedPacketsDecision::Consume(bank_forks.read().unwrap().working_bank());
+        let bank = bank_forks.read().unwrap().working_bank();
+        let decision = BufferedPacketsDecision::Consume(bank);
 
         // Init scheduler with bank start info
         scheduler
@@ -1178,7 +1025,7 @@ mod tests {
                 .num_scheduled,
             0
         );
-        assert!(consume_work_receivers[0].try_recv().is_err());
+        assert!(consume_work_receiver.try_recv().is_err());
         set_leader_bank(&mut scheduler.shared_leader_state, decision.bank().unwrap());
 
         // Schedule the transactions
@@ -1188,10 +1035,10 @@ mod tests {
         assert_eq!(result.num_scheduled, 2);
 
         // Receive the scheduled work
-        let work_1 = consume_work_receivers[0].try_recv().unwrap();
+        let work_1 = consume_work_receiver.try_recv().unwrap();
         assert_eq!(work_1.ids.len(), 1);
         assert!(work_1.admission.is_some());
-        let work_2 = consume_work_receivers[0].try_recv().unwrap();
+        let work_2 = consume_work_receiver.try_recv().unwrap();
         assert_eq!(work_2.ids.len(), 1);
         assert!(work_2.admission.is_some());
 
@@ -1239,13 +1086,9 @@ mod tests {
             let finished_work = FinishedConsumeWork {
                 work,
                 retryable_indexes: vec![],
-                extra_info: Some(
-                    crate::banking_stage::scheduler_messages::FinishedConsumeWorkExtraInfo {
-                        processed_results: vec![response],
-                    },
-                ),
+                extra_info: Some(vec![response]),
             };
-            let _ = finished_consume_work_sender.send(finished_work);
+            finished_consume_work_sender.send(finished_work).unwrap();
         }
 
         // Receive the finished work
@@ -1255,61 +1098,28 @@ mod tests {
         assert_eq!(num_transactions, 2);
 
         // Check the responses
-        let response = response_receiver.try_recv().unwrap();
-        let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
-            panic!("Expected AtomicTxnBatchResult message");
+        let (seq_id, Committed(committed)) = next_result(&mut response_receiver) else {
+            panic!("expected Committed result");
         };
-        assert_eq!(bundle_result.seq_id, u32::MAX);
-        assert!(
-            bundle_result.result.is_some(),
-            "Bundle result should be present"
-        );
-        let result = bundle_result.result.unwrap();
-        match result {
-            Committed(committed) => {
-                assert_eq!(committed.transaction_results.len(), 1);
-                assert_eq!(committed.transaction_results[0].cus_consumed, 100);
-            }
-            NotCommitted(not_committed) => {
-                panic!("Expected Committed result, got NotCommitted: {not_committed:?}");
-            }
-        }
+        assert_eq!(seq_id, u32::MAX);
+        assert_eq!(committed.transaction_results.len(), 1);
+        assert_eq!(committed.transaction_results[0].cus_consumed, 100);
 
         // Check the response for the second transaction (not committed)
-        let response = response_receiver.try_recv().unwrap();
-        let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
-            panic!("Expected AtomicTxnBatchResult message");
+        let (seq_id, NotCommitted(not_committed)) = next_result(&mut response_receiver) else {
+            panic!("expected NotCommitted result");
         };
-        assert_eq!(bundle_result.seq_id, 3);
-        assert!(
-            bundle_result.result.is_some(),
-            "Bundle result should be present"
+        assert_eq!(seq_id, 3);
+        assert_eq!(
+            not_committed.reason,
+            Some(Reason::SchedulingError(SchedulingError::PohTimeout as i32))
         );
-        let result = bundle_result.result.unwrap();
-        match result {
-            Committed(_) => {
-                panic!("Expected NotCommitted result, got Committed");
-            }
-            NotCommitted(not_committed) => {
-                assert!(
-                    not_committed.reason.is_some(),
-                    "NotCommitted reason should be present"
-                );
-                let reason = not_committed.reason.unwrap();
-                assert_eq!(
-                    reason,
-                    jito_protos::proto::bam_types::not_committed::Reason::SchedulingError(
-                        jito_protos::proto::bam_types::SchedulingError::PohTimeout as i32
-                    )
-                );
-            }
-        }
 
         // Now try scheduling again; should schedule the remaining transaction
         let result = scheduler.schedule(&mut container, 0, 0).unwrap();
         assert_eq!(result.num_scheduled, 1);
         // Check that the remaining transaction is sent to the worker
-        let work_2 = consume_work_receivers[0].try_recv().unwrap();
+        let work_2 = consume_work_receiver.try_recv().unwrap();
         assert_eq!(work_2.ids.len(), 1);
 
         // Try scheduling; nothing should be scheduled as the remaining transaction is blocked
@@ -1320,20 +1130,16 @@ mod tests {
         let finished_work = FinishedConsumeWork {
             work: work_2,
             retryable_indexes: vec![],
-            extra_info: Some(
-                crate::banking_stage::scheduler_messages::FinishedConsumeWorkExtraInfo {
-                    processed_results: vec![TransactionResult::Committed(
-                        TransactionCommittedResult {
-                            cus_consumed: 1500,
-                            feepayer_balance_lamports: 1500,
-                            loaded_accounts_data_size: 20,
-                            execution_success: true,
-                        },
-                    )],
+            extra_info: Some(vec![TransactionResult::Committed(
+                TransactionCommittedResult {
+                    cus_consumed: 1500,
+                    feepayer_balance_lamports: 1500,
+                    loaded_accounts_data_size: 20,
+                    execution_success: true,
                 },
-            ),
+            )]),
         };
-        let _ = finished_consume_work_sender.send(finished_work);
+        finished_consume_work_sender.send(finished_work).unwrap();
 
         // Receive the finished work
         let (num_transactions, _) = scheduler
@@ -1342,25 +1148,12 @@ mod tests {
         assert_eq!(num_transactions, 1);
 
         // Check the response for the next transaction
-        let response = response_receiver.try_recv().unwrap();
-        let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
-            panic!("Expected AtomicTxnBatchResult message");
+        let (seq_id, Committed(committed)) = next_result(&mut response_receiver) else {
+            panic!("expected Committed result");
         };
-        assert_eq!(bundle_result.seq_id, 0);
-        assert!(
-            bundle_result.result.is_some(),
-            "Bundle result should be present"
-        );
-        let result = bundle_result.result.unwrap();
-        match result {
-            Committed(committed) => {
-                assert_eq!(committed.transaction_results.len(), 1);
-                assert_eq!(committed.transaction_results[0].cus_consumed, 1500);
-            }
-            NotCommitted(not_committed) => {
-                panic!("Expected Committed result, got NotCommitted: {not_committed:?}");
-            }
-        }
+        assert_eq!(seq_id, 0);
+        assert_eq!(committed.transaction_results.len(), 1);
+        assert_eq!(committed.transaction_results[0].cus_consumed, 1500);
 
         // Receive the finished work
         let (num_transactions, _) = scheduler
@@ -1379,46 +1172,23 @@ mod tests {
         );
 
         // Receive the NotCommitted Result
-        let response = response_receiver.try_recv().unwrap();
-        let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
-            panic!("Expected AtomicTxnBatchResult message");
+        let (seq_id, NotCommitted(not_committed)) = next_result(&mut response_receiver) else {
+            panic!("expected NotCommitted result");
         };
-        assert_eq!(bundle_result.seq_id, 2);
-        assert!(
-            bundle_result.result.is_some(),
-            "Bundle result should be present"
+        assert_eq!(seq_id, 2);
+        assert_eq!(
+            not_committed.reason,
+            Some(Reason::SchedulingError(
+                SchedulingError::OutsideLeaderSlot as i32
+            ))
         );
-        let result = bundle_result.result.unwrap();
-        match result {
-            Committed(_) => {
-                panic!("Expected NotCommitted result, got Committed");
-            }
-            NotCommitted(not_committed) => {
-                assert!(
-                    not_committed.reason.is_some(),
-                    "NotCommitted reason should be present"
-                );
-                let reason = not_committed.reason.unwrap();
-                assert_eq!(
-                    reason,
-                    jito_protos::proto::bam_types::not_committed::Reason::SchedulingError(
-                        jito_protos::proto::bam_types::SchedulingError::OutsideLeaderSlot as i32
-                    )
-                );
-            }
-        }
     }
 
     #[test]
     #[should_panic(expected = "node must exist")]
     fn test_prio_graph_clears_on_slot_boundary() {
-        let (bank_forks, _) = test_bank_forks();
-        let TestScheduler {
-            mut scheduler,
-            consume_work_receivers: _,
-            finished_consume_work_sender: _,
-            response_receiver: _,
-        } = create_test_scheduler(4, &bank_forks);
+        let bank_forks = test_bank_forks();
+        let TestScheduler { mut scheduler, .. } = create_test_scheduler(&bank_forks);
         scheduler.extra_checks_enabled = false;
 
         let keypair_a = Keypair::new();
@@ -1427,13 +1197,10 @@ mod tests {
         let bank = bank_forks.read().unwrap().working_bank();
 
         // Set initial slot with bank start
-        let mut container = create_container(vec![(
-            &keypair_a,
-            vec![Pubkey::new_unique()],
-            1000,
-            0,
-            u64::MAX,
-        )]);
+        let mut container = create_container(vec![
+            (&keypair_a, vec![Pubkey::new_unique()], 1000, 0, u64::MAX),
+            (&keypair_b, vec![Pubkey::new_unique()], 2000, 1, u64::MAX),
+        ]);
         let decision = BufferedPacketsDecision::Consume(bank.clone());
 
         scheduler
@@ -1442,38 +1209,12 @@ mod tests {
         assert_eq!(scheduler.slot, Some(bank.slot()));
 
         // Pull transactions into prio_graph
-        // Create container with some transactions
-        let mut container = create_container(vec![
-            (&keypair_a, vec![Pubkey::new_unique()], 1000, 0, u64::MAX),
-            (&keypair_b, vec![Pubkey::new_unique()], 2000, 1, u64::MAX),
-        ]);
+        let txn_id = *container.recheck_iter(None).next().unwrap();
         scheduler.pull_into_prio_graph(&mut container);
         assert!(
             !scheduler.prio_graph.is_empty(),
             "Prio graph should have transactions"
         );
-
-        // Store transaction IDs that are currently in the prio_graph
-        let mut stored_txn_ids = Vec::new();
-        while let Some(txn_id) = scheduler.prio_graph.pop() {
-            stored_txn_ids.push(txn_id);
-            // Unblock to allow the next transaction to be popped
-            scheduler.prio_graph.unblock(&txn_id);
-        }
-
-        // Re-insert the transactions back into prio_graph for testing
-        for txn_id in &stored_txn_ids {
-            // Get transaction from container to re-insert
-            if let Some((batch_ids, _, _, _)) = container.get_batch(txn_id.id) {
-                let txns = batch_ids
-                    .iter()
-                    .filter_map(|id| container.get_transaction(*id));
-                scheduler.prio_graph.insert_transaction(
-                    *txn_id,
-                    BamScheduler::<RuntimeTransaction<SanitizedTransaction>>::get_transactions_account_access(txns.into_iter()),
-                );
-            }
-        }
 
         // Simulate slot boundary change by changing to no bank (None)
         let decision_no_bank = BufferedPacketsDecision::Forward;
@@ -1485,9 +1226,7 @@ mod tests {
 
         // This should panic because the prio_graph has been cleared
         // and the transaction ID no longer exists in the graph
-        if let Some(first_id) = stored_txn_ids.first() {
-            scheduler.prio_graph.unblock(first_id);
-        }
+        scheduler.prio_graph.unblock(&txn_id);
     }
 
     /// Regression test for the `solBamSched` "blocking node must exist" panic.
@@ -1500,46 +1239,40 @@ mod tests {
     /// without it.
     #[test]
     fn test_pull_bundle_with_shared_writable_account_does_not_panic() {
-        let (bank_forks, _) = test_bank_forks();
-        let TestScheduler { mut scheduler, .. } = create_test_scheduler(4, &bank_forks);
-        scheduler.extra_checks_enabled = false;
-
-        let bank = bank_forks.read().unwrap().working_bank();
-
-        // Set the scheduler's slot via a Consume decision.
-        let mut slot_container = create_container(vec![(
-            &Keypair::new(),
-            vec![Pubkey::new_unique()],
-            1000,
-            0,
-            u64::MAX,
-        )]);
-        scheduler
-            .receive_completed(
-                &mut slot_container,
-                &BufferedPacketsDecision::Consume(bank.clone()),
-            )
-            .unwrap();
-        assert_eq!(scheduler.slot, Some(bank.slot()));
+        let (mut test, bank) = admission_scheduler();
+        let scheduler = &mut test.scheduler;
 
         // One batch, two transactions sharing a writable account: both are
         // signed by `keypair_a`, so both write its fee-payer account (index 0).
         let keypair_a = Keypair::new();
         let priority = u64::MAX;
-        let mut txns_max_age: SmallVec<
-            [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
-        > = SmallVec::new();
-        txns_max_age.push((
-            prioritized_tranfers(&keypair_a, vec![Pubkey::new_unique()], 1000, priority),
-            MaxAge::MAX,
-        ));
-        txns_max_age.push((
-            prioritized_tranfers(&keypair_a, vec![Pubkey::new_unique()], 2000, priority),
-            MaxAge::MAX,
-        ));
-
         let mut container = TransactionStateContainer::with_capacity(10 * 1024);
-        container.insert_new_batch(txns_max_age, priority, false, u64::MAX, 0);
+        container.insert_new_batch(
+            [1000, 2000]
+                .into_iter()
+                .map(|lamports| {
+                    (
+                        prioritized_tranfers(
+                            &keypair_a,
+                            [Pubkey::new_unique()],
+                            lamports,
+                            priority,
+                        ),
+                        MaxAge::MAX,
+                    )
+                })
+                .collect(),
+            priority,
+            false,
+            u64::MAX,
+            0,
+        );
+        scheduler
+            .receive_completed(
+                &mut container,
+                &BufferedPacketsDecision::Consume(bank.clone()),
+            )
+            .unwrap();
 
         // Must not panic; the bundle becomes a single schedulable node.
         scheduler.pull_into_prio_graph(&mut container);
@@ -1549,113 +1282,14 @@ mod tests {
             "bundle sharing a writable account should be inserted and schedulable"
         );
 
-        // A dispatch-time recheck rejects the default blockhash without reserving any cost.
-        set_leader_bank(&mut scheduler.shared_leader_state, &bank);
+        // A dispatch-time recheck rejects the default blockhash after taking the transactions.
+        // It must recycle the work, clear the graph node, and leave no reservation behind.
         scheduler.extra_checks_enabled = true;
         assert_eq!(scheduler.send_to_workers(&mut container).unwrap(), 0);
         assert!(scheduler.prio_graph.is_empty());
         assert_eq!(container.buffer_size(), 0);
         assert_eq!(block_cost_and_in_flight(&bank), (0, 0));
-    }
-
-    fn set_leader_bank(shared_leader_state: &mut SharedLeaderState, bank: &Arc<Bank>) {
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(bank.clone()),
-            bank.tick_height(),
-            None,
-            None,
-        )));
-    }
-
-    fn set_block_cost_limit(bank: &Bank, block_cost: u64) {
-        bank.write_cost_tracker()
-            .unwrap()
-            .set_limits(CostTrackerLimits::new(u64::MAX, block_cost, u64::MAX));
-    }
-
-    fn estimated_cost(bank: &Bank) -> u64 {
-        let tx = prioritized_tranfers(&Keypair::new(), vec![Pubkey::new_unique()], 1000, 0);
-        QosService::compute_transaction_costs(
-            &bank.feature_set,
-            std::iter::once(&tx),
-            std::iter::once(Ok(())),
-        )[0]
-        .as_ref()
-        .unwrap()
-        .sum()
-    }
-
-    fn block_cost_and_in_flight(bank: &Bank) -> (u64, usize) {
-        let tracker = bank.read_cost_tracker().unwrap();
-        (tracker.block_cost(), tracker.in_flight_transaction_count())
-    }
-
-    fn settle_committed(bank: &Bank, work: &mut ConsumeWork<Tx>, actual_units: u64) {
-        let costs = QosService::compute_transaction_costs(
-            &bank.feature_set,
-            work.transactions.iter(),
-            std::iter::repeat(Ok(())),
-        );
-        let mut tracker = bank.write_cost_tracker().unwrap();
-        for cost in costs.iter().flatten() {
-            tracker.update_execution_cost(cost, actual_units, 0);
-        }
-        tracker.sub_transactions_in_flight(costs.len());
-        drop(tracker);
-        work.admission = None;
-    }
-
-    fn finish_committed(
-        test: &mut TestScheduler,
-        container: &mut TransactionStateContainer<Tx>,
-        decision: &BufferedPacketsDecision,
-        work: ConsumeWork<Tx>,
-        cus_consumed: u32,
-    ) {
-        let processed_results = vec![
-            TransactionResult::Committed(TransactionCommittedResult {
-                cus_consumed,
-                feepayer_balance_lamports: 0,
-                loaded_accounts_data_size: 0,
-                execution_success: true,
-            });
-            work.transactions.len()
-        ];
-        test.finished_consume_work_sender
-            .send(FinishedConsumeWork {
-                work,
-                retryable_indexes: vec![],
-                extra_info: Some(FinishedConsumeWorkExtraInfo { processed_results }),
-            })
-            .unwrap();
-        test.scheduler
-            .receive_completed(container, decision)
-            .unwrap();
-    }
-
-    fn next_result(
-        response_receiver: &mut tokio::sync::mpsc::Receiver<BamOutboundMessage>,
-    ) -> (u32, atomic_txn_batch_result::Result) {
-        let BamOutboundMessage::AtomicTxnBatchResult(result) = response_receiver
-            .try_recv()
-            .expect("a result should be queued")
-        else {
-            panic!("expected AtomicTxnBatchResult message");
-        };
-        (result.seq_id, result.result.expect("result should be set"))
-    }
-
-    fn admission_scheduler() -> (TestScheduler, Arc<Bank>) {
-        let (bank_forks, _) = test_bank_forks();
-        let mut test = create_test_scheduler(1, &bank_forks);
-        test.scheduler.extra_checks_enabled = false;
-        let bank = Arc::new(Bank::new_from_parent(
-            bank_forks.read().unwrap().working_bank(),
-            SlotLeader::new_unique(),
-            1,
-        ));
-        set_leader_bank(&mut test.scheduler.shared_leader_state, &bank);
-        (test, bank)
+        assert!(scheduler.reusable_consume_work[0].transactions.is_empty());
     }
 
     // ---- scheduler-side cost admission (JSA-72) ----
@@ -1768,12 +1402,12 @@ mod tests {
             .unwrap();
 
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        let mut high_work = test.consume_work_receivers[0].try_recv().unwrap();
+        let mut high_work = test.consume_work_receiver.try_recv().unwrap();
         let high_info = &test.scheduler.inflight_batch_info[&high_work.batch_id];
-        assert_eq!(high_info.batch_priority_ids[0].1, 0);
+        assert_eq!(high_info.seq_id, 0);
         assert!(test.scheduler.pending_admission.is_some());
         assert_eq!(block_cost_and_in_flight(&bank), (high_estimate, 1));
-        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert!(test.consume_work_receiver.try_recv().is_err());
         assert_eq!(
             test.scheduler
                 .schedule(&mut container, 0, 0)
@@ -1795,9 +1429,9 @@ mod tests {
 
         // Only after the earlier reservation settles can the lower-priority work be dispatched.
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        let mut low_work = test.consume_work_receivers[0].try_recv().unwrap();
+        let mut low_work = test.consume_work_receiver.try_recv().unwrap();
         let low_info = &test.scheduler.inflight_batch_info[&low_work.batch_id];
-        assert_eq!(low_info.batch_priority_ids[0].1, 1);
+        assert_eq!(low_info.seq_id, 1);
         assert_eq!(
             block_cost_and_in_flight(&bank),
             (settled_high_cost + low_estimate, 1)
@@ -1822,11 +1456,11 @@ mod tests {
         set_block_cost_limit(&bank, estimate * second_batch_size as u64 + estimate / 2);
 
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        let mut work_a = test.consume_work_receivers[0].try_recv().unwrap();
+        let mut work_a = test.consume_work_receiver.try_recv().unwrap();
         assert!(test.scheduler.pending_admission.is_some());
         // B must roll back any earlier admissions in its batch without touching A's reservation.
         assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
-        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert!(test.consume_work_receiver.try_recv().is_err());
 
         // A commits at exactly its estimate: nothing is freed. The worker settled it.
         bank.write_cost_tracker()
@@ -1845,7 +1479,7 @@ mod tests {
         // per-transaction error, exactly as the worker would have produced it.
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
         assert!(test.scheduler.pending_admission.is_none());
-        let work_b = test.consume_work_receivers[0].try_recv().unwrap();
+        let work_b = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(
             work_b.admission.as_ref().unwrap().1,
             std::iter::repeat_n(Ok(()), second_batch_size - 1)
@@ -1885,7 +1519,7 @@ mod tests {
             .unwrap();
 
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        test.consume_work_receivers[0].try_recv().unwrap();
+        test.consume_work_receiver.try_recv().unwrap();
         assert!(test.scheduler.pending_admission.is_some());
 
         // Slot ends: the deferred batch and the batch it was blocking both go back to BAM.
@@ -1920,8 +1554,8 @@ mod tests {
         let (mut test, mut container, bank_1, _) = setup_two_batches(1);
         let estimate = estimated_cost(&bank_1);
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        let work_a = test.consume_work_receivers[0].try_recv().unwrap();
-        let work_b = test.consume_work_receivers[0].try_recv().unwrap();
+        let work_a = test.consume_work_receiver.try_recv().unwrap();
+        let work_b = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(block_cost_and_in_flight(&bank_1), (estimate * 2, 2));
 
         // The bankless handover clears the graph. Work arriving in the gap must remain queued.
@@ -1958,7 +1592,7 @@ mod tests {
                 .receive_completed(&mut container, &decision)
                 .unwrap();
             test.scheduler.schedule(&mut container, 0, 0).unwrap();
-            assert!(test.consume_work_receivers[0].try_recv().is_err());
+            assert!(test.consume_work_receiver.try_recv().is_err());
             assert_eq!(test.scheduler.slot, None);
             finish_committed(&mut test, &mut container, &decision, work, 150);
             assert_eq!(
@@ -1972,7 +1606,7 @@ mod tests {
             .receive_completed(&mut container, &decision)
             .unwrap();
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        let work_c = test.consume_work_receivers[0].try_recv().unwrap();
+        let work_c = test.consume_work_receiver.try_recv().unwrap();
         let admission = work_c.admission.as_ref().unwrap();
         assert_eq!(admission.0.bank_id(), bank_1b.bank_id());
         assert_eq!(test.scheduler.inflight_reserved_cost, estimate);
@@ -1987,7 +1621,7 @@ mod tests {
         set_block_cost_limit(&bank, estimate);
 
         if disconnected {
-            drop(test.consume_work_receivers);
+            drop(test.consume_work_receiver);
             assert!(matches!(
                 test.scheduler.schedule(&mut container, 0, 0),
                 Err(super::SchedulerError::DisconnectedSendChannel(_))
@@ -1999,7 +1633,7 @@ mod tests {
         }
 
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        let work_a = test.consume_work_receivers[0].try_recv().unwrap();
+        let work_a = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
 
         // The worker found the bank complete and returned A untouched, admission attached.
@@ -2007,11 +1641,9 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: work_a,
                 retryable_indexes: vec![RetryableIndex::new(0, true)],
-                extra_info: Some(FinishedConsumeWorkExtraInfo {
-                    processed_results: vec![TransactionResult::NotCommitted(
-                        NotCommittedReason::PohTimeout,
-                    )],
-                }),
+                extra_info: Some(vec![TransactionResult::NotCommitted(
+                    NotCommittedReason::PohTimeout,
+                )]),
             })
             .unwrap();
         test.scheduler

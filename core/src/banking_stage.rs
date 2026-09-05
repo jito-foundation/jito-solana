@@ -590,6 +590,7 @@ impl BankingStage {
                 ),
                 finished_work_sender.clone(),
                 self.poh_recorder.read().unwrap().shared_leader_state(),
+                None,
             );
 
             worker_metrics.push(consume_worker.metrics_handle());
@@ -627,6 +628,7 @@ impl BankingStage {
                         .name("solBnkTxSched".to_string())
                         .spawn(move || {
                             let mut scheduler_controller = SchedulerController::new(
+                                0,
                                 exit,
                                 config_cloned,
                                 decision_maker,
@@ -682,7 +684,7 @@ impl BankingStage {
             let mut worker_metrics = Vec::with_capacity(num_workers);
             for index in 0..num_workers {
                 let id = index + BAM_METRICS_ID_OFFSET as usize;
-                let consume_worker = ConsumeWorker::new_with_tip_processing_deps(
+                let consume_worker = ConsumeWorker::new(
                     id as u32,
                     exit.clone(),
                     work_receiver.clone(),
@@ -734,7 +736,7 @@ impl BankingStage {
 
                         let bam_sharable_banks =
                             bam_scheduler_bank_forks.read().unwrap().sharable_banks();
-                        let mut scheduler_controller = SchedulerController::new_with_metrics_id(
+                        let mut scheduler_controller = SchedulerController::new(
                             BAM_METRICS_ID_OFFSET,
                             bam_scheduler_exit,
                             scheduler_config,

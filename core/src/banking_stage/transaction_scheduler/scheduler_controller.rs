@@ -184,34 +184,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        exit: Arc<AtomicBool>,
-        config: SchedulerConfig,
-        decision_maker: DecisionMaker,
-        receive_and_buffer: R,
-        sharable_banks: SharableBanks,
-        scheduler: S,
-        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        priority_floor: Arc<SchedulerPriorityFloor>,
-        bam_controller: bool,
-        bam_enabled: Arc<AtomicU8>,
-    ) -> Self {
-        Self::new_with_metrics_id(
-            0,
-            exit,
-            config,
-            decision_maker,
-            receive_and_buffer,
-            sharable_banks,
-            scheduler,
-            worker_metrics,
-            priority_floor,
-            bam_controller,
-            bam_enabled,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_metrics_id(
         metrics_id: u32,
         exit: Arc<AtomicBool>,
         config: SchedulerConfig,
@@ -224,39 +196,9 @@ where
         bam_controller: bool,
         bam_enabled: Arc<AtomicU8>,
     ) -> Self {
-        SchedulerController::new_with_metrics(
-            exit,
-            config,
-            decision_maker,
-            receive_and_buffer,
-            sharable_banks,
-            scheduler,
-            SchedulerCountMetrics::new(metrics_id),
-            SchedulerTimingMetrics::new(metrics_id),
-            worker_metrics,
-            SchedulingDetails::new(metrics_id),
-            priority_floor,
-            bam_controller,
-            bam_enabled,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_metrics(
-        exit: Arc<AtomicBool>,
-        config: SchedulerConfig,
-        decision_maker: DecisionMaker,
-        receive_and_buffer: R,
-        sharable_banks: SharableBanks,
-        scheduler: S,
-        count_metrics: SchedulerCountMetrics,
-        timing_metrics: SchedulerTimingMetrics,
-        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        scheduling_details: SchedulingDetails,
-        priority_floor: Arc<SchedulerPriorityFloor>,
-        bam_controller: bool,
-        bam_enabled: Arc<AtomicU8>,
-    ) -> Self {
+        let count_metrics = SchedulerCountMetrics::new(metrics_id);
+        let timing_metrics = SchedulerTimingMetrics::new(metrics_id);
+        let scheduling_details = SchedulingDetails::new(metrics_id);
         priority_floor.clear();
         let container_capacity = TOTAL_BUFFERED_PACKETS;
         let saturation_state = SaturationState::new(priority_floor, container_capacity);
@@ -858,6 +800,7 @@ mod tests {
         );
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
+            0,
             exit,
             SchedulerConfig::default(),
             decision_maker,
@@ -1499,6 +1442,7 @@ mod tests {
         );
 
         let mut scheduler_controller = SchedulerController::new(
+            0,
             exit.clone(),
             SchedulerConfig::default(),
             decision_maker,

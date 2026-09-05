@@ -4,8 +4,7 @@ use {
         consumer::{Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         scheduler_messages::{
-            ConsumeWork, FinishedConsumeWork, FinishedConsumeWorkExtraInfo, NotCommittedReason,
-            TransactionResult,
+            ConsumeWork, FinishedConsumeWork, NotCommittedReason, TransactionResult,
         },
     },
     crate::{
@@ -65,25 +64,6 @@ pub(crate) struct ConsumeWorker<Tx> {
 
 impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     pub fn new(
-        id: u32,
-        exit: Arc<AtomicBool>,
-        consume_receiver: Receiver<ConsumeWork<Tx>>,
-        consumer: Consumer,
-        consumed_sender: Sender<FinishedConsumeWork<Tx>>,
-        shared_leader_state: SharedLeaderState,
-    ) -> Self {
-        Self {
-            exit,
-            consume_receiver,
-            consumer,
-            consumed_sender,
-            shared_leader_state,
-            metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
-            tip_processing_dependencies: None,
-        }
-    }
-
-    pub fn new_with_tip_processing_deps(
         id: u32,
         exit: Arc<AtomicBool>,
         consume_receiver: Receiver<ConsumeWork<Tx>>,
@@ -262,27 +242,27 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return true;
         }
 
-        let keypair = cluster_info.keypair();
-        let initialize_tip_programs_bundle =
-            tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
-        if let Ok(init_bundle) = initialize_tip_programs_bundle {
-            let result = self.consumer.process_and_record_transactions_with_policy(
-                bank,
-                &init_bundle,
-                Some(bundle_account_locker),
-                true,
-            );
-            if result
+        let process_bundle = |bundle: &[_]| {
+            self.consumer
+                .process_and_record_transactions_with_policy(
+                    bank,
+                    bundle,
+                    Some(bundle_account_locker),
+                    true,
+                )
                 .execute_and_commit_transactions_output
                 .commit_transactions_result
-                .map_or(true, |results| {
+                .is_ok_and(|results| {
                     results
                         .iter()
-                        .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
+                        .all(|r| matches!(r, CommitTransactionDetails::Committed { .. }))
                 })
-            {
-                return false;
-            }
+        };
+        let keypair = cluster_info.keypair();
+        if let Ok(init_bundle) = tip_manager.get_initialize_tip_programs_bundle(bank, &keypair)
+            && !process_bundle(&init_bundle)
+        {
+            return false;
         }
 
         let block_builder_fee_info = block_builder_fee_info.load();
@@ -291,21 +271,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         }
         match tip_manager.get_tip_programs_crank_bundle(bank, &keypair, &block_builder_fee_info) {
             Ok(tip_crank_bundle) => {
-                let result = self.consumer.process_and_record_transactions_with_policy(
-                    bank,
-                    &tip_crank_bundle,
-                    Some(bundle_account_locker),
-                    true,
-                );
-                if result
-                    .execute_and_commit_transactions_output
-                    .commit_transactions_result
-                    .map_or(true, |results| {
-                        results
-                            .iter()
-                            .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
-                    })
-                {
+                if !process_bundle(&tip_crank_bundle) {
                     return false;
                 }
             }
@@ -319,7 +285,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         true
     }
 
-    /// Builds `FinishedConsumeWorkExtraInfo` from consume output for BAM responses.
+    /// Builds per-transaction results from consume output for BAM responses.
     ///
     /// If commit details are available, each `CommitTransactionDetails` is mapped into a
     /// `TransactionResult` with commit metadata or a not-committed error. If commit details are
@@ -328,20 +294,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn build_finished_consume_work_extra_info(
         output: &ProcessTransactionBatchOutput,
         work: &ConsumeWork<Tx>,
-    ) -> FinishedConsumeWorkExtraInfo {
+    ) -> Vec<TransactionResult> {
         let Ok(commit_transactions_result) = output
             .execute_and_commit_transactions_output
             .commit_transactions_result
             .as_ref()
         else {
-            return FinishedConsumeWorkExtraInfo {
-                processed_results: vec![
-                    TransactionResult::NotCommitted(
-                        NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
-                    );
-                    work.transactions.len()
-                ],
-            };
+            return vec![
+                TransactionResult::NotCommitted(
+                    NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
+                );
+                work.transactions.len()
+            ];
         };
 
         let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
@@ -370,7 +334,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        FinishedConsumeWorkExtraInfo { processed_results }
+        processed_results
     }
 
     /// Retry current batch and all outstanding batches.
@@ -404,15 +368,12 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .retryable_expired_bank_count
             .fetch_add(num_retryable, Ordering::Relaxed);
         self.metrics.has_data.store(true, Ordering::Relaxed);
-        let extra_info = if work.respond_with_extra_info {
-            Some(FinishedConsumeWorkExtraInfo {
-                processed_results: (0..work.transactions.len())
-                    .map(|_| TransactionResult::NotCommitted(NotCommittedReason::PohTimeout))
-                    .collect(),
-            })
-        } else {
-            None
-        };
+        let extra_info = work.respond_with_extra_info.then(|| {
+            vec![
+                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout);
+                work.transactions.len()
+            ]
+        });
         self.consumed_sender.send(FinishedConsumeWork {
             work,
             retryable_indexes,
@@ -2578,7 +2539,7 @@ mod tests {
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();
-        let worker = ConsumeWorker::new_with_tip_processing_deps(
+        let worker = ConsumeWorker::new(
             0,
             Arc::new(AtomicBool::new(false)),
             consume_receiver,
@@ -2797,64 +2758,6 @@ mod tests {
         let _ = worker_thread.join().unwrap();
     }
 
-    #[test]
-    fn test_worker_consume_simple() {
-        let (mut test_frame, worker) = setup_test_frame(false);
-        let TestFrame {
-            mint_keypair,
-            genesis_config,
-            bank,
-            record_receiver,
-            shared_leader_state,
-            consume_sender,
-            consumed_receiver,
-            ..
-        } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(bank.clone()),
-            bank.tick_height(),
-            None,
-            None,
-        )));
-        record_receiver.restart(bank.bank_id());
-
-        let pubkey1 = Pubkey::new_unique();
-
-        let transactions = sanitize_transactions(vec![system_transaction::transfer(
-            mint_keypair,
-            &pubkey1,
-            1,
-            genesis_config.hash(),
-        )]);
-        let bid = TransactionBatchId::new(0);
-        let id = 0;
-        let max_age = MaxAge {
-            sanitized_epoch: bank.epoch(),
-            alt_invalidation_slot: bank.slot(),
-        };
-        let work = ConsumeWork {
-            target_slot: bank.slot(),
-            batch_id: bid,
-            ids: vec![id],
-            transactions,
-            max_ages: vec![max_age],
-            revert_on_error: false,
-            respond_with_extra_info: false,
-            max_schedule_slot: None,
-            admission: None,
-        };
-        consume_sender.send(work).unwrap();
-        let consumed = consumed_receiver.recv().unwrap();
-        assert_eq!(consumed.work.batch_id, bid);
-        assert_eq!(consumed.work.ids, vec![id]);
-        assert_eq!(consumed.work.max_ages, vec![max_age]);
-        assert_eq!(consumed.retryable_indexes, Vec::new());
-
-        drop(test_frame);
-        let _ = worker_thread.join().unwrap();
-    }
-
     #[test_case(None, false; "ordinary")]
     #[test_case(Some(true), false; "same_bank")]
     #[test_case(Some(false), false; "replacement_bank")]
@@ -2925,7 +2828,7 @@ mod tests {
         }
 
         let consumed = consumed_receiver.recv().unwrap();
-        let results = consumed.extra_info.unwrap().processed_results;
+        let results = consumed.extra_info.unwrap();
         let tracker = bank.read_cost_tracker().unwrap();
         assert_eq!(consumed.work.batch_id, TransactionBatchId::new(0));
         assert_eq!(consumed.work.ids, vec![0]);
