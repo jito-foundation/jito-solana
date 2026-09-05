@@ -147,7 +147,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     #[allow(clippy::result_large_err)]
     fn consume(
         &self,
-        work: ConsumeWork<Tx>,
+        mut work: ConsumeWork<Tx>,
     ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
@@ -182,6 +182,14 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
+        // The scheduler already reserved cost on this exact bank, in scheduling order. Taking
+        // the admission out of the work marks the reservation as settled by this worker; work
+        // that goes back still carrying one is released by the scheduler.
+        let admission_results = work
+            .admission
+            .take_if(|admission| admission.0.bank_id() == bank.bank_id())
+            .map(|(_, results)| results);
+        // A stale admission stays attached; admit locally on the replacement bank as before.
         let output = self
             .consumer
             .process_and_record_aged_transactions_with_policy(
@@ -194,6 +202,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 },
                 None, // bundle account locker checked in scheduler
                 work.revert_on_error,
+                admission_results,
             );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
@@ -661,6 +670,7 @@ pub(crate) mod external {
                         &execution_flags,
                         Some(&self.bundle_account_locker),
                         false,
+                        None,
                     );
 
                 self.metrics.update_for_consume(&output);
@@ -1889,7 +1899,7 @@ fn try_drain_iter<T>(work: T, receiver: &Receiver<T>) -> impl Iterator<Item = T>
 }
 
 /// Returns an active leader state if available, otherwise None.
-fn active_leader_state(
+pub(super) fn active_leader_state(
     shared_leader_state: &SharedLeaderState,
 ) -> Option<arc_swap::Guard<Arc<LeaderState>>> {
     let guard = shared_leader_state.load();
@@ -2449,6 +2459,7 @@ mod tests {
         crate::{
             banking_stage::{
                 committer::Committer,
+                qos_service::QosService,
                 scheduler_messages::{MaxAge, TransactionBatchId},
                 tests::{create_slow_genesis_config, sanitize_transactions},
             },
@@ -2499,6 +2510,7 @@ mod tests {
                 atomic::{AtomicBool, AtomicU8},
             },
         },
+        test_case::test_case,
     };
 
     // Helper struct to create tests that hold channels, files, etc.
@@ -2650,6 +2662,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            admission: None,
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -2699,6 +2712,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    admission: None,
                 })
                 .unwrap();
         }
@@ -2761,6 +2775,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -2827,6 +2842,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            admission: None,
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -2837,6 +2853,114 @@ mod tests {
 
         drop(test_frame);
         let _ = worker_thread.join().unwrap();
+    }
+
+    #[test_case(None, false; "ordinary")]
+    #[test_case(Some(true), false; "same_bank")]
+    #[test_case(Some(false), false; "replacement_bank")]
+    #[test_case(Some(true), true; "complete_bank")]
+    fn test_worker_consume(admission_matches: Option<bool>, bank_complete: bool) {
+        let (mut test_frame, worker) = setup_test_frame(false);
+        let TestFrame {
+            mint_keypair,
+            genesis_config,
+            bank,
+            record_receiver,
+            shared_leader_state,
+            consumed_receiver,
+            ..
+        } = &mut test_frame;
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+        record_receiver.restart(bank.bank_id());
+
+        let pubkey1 = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            mint_keypair,
+            &pubkey1,
+            1,
+            genesis_config.hash(),
+        )]);
+        let (admission, estimate) = match admission_matches {
+            None => (None, 0),
+            Some(true) => {
+                let (results, estimate) = QosService::try_admit_transactions(
+                    bank,
+                    &transactions,
+                    std::iter::repeat(Ok(())),
+                    0,
+                )
+                .unwrap();
+                (Some((Arc::clone(bank), results)), estimate)
+            }
+            Some(false) => (
+                Some((Arc::new(Bank::new_for_tests(genesis_config)), vec![Ok(())])),
+                0,
+            ),
+        };
+        if bank_complete {
+            bank.fill_bank_with_ticks_for_tests();
+        }
+
+        let work = ConsumeWork {
+            target_slot: bank.slot(),
+            batch_id: TransactionBatchId::new(0),
+            ids: vec![0],
+            transactions,
+            max_ages: vec![MaxAge {
+                sanitized_epoch: bank.epoch(),
+                alt_invalidation_slot: bank.slot(),
+            }],
+            revert_on_error: false,
+            respond_with_extra_info: true,
+            max_schedule_slot: Some(bank.slot()),
+            admission,
+        };
+        if let ProcessingStatus::CouldNotProcess(work) = worker.consume(work).unwrap() {
+            worker.retry(work).unwrap();
+        }
+
+        let consumed = consumed_receiver.recv().unwrap();
+        let results = consumed.extra_info.unwrap().processed_results;
+        let tracker = bank.read_cost_tracker().unwrap();
+        assert_eq!(consumed.work.batch_id, TransactionBatchId::new(0));
+        assert_eq!(consumed.work.ids, vec![0]);
+        if bank_complete {
+            assert_eq!(
+                consumed.retryable_indexes,
+                vec![RetryableIndex::new(0, true)]
+            );
+            let returned_admission = consumed.work.admission.as_ref().unwrap();
+            assert_eq!(returned_admission.0.bank_id(), bank.bank_id());
+            assert_eq!(returned_admission.1, vec![Ok(())]);
+            assert!(matches!(
+                &results[0],
+                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout)
+            ));
+            assert_eq!(bank.get_balance(&pubkey1), 0);
+            assert_eq!(tracker.block_cost(), estimate);
+            assert_eq!(tracker.in_flight_transaction_count(), 1);
+        } else {
+            assert!(consumed.retryable_indexes.is_empty());
+            assert_eq!(
+                consumed.work.admission.is_none(),
+                admission_matches != Some(false)
+            );
+            assert!(matches!(
+                &results[0],
+                TransactionResult::Committed(result) if result.execution_success
+            ));
+            assert_eq!(bank.get_balance(&pubkey1), 1);
+            assert!(tracker.block_cost() > 0);
+            if admission_matches == Some(true) {
+                assert!(tracker.block_cost() <= estimate);
+            }
+            assert_eq!(tracker.in_flight_transaction_count(), 0);
+        }
     }
 
     #[test]
@@ -2886,6 +3010,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -2956,6 +3081,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -2969,6 +3095,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -3115,6 +3242,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -3217,6 +3345,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: true,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 

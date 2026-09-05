@@ -8,7 +8,9 @@ use {
     agave_feature_set::FeatureSet,
     smallvec::SmallVec,
     solana_cost_model::{
-        cost_model::CostModel, cost_tracker::UpdatedCosts, transaction_cost::TransactionCost,
+        cost_model::CostModel,
+        cost_tracker::{CostTrackerError, UpdatedCosts},
+        transaction_cost::TransactionCost,
     },
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -54,9 +56,53 @@ impl QosService {
         )
     }
 
+    /// Reserves transaction costs in order and returns the decisions and reserved-cost sum.
+    /// A block-limit shortfall covered by unsettled estimates rolls back this attempt and returns
+    /// `None`; every other rejection is final.
+    pub(super) fn try_admit_transactions(
+        bank: &Bank,
+        transactions: &[impl TransactionWithMeta],
+        pre_results: impl Iterator<Item = transaction::Result<()>>,
+        inflight_reserved_cost: u64,
+    ) -> Option<(Vec<transaction::Result<()>>, u64)> {
+        let transaction_costs =
+            Self::compute_transaction_costs(&bank.feature_set, transactions.iter(), pre_results);
+
+        let mut cost_tracker = bank.write_cost_tracker().unwrap();
+        let mut results = Vec::with_capacity(transaction_costs.len());
+        let mut reserved_cost = 0;
+        for cost_result in &transaction_costs {
+            results.push(match cost_result {
+                Err(err) => Err(err.clone()),
+                Ok(cost) => match cost_tracker.try_add(cost) {
+                    Ok(_) => {
+                        reserved_cost += cost.sum();
+                        Ok(())
+                    }
+                    Err(CostTrackerError::WouldExceedBlockMaxLimit)
+                        if cost_tracker.block_cost().saturating_add(cost.sum())
+                            - cost_tracker.block_cost_limit()
+                            <= inflight_reserved_cost =>
+                    {
+                        for (result, cost) in results.iter().zip(&transaction_costs) {
+                            if let (Ok(()), Ok(cost)) = (result, cost) {
+                                cost_tracker.remove(cost);
+                            }
+                        }
+                        return None;
+                    }
+                    Err(err) => Err(TransactionError::from(err)),
+                },
+            });
+        }
+        cost_tracker.add_transactions_in_flight(results.iter().flatten().count());
+        drop(cost_tracker);
+        Some((results, reserved_cost))
+    }
+
     // invoke cost_model to calculate cost for the given list of transactions that have not
     // been filtered out already.
-    fn compute_transaction_costs<'a, Tx: TransactionWithMeta>(
+    pub(super) fn compute_transaction_costs<'a, Tx: TransactionWithMeta>(
         feature_set: &FeatureSet,
         transactions: impl Iterator<Item = &'a Tx>,
         pre_results: impl Iterator<Item = transaction::Result<()>>,

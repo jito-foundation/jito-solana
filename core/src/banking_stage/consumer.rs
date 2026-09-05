@@ -187,6 +187,7 @@ impl Consumer {
             bank,
             txs,
             check_results,
+            None,
             &ExecutionFlags {
                 drop_on_failure: revert_on_error,
                 all_or_nothing: revert_on_error,
@@ -212,10 +213,11 @@ impl Consumer {
         flags: &ExecutionFlags,
     ) -> ProcessTransactionBatchOutput {
         self.process_and_record_aged_transactions_with_policy(
-            bank, txs, max_ages, flags, None, false,
+            bank, txs, max_ages, flags, None, false, None,
         )
     }
 
+    /// Supplied admission results must have reserved costs on `bank`; this call settles them.
     pub fn process_and_record_aged_transactions_with_policy(
         &self,
         bank: &Bank,
@@ -224,7 +226,19 @@ impl Consumer {
         flags: &ExecutionFlags,
         bundle_account_locker: Option<&BundleAccountLocker>,
         revert_on_error: bool,
+        admission_results: Option<Vec<Result<(), TransactionError>>>,
     ) -> ProcessTransactionBatchOutput {
+        if let Some(results) = admission_results {
+            return self.process_and_record_transactions_with_pre_results(
+                bank,
+                txs,
+                results.into_iter(),
+                Some(max_ages),
+                flags,
+                bundle_account_locker,
+                revert_on_error,
+            );
+        }
         // Need to filter out transactions since they were sanitized earlier.
         // This means that the transaction may cross and epoch boundary (not allowed),
         //  or account lookup tables may have been closed.
@@ -239,6 +253,7 @@ impl Consumer {
             bank,
             txs,
             pre_results,
+            None,
             flags,
             bundle_account_locker,
             revert_on_error,
@@ -250,6 +265,7 @@ impl Consumer {
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
+        preadmitted: Option<&[MaxAge]>,
         flags: &ExecutionFlags,
         bundle_account_locker: Option<&BundleAccountLocker>,
         revert_on_error: bool,
@@ -257,11 +273,18 @@ impl Consumer {
         let (
             (transaction_qos_cost_results, cost_model_throttled_transactions_count),
             cost_model_us,
-        ) = measure_us!(QosService::select_and_accumulate_transaction_costs(
-            bank,
-            txs,
-            pre_results,
-        ));
+        ) = measure_us!(match preadmitted {
+            Some(_) => {
+                let costs = QosService::compute_transaction_costs(
+                    &bank.feature_set,
+                    txs.iter(),
+                    pre_results,
+                );
+                let rejected = costs.iter().filter(|cost| cost.is_err()).count() as u64;
+                (costs, rejected)
+            }
+            None => QosService::select_and_accumulate_transaction_costs(bank, txs, pre_results),
+        });
 
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
@@ -272,9 +295,17 @@ impl Consumer {
                 txs,
                 transaction_qos_cost_results
                     .iter()
-                    .zip(txs.iter())
-                    .map(|(r, tx)| match r {
+                    .zip(txs.iter().enumerate())
+                    .map(|(r, (index, tx))| match r {
                         Ok(_cost) => {
+                            if let Some(max_ages) = preadmitted {
+                                let max_age = max_ages[index];
+                                bank.resanitize_transaction_minimally(
+                                    tx,
+                                    max_age.sanitized_epoch,
+                                    max_age.alt_invalidation_slot,
+                                )?;
+                            }
                             let Some(l_bundle_account_locker) = &l_bundle_account_locker else {
                                 return Ok(());
                             };
@@ -1568,8 +1599,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_write_persist_loaded_addresses() {
+    #[test_case(false; "persist_loaded_addresses")]
+    #[test_case(true; "preadmitted_lookup_invalidated")]
+    fn test_write_persist_loaded_addresses(invalidate_lookup: bool) {
         let (transaction_status_sender, transaction_status_receiver) = bounded(1024);
         let tss = Some(TransactionStatusSender {
             sender: transaction_status_sender,
@@ -1623,6 +1655,59 @@ mod tests {
             &ReservedAccountKeys::empty_key_set(),
         )
         .unwrap();
+
+        if invalidate_lookup {
+            let transactions = std::slice::from_ref(&sanitized_tx);
+            let max_age = MaxAge {
+                sanitized_epoch: bank.epoch(),
+                // Reload the lookup table during minimal resanitization.
+                alt_invalidation_slot: bank.slot() - 1,
+            };
+            let resanitize = || {
+                bank.resanitize_transaction_minimally(
+                    &sanitized_tx,
+                    max_age.sanitized_epoch,
+                    max_age.alt_invalidation_slot,
+                )
+            };
+            let (admission_results, _) = QosService::try_admit_transactions(
+                &bank,
+                transactions,
+                std::iter::once(resanitize()),
+                0,
+            )
+            .unwrap();
+            assert_eq!(admission_results, vec![Ok(())]);
+            // The lookup changes after admission, so the worker must recheck and release it.
+            bank.store_account(
+                &address_table_key,
+                &AccountSharedData::new(1, 0, &system_program::id()),
+            );
+            let expected_error = resanitize().unwrap_err();
+            let output = consumer.process_and_record_aged_transactions_with_policy(
+                &bank,
+                transactions,
+                &[max_age],
+                &ExecutionFlags {
+                    drop_on_failure: false,
+                    all_or_nothing: false,
+                },
+                None,
+                false,
+                Some(admission_results),
+            );
+            assert_eq!(
+                output
+                    .execute_and_commit_transactions_output
+                    .commit_transactions_result
+                    .unwrap(),
+                vec![CommitTransactionDetails::NotCommitted(expected_error)]
+            );
+            let tracker = bank.read_cost_tracker().unwrap();
+            assert_eq!(tracker.block_cost(), 0);
+            assert_eq!(tracker.in_flight_transaction_count(), 0);
+            return;
+        }
         let batch_transactions_inner = [&sanitized_tx]
             .into_iter()
             .map(|tx| tx.clone().into_inner_transaction())
@@ -1650,6 +1735,84 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(committed_transaction.status.is_ok());
+    }
+
+    #[test_case(false; "partial_batch")]
+    #[test_case(true; "revert_on_error")]
+    fn test_preadmitted_rejection_preserves_batch_policy(revert_on_error: bool) {
+        let TestFrame {
+            mint_keypair,
+            bank,
+            consumer,
+            record_receiver: _record_receiver,
+            ..
+        } = setup_test(None);
+        let low_payer = Keypair::new();
+        bank.transfer(1_000, &mint_keypair, &low_payer.pubkey())
+            .unwrap();
+        let high_recipient = Pubkey::new_unique();
+        let low_recipient = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![
+            system_transaction::transfer(&mint_keypair, &high_recipient, 1, bank.last_blockhash()),
+            system_transaction::transfer(&low_payer, &low_recipient, 1, bank.last_blockhash()),
+        ]);
+        // A scheduler rejection stays final even if the bank has room when the worker runs.
+        let (admission_results, _) = QosService::try_admit_transactions(
+            &bank,
+            &transactions,
+            [Err(TransactionError::WouldExceedMaxBlockCostLimit), Ok(())].into_iter(),
+            0,
+        )
+        .unwrap();
+        let max_age = MaxAge {
+            sanitized_epoch: bank.epoch(),
+            alt_invalidation_slot: bank.slot(),
+        };
+        let output = consumer.process_and_record_aged_transactions_with_policy(
+            &bank,
+            &transactions,
+            &[max_age; 2],
+            &ExecutionFlags {
+                drop_on_failure: revert_on_error,
+                all_or_nothing: revert_on_error,
+            },
+            None,
+            revert_on_error,
+            Some(admission_results),
+        );
+        assert_eq!(output.cost_model_throttled_transactions_count, 1);
+        assert_eq!(
+            output
+                .execute_and_commit_transactions_output
+                .retryable_transaction_indexes,
+            vec![RetryableIndex::new(0, false)]
+        );
+        let results = output
+            .execute_and_commit_transactions_output
+            .commit_transactions_result
+            .unwrap();
+        assert!(matches!(
+            results[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::WouldExceedMaxBlockCostLimit)
+        ));
+        assert_eq!(bank.get_balance(&high_recipient), 0);
+        let tracker = bank.read_cost_tracker().unwrap();
+        if revert_on_error {
+            assert!(matches!(
+                results[1],
+                CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+            ));
+            assert_eq!(bank.get_balance(&low_recipient), 0);
+            assert_eq!(tracker.block_cost(), 0);
+        } else {
+            assert!(matches!(
+                results[1],
+                CommitTransactionDetails::Committed { .. }
+            ));
+            assert_eq!(bank.get_balance(&low_recipient), 1);
+            assert!(tracker.block_cost() > 0);
+        }
+        assert_eq!(tracker.in_flight_transaction_count(), 0);
     }
 
     #[test]
