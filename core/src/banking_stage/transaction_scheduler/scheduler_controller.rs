@@ -1104,6 +1104,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    admission: None,
                 },
                 retryable_indexes: vec![],
                 extra_info: None,
