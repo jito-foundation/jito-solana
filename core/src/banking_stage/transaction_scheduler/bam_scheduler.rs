@@ -294,6 +294,28 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 continue;
             }
 
+            // Validate borrowed transactions before allocating or acquiring a work object.
+            let check_error = {
+                let mut txns = SmallVec::<[&Tx; MAX_PACKETS_PER_BUNDLE]>::new();
+                let missing = batch_ids.iter().enumerate().find_map(|(index, txn_id)| {
+                    let Some(tx) = container.get_transaction(*txn_id) else {
+                        return Some((index, TransactionError::SanitizeFailure));
+                    };
+                    txns.push(tx);
+                    None
+                });
+                missing.or_else(|| self.check_transactions(admission_bank, &txns))
+            };
+            if let Some((index, err)) = check_error {
+                container.remove_by_id(id.id);
+                self.prio_graph.unblock(&id);
+                self.send_back_result(
+                    seq_id,
+                    Self::not_committed_result(index, NotCommittedReason::Error(err)),
+                );
+                continue;
+            }
+
             let mut work = self
                 .reusable_consume_work
                 .pop()
@@ -309,29 +331,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     admission: None,
                 });
             work.ids.extend(batch_ids);
-            let preparation_error = work.ids.iter().enumerate().find_map(|(index, txn_id)| {
-                let Some(state) = container.get_mut_transaction_state(*txn_id) else {
-                    return Some((index, TransactionError::SanitizeFailure));
-                };
-                let (transaction, max_age) = state.take_transaction_for_scheduling();
+            // The entries were checked above and the container is exclusively borrowed.
+            for (transaction, max_age) in work.ids.iter().filter_map(|txn_id| {
+                container
+                    .get_mut_transaction_state(*txn_id)
+                    .map(|state| state.take_transaction_for_scheduling())
+            }) {
                 work.transactions.push(transaction);
                 work.max_ages.push(max_age);
-                None
-            });
-
-            // Reject incomplete batches before reserving cost or executing a partial bundle.
-            if let Some((index, err)) = preparation_error
-                .or_else(|| self.check_transactions(admission_bank, &work.transactions))
-            {
-                self.recycle_work_object(work);
-                container.remove_by_id(id.id);
-                self.prio_graph.unblock(&id);
-
-                self.send_back_result(
-                    seq_id,
-                    Self::not_committed_result(index, NotCommittedReason::Error(err)),
-                );
-                continue;
             }
 
             // Admit cost here, in pop order, so eight workers racing for the cost tracker cannot
@@ -1239,8 +1246,9 @@ mod tests {
     /// `insert_transaction` skips a blocker equal to the node itself); 0.1.0
     /// lacked that guard and panicked. Guards against regressing to a version
     /// without it.
-    #[test]
-    fn test_pull_bundle_with_shared_writable_account_does_not_panic() {
+    #[test_case::test_case(false; "empty_work_pool")]
+    #[test_case::test_case(true; "reused_work")]
+    fn test_pull_bundle_with_shared_writable_account_does_not_panic(reuse_work: bool) {
         let (mut test, bank) = admission_scheduler();
         let scheduler = &mut test.scheduler;
 
@@ -1284,14 +1292,35 @@ mod tests {
             "bundle sharing a writable account should be inserted and schedulable"
         );
 
-        // A dispatch-time recheck rejects the default blockhash after taking the transactions.
-        // It must recycle the work, clear the graph node, and leave no reservation behind.
+        if reuse_work {
+            scheduler.reusable_consume_work.push(ConsumeWork {
+                batch_id: super::TransactionBatchId::new(0),
+                ids: Vec::with_capacity(1),
+                transactions: Vec::with_capacity(super::MAX_PACKETS_PER_BUNDLE),
+                max_ages: Vec::with_capacity(super::MAX_PACKETS_PER_BUNDLE),
+                revert_on_error: false,
+                respond_with_extra_info: true,
+                target_slot: bank.slot(),
+                max_schedule_slot: Some(bank.slot()),
+                admission: None,
+            });
+        }
+        // Reject the default blockhash before building work or growing a reused ID buffer.
         scheduler.extra_checks_enabled = true;
         assert_eq!(scheduler.send_to_workers(&mut container).unwrap(), 0);
         assert!(scheduler.prio_graph.is_empty());
         assert_eq!(container.buffer_size(), 0);
         assert_eq!(block_cost_and_in_flight(&bank), (0, 0));
-        assert!(scheduler.reusable_consume_work[0].transactions.is_empty());
+        assert_eq!(
+            scheduler.reusable_consume_work.len(),
+            usize::from(reuse_work)
+        );
+        if let Some(work) = scheduler.reusable_consume_work.first() {
+            assert_eq!(work.ids.capacity(), 1);
+            assert!(work.ids.is_empty());
+            assert!(work.transactions.is_empty());
+            assert!(work.max_ages.is_empty());
+        }
     }
 
     // ---- scheduler-side cost admission (JSA-72) ----
