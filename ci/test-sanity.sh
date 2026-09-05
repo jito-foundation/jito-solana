@@ -91,6 +91,7 @@ EOF
   fi
 )
 
+./ci/test-dcou.sh
 ./scripts/cargo-install-all.sh --dcou-check-only
 
 echo --- ok
