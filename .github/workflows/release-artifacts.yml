@@ -7,6 +7,7 @@ on:
   push:
     tags:
       - "v*-jito"
+      - "v*-jito.[0-9]*"  # hotfix re-cuts, e.g. v4.2.2-jito.1
   # Self-test: PR runs build but never touch a release.
   pull_request:
     paths:
