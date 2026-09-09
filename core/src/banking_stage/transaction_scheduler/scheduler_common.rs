@@ -247,18 +247,14 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
             Ok(FinishedConsumeWork {
                 work:
                     ConsumeWork {
-                        target_slot: _,
                         batch_id,
                         mut ids,
                         mut transactions,
                         mut max_ages,
-                        revert_on_error: _,
-                        respond_with_extra_info: _,
-                        max_schedule_slot: _,
-                        admission: _,
+                        ..
                     },
                 retryable_indexes,
-                extra_info: _,
+                ..
             }) => {
                 let num_transactions = ids.len();
                 let num_retryable = retryable_indexes.len();

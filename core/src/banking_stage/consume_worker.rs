@@ -4,8 +4,7 @@ use {
         consumer::{Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         scheduler_messages::{
-            ConsumeWork, FinishedConsumeWork, FinishedConsumeWorkExtraInfo, NotCommittedReason,
-            TransactionResult,
+            ConsumeWork, FinishedConsumeWork, NotCommittedReason, TransactionResult,
         },
     },
     crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex},
@@ -17,7 +16,6 @@ use {
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
     std::{
-        marker::PhantomData,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -28,23 +26,17 @@ use {
 };
 
 #[derive(Debug, Error)]
-pub enum ConsumeWorkerError<Tx> {
+pub enum ConsumeWorkerError {
     #[error("Failed to receive work from scheduler: {0}")]
     Recv(#[from] TryRecvError),
     #[error("Scheduler channel disconnected")]
-    Send(PhantomData<Tx>),
+    Send,
 }
 
-impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError<Tx> {
+impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError {
     fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
-        Self::Send(PhantomData)
+        Self::Send
     }
-}
-
-enum ProcessingStatus<Tx> {
-    Processed,
-    /// Work could not be processed due to lack of bank.
-    CouldNotProcess(ConsumeWork<Tx>),
 }
 
 pub(crate) struct ConsumeWorker<Tx> {
@@ -80,8 +72,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    #[allow(clippy::result_large_err)]
-    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
+    pub fn run(self) -> Result<(), ConsumeWorkerError> {
         let mut did_work = false;
         let mut last_empty_time = Instant::now();
         let mut sleep_duration = STARTING_SLEEP_DURATION;
@@ -90,11 +81,8 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             match self.consume_receiver.try_recv() {
                 Ok(work) => {
                     did_work = true;
-                    match self.consume(work)? {
-                        ProcessingStatus::Processed => {}
-                        ProcessingStatus::CouldNotProcess(work) => {
-                            self.retry_drain(work)?;
-                        }
+                    if let Some(work) = self.consume(work)? {
+                        self.retry_drain(work)?;
                     }
                 }
                 Err(TryRecvError::Empty) => {
@@ -116,26 +104,25 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(())
     }
 
-    /// Consume a single batch.
-    #[allow(clippy::result_large_err)]
+    /// Consume a batch, returning unprocessed work when no matching bank is active.
     fn consume(
         &self,
         mut work: ConsumeWork<Tx>,
-    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
+    ) -> Result<Option<ConsumeWork<Tx>>, ConsumeWorkerError> {
         let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
-            return Ok(ProcessingStatus::CouldNotProcess(work));
+            return Ok(Some(work));
         };
         let bank = leader_state
             .working_bank()
             .expect("active_leader_state should only return an active bank");
         if bank.slot() != work.target_slot {
-            return Ok(ProcessingStatus::CouldNotProcess(work));
+            return Ok(Some(work));
         }
 
         if let Some(max_schedule_slot) = work.max_schedule_slot
             && max_schedule_slot < bank.slot()
         {
-            return self.retry(work);
+            return self.retry(work).map(|()| None);
         }
 
         self.metrics
@@ -150,7 +137,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             && owner.bank_id() != bank.bank_id()
         {
             // A replacement Bank needs ordered admission again, through the scheduler.
-            return self.retry(work);
+            return self.retry(work).map(|()| None);
         }
         let admission_results = work.admission.take().map(|(_, results)| results);
         let output = self
@@ -181,10 +168,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 .retryable_transaction_indexes,
             extra_info,
         })?;
-        Ok(ProcessingStatus::Processed)
+        Ok(None)
     }
 
-    /// Builds `FinishedConsumeWorkExtraInfo` from consume output for BAM responses.
+    /// Builds per-transaction results from consume output for BAM responses.
     ///
     /// If commit details are available, each `CommitTransactionDetails` is mapped into a
     /// `TransactionResult` with commit metadata or a not-committed error. If commit details are
@@ -193,20 +180,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn build_finished_consume_work_extra_info(
         output: &ProcessTransactionBatchOutput,
         work: &ConsumeWork<Tx>,
-    ) -> FinishedConsumeWorkExtraInfo {
+    ) -> Vec<TransactionResult> {
         let Ok(commit_transactions_result) = output
             .execute_and_commit_transactions_output
             .commit_transactions_result
             .as_ref()
         else {
-            return FinishedConsumeWorkExtraInfo {
-                processed_results: vec![
-                    TransactionResult::NotCommitted(
-                        NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
-                    );
-                    work.transactions.len()
-                ],
-            };
+            return vec![
+                TransactionResult::NotCommitted(
+                    NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
+                );
+                work.transactions.len()
+            ];
         };
 
         let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
@@ -235,12 +220,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        FinishedConsumeWorkExtraInfo { processed_results }
+        processed_results
     }
 
     /// Retry current batch and all outstanding batches.
-    #[allow(clippy::result_large_err)]
-    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
+    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
         for work in try_drain_iter(work, &self.consume_receiver) {
             if self.exit.load(Ordering::Relaxed) {
                 return Ok(());
@@ -251,8 +235,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Send transactions back to scheduler as retryable.
-    #[allow(clippy::result_large_err)]
-    fn retry(&self, work: ConsumeWork<Tx>) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
+    fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
         let retryable_indexes: Vec<_> = (0..work.transactions.len())
             .map(|index| RetryableIndex {
                 index,
@@ -269,21 +252,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .retryable_expired_bank_count
             .fetch_add(num_retryable, Ordering::Relaxed);
         self.metrics.has_data.store(true, Ordering::Relaxed);
-        let extra_info = if work.respond_with_extra_info {
-            Some(FinishedConsumeWorkExtraInfo {
-                processed_results: (0..work.transactions.len())
-                    .map(|_| TransactionResult::NotCommitted(NotCommittedReason::PohTimeout))
-                    .collect(),
-            })
-        } else {
-            None
-        };
+        let extra_info = work.respond_with_extra_info.then(|| {
+            vec![
+                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout);
+                work.transactions.len()
+            ]
+        });
         self.consumed_sender.send(FinishedConsumeWork {
             work,
             retryable_indexes,
             extra_info,
         })?;
-        Ok(ProcessingStatus::Processed)
+        Ok(())
     }
 }
 
@@ -2317,8 +2297,6 @@ impl ConsumeWorkerTransactionErrorMetrics {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::result_large_err)]
-
     use {
         super::*,
         crate::{
@@ -2588,7 +2566,7 @@ mod tests {
             assert_eq!(owner.bank_id(), bank.bank_id());
             assert_eq!(results.as_slice(), &[Ok(())]);
             assert!(matches!(
-                consumed.extra_info.unwrap().processed_results[0],
+                consumed.extra_info.unwrap()[0],
                 TransactionResult::NotCommitted(NotCommittedReason::PohTimeout)
             ));
         }
@@ -3326,7 +3304,7 @@ mod tests {
             assert_eq!(frame.bank.get_balance(&recipient), amount);
             assert!(finished.work.admission.is_none());
             assert!(matches!(
-                &finished.extra_info.as_ref().unwrap().processed_results[0],
+                &finished.extra_info.as_ref().unwrap()[0],
                 TransactionResult::Committed(result) if result.execution_success
             ));
             let records: Vec<_> = frame.record_receiver.drain().collect();

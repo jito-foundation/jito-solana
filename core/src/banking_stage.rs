@@ -627,6 +627,7 @@ impl BankingStage {
                         .name("solBnkTxSched".to_string())
                         .spawn(move || {
                             let mut scheduler_controller = SchedulerController::new(
+                                0,
                                 exit,
                                 config_cloned,
                                 decision_maker,
@@ -735,7 +736,7 @@ impl BankingStage {
 
                         let bam_sharable_banks =
                             bam_scheduler_bank_forks.read().unwrap().sharable_banks();
-                        let mut scheduler_controller = SchedulerController::new_with_metrics_id(
+                        let mut scheduler_controller = SchedulerController::new(
                             BAM_METRICS_ID_OFFSET,
                             bam_scheduler_exit,
                             scheduler_config,

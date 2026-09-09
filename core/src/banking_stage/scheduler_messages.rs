@@ -9,18 +9,12 @@ use {
 };
 
 /// A unique identifier for a transaction batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct TransactionBatchId(pub u64);
 
 impl TransactionBatchId {
     pub fn new(index: u64) -> Self {
         Self(index)
-    }
-}
-
-impl std::hash::Hash for TransactionBatchId {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0)
     }
 }
 
@@ -48,6 +42,8 @@ impl MaxAge {
     };
 }
 
+pub type CostAdmission = (Arc<Bank>, SmallVec<[CostResult<()>; 1]>);
+
 /// Message: [Scheduler -> Worker]
 /// Transactions to be consumed (i.e. executed, recorded, and committed)
 pub struct ConsumeWork<Tx> {
@@ -60,7 +56,7 @@ pub struct ConsumeWork<Tx> {
     pub respond_with_extra_info: bool,
     pub max_schedule_slot: Option<Slot>,
     /// Admission bank and cost results, taken when settled or returned for release.
-    pub admission: Option<(Arc<Bank>, SmallVec<[CostResult<()>; 1]>)>,
+    pub admission: Option<CostAdmission>,
 }
 
 /// Message: [Worker -> Scheduler]
@@ -68,12 +64,7 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<RetryableIndex>,
-    pub extra_info: Option<FinishedConsumeWorkExtraInfo>,
-}
-
-#[derive(Debug)]
-pub struct FinishedConsumeWorkExtraInfo {
-    pub processed_results: Vec<TransactionResult>,
+    pub extra_info: Option<Vec<TransactionResult>>,
 }
 
 #[derive(Clone, Debug)]
