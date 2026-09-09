@@ -64,8 +64,44 @@ def proc_status(path):
                 (line.split(':', 1) for line in path.read_text().splitlines()))
 
 
+def proc_stat(text):
+    # comm can contain spaces and parentheses; fields resume after the last ')'.
+    pid, opening, rest = text.partition('(')
+    name, closing, tail = rest.rpartition(')')
+    fields = tail.split()
+    if not opening or not closing or len(fields) < 37:
+        raise ValueError('Incomplete task stat')
+    return {'tid': int(pid), 'name': name, 'state': fields[0],
+            'utime_ticks': int(fields[11]), 'stime_ticks': int(fields[12]),
+            'starttime_ticks': int(fields[19]), 'last_cpu': int(fields[36])}
+
+
+def task_sample(path):
+    before = proc_stat(path.with_name('stat').read_text())
+    row = proc_status(path)
+    after = proc_stat(path.with_name('stat').read_text())
+    if ((before['tid'], before['starttime_ticks']) !=
+            (after['tid'], after['starttime_ticks']) or after['tid'] != int(row['Pid'])):
+        raise ValueError('Task identity changed while sampling')
+    return {**after, 'affinity': row['Cpus_allowed_list'],
+            'voluntary_ctxt_switches': int(row['voluntary_ctxt_switches']),
+            'nonvoluntary_ctxt_switches': int(row['nonvoluntary_ctxt_switches']),
+            'observed_monotonic_ns': time.monotonic_ns()}
+
+
 def process_sample(parent, binary):
-    """Observe descendants and per-thread affinity; never infer it from nproc."""
+    """Observe exact test descendants; kernel thread names do not identify stages."""
+    started_at, started_ns = time.time(), time.monotonic_ns()
+    pressure = {'observed_monotonic_ns': time.monotonic_ns()}
+    for resource in ('cpu', 'io'):
+        try:
+            pressure[resource] = Path(f'/proc/pressure/{resource}').read_text()
+        except OSError:
+            pressure[resource] = None
+    try:
+        boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    except OSError:
+        boot_id = None
     rows = {}
     for path in Path('/proc').glob('[0-9]*/status'):
         try:
@@ -82,32 +118,52 @@ def process_sample(parent, binary):
     selected = []
     for pid in sorted(descendants):
         try:
-            if Path(f'/proc/{pid}/exe').resolve(strict=True) != binary:
+            process_path = Path(f'/proc/{pid}')
+            if (process_path / 'exe').resolve(strict=True) != binary:
                 continue
-            row = rows[pid]
+            identity = proc_stat((process_path / 'stat').read_text())
+            row = proc_status(process_path / 'status')
             affinities, pools = Counter(), Counter()
-            for path in Path(f'/proc/{pid}/task').glob('*/status'):
+            threads, thread_errors = [], 0
+            for path in process_path.glob('task/*/status'):
                 try:
-                    thread = proc_status(path)
-                    affinities[thread['Cpus_allowed_list']] += 1
-                    pools[(thread['Name'], thread['Cpus_allowed_list'])] += 1
+                    thread = task_sample(path)
+                    affinities[thread['affinity']] += 1
+                    pools[(thread['name'], thread['affinity'])] += 1
+                    threads.append(thread)
                 except (OSError, ValueError, KeyError):
-                    pass
+                    # Exited/reused tasks are omitted, never joined to another lifetime.
+                    thread_errors += 1
             environment = {}
-            for item in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'):
+            for item in (process_path / 'environ').read_bytes().split(b'\0'):
                 key, _, value = item.partition(b'=')
                 if key in (b'NEXTEST_RUN_ID', b'NEXTEST_ATTEMPT', b'NEXTEST_STRESS_INDEX'):
                     environment[key.decode()] = value.decode(errors='replace')
+            after = proc_stat((process_path / 'stat').read_text())
+            if ((identity['tid'], identity['starttime_ticks']) !=
+                    (after['tid'], after['starttime_ticks']) or
+                    (process_path / 'exe').resolve(strict=True) != binary):
+                continue
             selected.append({'pid': pid, 'exe': str(binary),
                 **{key: row.get(key) for key in ('Name', 'PPid', 'Threads', 'VmRSS',
                                                 'Cpus_allowed_list')},
+                'starttime_ticks': identity['starttime_ticks'],
                 'thread_affinity_counts': dict(affinities),
                 'pools': [{'name': key[0], 'affinity': key[1], 'count': count}
                           for key, count in sorted(pools.items())],
+                'threads': threads, 'thread_observation_errors': thread_errors,
                 'nextest_environment': environment})
-        except (OSError, KeyError):
+        except (OSError, ValueError, KeyError):
             pass
-    return {'time': time.time(), 'processes': selected}
+    return {'time': time.time(), 'processes': selected,
+            'sample_started_at': started_at, 'sample_started_monotonic_ns': started_ns,
+            'sample_elapsed_ns': time.monotonic_ns() - started_ns,
+            'boot_id': boot_id, 'clock_ticks_per_second': os.sysconf('SC_CLK_TCK'),
+            'host_pressure': pressure, 'pressure_total_unit': 'microseconds',
+            'thread_counter_note': 'Cumulative ticks and context switches; join boot, '
+                'process and task start identities. Exited unsampled tasks are missing.',
+            'thread_name_note': 'Kernel comm names; generic Tokio names do not identify '
+                'a specific runtime or stage.'}
 
 
 def execute(argv, repo, out, label, env, deadline, timeout, binary=None, check=True):
