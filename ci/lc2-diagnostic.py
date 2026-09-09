@@ -110,7 +110,7 @@ def run_logged(label, command, timeout):
             archive.add(ledger_dir, arcname=ledger_dir.name)
     text = path.read_text(errors="replace")
     selected = [line for line in text.splitlines() if re.search(
-        r"lc2-|BlockAborted|ChainedBlockId|more than 10|FAIL|PASS|ABRT|error\[|^error:|test result:", line)]
+        r"lc2-(purge|dead)|duplicate-(batch|variants)|BlockAborted|ChainedBlockId|more than 10|FAIL|PASS|ABRT|error\[|^error:|test result:", line)]
     print("\n".join(selected[-120:]) or text[-12000:], flush=True)
     with gzip.open(str(path) + ".gz", "wt") as archive:
         archive.write(text)
@@ -143,30 +143,41 @@ def run():
     return int(any(result["exit_code"] for result in results))
 
 
-def host():
+def host(phase="baseline"):
     import fcntl
     # Serialize our diagnostics if both jobs land on the same physical host.
     lock = open("/tmp/jito-lc2-diagnostic.lock", "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
     facts("host")
-    result = subprocess.run(["ci/docker-run-default-image.sh", "python3",
-                             "ci/lc2-diagnostic.py", "run"], check=False)
+    command = (["python3", "ci/lc2-source-matrix.py"] if phase == "matrix"
+               else ["python3", "ci/lc2-diagnostic.py", "run"])
+    result = subprocess.run(["ci/docker-run-default-image.sh", *command], check=False)
+    for path in Path("target/lc2-matrix").glob("*/*.log"):
+        with path.open("rb") as source, gzip.open(str(path) + ".gz", "wb") as archive:
+            import shutil
+            shutil.copyfileobj(source, archive)
+    subprocess.run(["buildkite-agent", "artifact", "upload",
+                    "target/lc2-matrix/*/*.json;target/lc2-matrix/*/*.log.gz;target/lc2-matrix/*/*.toml"], check=False)
     subprocess.run(["buildkite-agent", "artifact", "upload",
                     "target/lc2-diagnostic/*.json;target/lc2-diagnostic/*.jsonl;target/lc2-diagnostic/*.gz"], check=False)
     return result.returncode
 
 
-def pipeline():
+def pipeline(phase="baseline"):
     steps = []
     for index in range(2):
-        steps.append({"label": "lc2-diagnostic baseline-" + str(index + 1),
-                      "command": "python3 ci/lc2-diagnostic.py host",
+        steps.append({"label": "lc2-diagnostic " + phase + "-" + str(index + 1),
+                      "command": "python3 ci/lc2-diagnostic.py host " + phase,
                       "agents": {"queue": "default"},
-                      "timeout_in_minutes": 65,
+                      "timeout_in_minutes": 260 if phase == "matrix" else 65,
                       "retry": {"automatic": False}})
     print(json.dumps({"steps": steps}))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit({"pipeline": pipeline, "host": host, "run": run}[sys.argv[1]]())
+    phase = sys.argv[2] if len(sys.argv) > 2 else "baseline"
+    if phase not in ("baseline", "matrix"):
+        raise SystemExit("Unknown experiment phase: " + phase)
+    action = sys.argv[1]
+    raise SystemExit(run() if action == "run" else {"pipeline": pipeline, "host": host}[action](phase))
