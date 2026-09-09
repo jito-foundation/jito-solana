@@ -200,6 +200,9 @@ impl BamManager {
                     builder_config_version = 0;
                     if let Some(control) = &jito_control {
                         let _generation_guard = control.bam_generation_lock.write().unwrap();
+                        // This new stream fulfills any reconnect already requested while
+                        // disconnected. Keep requests raised during authentication pending.
+                        control.reconnect_bam.swap(false, Ordering::AcqRel);
                         control.bam_generation.fetch_add(1, Ordering::AcqRel);
                     }
                     let result = runtime.block_on(BamConnection::try_init_with_jito(

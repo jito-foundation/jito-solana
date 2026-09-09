@@ -116,6 +116,8 @@ use {
     strum::{EnumCount, IntoEnumIterator},
 };
 
+mod scheduler_bindings_tests;
+
 fn create_test_validator_keys(keypairs: &[&str]) -> Vec<(ValidatorKeys, bool)> {
     keypairs
         .iter()
@@ -152,71 +154,9 @@ fn test_local_cluster_start_and_exit() {
 #[serial]
 fn test_jito_scheduler_bindings_transfer_fallback_and_reconnect() {
     use {
-        agave_scheduling_utils::handshake::client,
-        jito_scheduler::{SchedulerError, SchedulerStats},
+        scheduler_bindings_tests::RunningScheduler,
         solana_rpc_client_api::config::RpcSendTransactionConfig,
     };
-
-    struct RunningScheduler {
-        exit: Arc<AtomicBool>,
-        thread: Option<JoinHandle<Result<SchedulerStats, SchedulerError>>>,
-    }
-    impl RunningScheduler {
-        fn attach(path: &Path) -> Self {
-            let mut logon = jito_scheduler::client_logon(2, 2);
-            logon.allocator_size = 64 * 1024 * 1024;
-            let mut session = client::connect(path, logon, Duration::from_secs(10)).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(20);
-            // Progress is published only after the validator has installed this session's
-            // workers and paused its internal scheduler. Wait for a real leader bank.
-            loop {
-                if session
-                    .jito
-                    .as_mut()
-                    .unwrap()
-                    .progress
-                    .try_read()
-                    .is_some_and(|message| {
-                        message.progress.leader_state == agave_scheduler_bindings::LEADER_READY
-                            && message.bank_id != u64::MAX
-                    })
-                {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "external session did not acquire a leader bank"
-                );
-                sleep(Duration::from_millis(10));
-            }
-            let exit = Arc::new(AtomicBool::new(false));
-            let client_exit = exit.clone();
-            let thread = std::thread::spawn(move || {
-                jito_scheduler::run(
-                    session,
-                    client_exit,
-                    jito_scheduler::SchedulerConfig::default(),
-                )
-            });
-            Self {
-                exit,
-                thread: Some(thread),
-            }
-        }
-
-        fn stop(&mut self) -> SchedulerStats {
-            self.exit.store(true, Ordering::Release);
-            self.thread.take().unwrap().join().unwrap().unwrap()
-        }
-    }
-    impl Drop for RunningScheduler {
-        fn drop(&mut self) {
-            self.exit.store(true, Ordering::Release);
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
-        }
-    }
 
     agave_logger::setup_with_default(RUST_LOG_FILTER);
     let validator_config = ValidatorConfig {

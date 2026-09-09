@@ -9406,7 +9406,9 @@ dependencies = [
  "fs_extra",
  "gag",
  "itertools 0.15.0",
+ "jito-protos",
  "jito-scheduler",
+ "jito-scheduler-bindings",
  "log",
  "rand 0.9.4",
  "rayon",
@@ -9448,6 +9450,7 @@ dependencies = [
  "solana-runtime",
  "solana-sdk-ids",
  "solana-shred-version",
+ "solana-signature",
  "solana-signer",
  "solana-slot-hashes",
  "solana-stake-interface",
@@ -9468,7 +9471,9 @@ dependencies = [
  "strum",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tokio-util 0.7.19",
+ "tonic",
  "wincode",
 ]
 

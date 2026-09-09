@@ -101,7 +101,9 @@ agave-scheduling-utils = { workspace = true, features = ["agave-unstable-api"] }
 assert_matches = { workspace = true }
 fs_extra = { workspace = true }
 gag = { workspace = true }
+jito-protos = { workspace = true }
 jito-scheduler = { workspace = true }
+jito-scheduler-bindings = { workspace = true }
 serial_test = { workspace = true }
 solana-core = { path = "../core", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-download-utils = { path = "../download-utils", features = ["agave-unstable-api"] }
@@ -109,6 +111,9 @@ solana-genesis-utils = { path = "../genesis-utils", features = ["agave-unstable-
 solana-ledger = { path = "../ledger", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-local-cluster = { path = ".", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-runtime = { path = "../runtime", features = ["agave-unstable-api", "dev-context-only-utils"] }
+solana-signature = { workspace = true, features = ["verify"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic = { workspace = true, features = ["codegen", "router", "server"] }
 
 [lints]
 workspace = true
