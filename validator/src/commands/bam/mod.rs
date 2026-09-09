@@ -14,6 +14,14 @@ pub enum BamUrlError {
     UnsupportedScheme { scheme: String },
 }
 
+#[derive(Error, Debug, PartialEq)]
+pub enum BamRegistryUrlError {
+    #[error("BAM registry invalid URL format: {url}: {source}")]
+    InvalidUrlFormat { url: String, source: ParseError },
+    #[error("BAM registry URL unsupported scheme '{scheme}', only http and https are allowed")]
+    UnsupportedScheme { scheme: String },
+}
+
 const DEFAULT_BAM_URL_SCHEME: &str = "http";
 const DEFAULT_BAM_HTTP_PORT: u16 = 50055;
 const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
@@ -85,6 +93,45 @@ pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlErr
             }
         })
         .transpose()
+}
+
+/// Empty values disable BAM node discovery. The value is the full URL of the
+/// registry's published node list rather than a base to append a path to, so it
+/// is taken as given once the scheme is known to be HTTP(S).
+pub fn extract_bam_registry_url(
+    matches: &ArgMatches,
+) -> Result<Option<String>, BamRegistryUrlError> {
+    matches
+        .value_of("bam_registry_url")
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url_str| {
+            let url =
+                Url::parse(url_str).map_err(|source| BamRegistryUrlError::InvalidUrlFormat {
+                    url: url_str.to_owned(),
+                    source,
+                })?;
+            match url.scheme() {
+                "http" | "https" => Ok(url_str.to_owned()),
+                scheme => Err(BamRegistryUrlError::UnsupportedScheme {
+                    scheme: scheme.to_owned(),
+                }),
+            }
+        })
+        .transpose()
+}
+
+pub fn registry_argument() -> Arg<'static, 'static> {
+    Arg::with_name("bam_registry_url")
+        .long("bam-registry-url")
+        .value_name("URL")
+        .min_values(0)
+        .max_values(1)
+        .help(
+            "URL of the BAM Registry node list; leave empty to disable BAM node discovery. \
+             Ignored when --bam-url is set.",
+        )
+        .takes_value(true)
 }
 
 pub fn argument() -> Arg<'static, 'static> {
@@ -241,6 +288,69 @@ mod tests {
                 source
             })
         );
+    }
+
+    fn create_test_registry_matches(registry_url: Option<&str>) -> ArgMatches<'_> {
+        let app = clap::App::new("test-app").arg(registry_argument());
+        let args = registry_url.map_or(vec!["test-app"], |url| {
+            vec!["test-app", "--bam-registry-url", url]
+        });
+        app.get_matches_from(args)
+    }
+
+    // The registry URL names an object, so it is passed through unchanged -
+    // no scheme defaulting and no port defaulting, unlike --bam-url.
+    #[test_case("https://registry.testnet.jito.wtf/nodes.json")]
+    #[test_case("http://localhost:9000/bam-registry-serve/nodes.json")]
+    #[test_case("https://registry.jito.wtf:8443/nodes.json")]
+    fn test_extract_bam_registry_url_success(input: &str) {
+        let matches = create_test_registry_matches(Some(input));
+        assert_eq!(
+            extract_bam_registry_url(&matches).unwrap().as_deref(),
+            Some(input),
+        );
+    }
+
+    #[test_case("" ; "empty")]
+    #[test_case("   " ; "spaces")]
+    #[test_case("\t\n " ; "whitespace")]
+    fn test_extract_bam_registry_url_empty_inputs(input: &str) {
+        let matches = create_test_registry_matches(Some(input));
+        assert_eq!(extract_bam_registry_url(&matches).unwrap(), None);
+    }
+
+    #[test_case("ftp://registry.jito.wtf/nodes.json", "ftp")]
+    #[test_case("file:///tmp/nodes.json", "file")]
+    fn test_extract_bam_registry_url_unsupported_scheme(input: &str, scheme: &str) {
+        let matches = create_test_registry_matches(Some(input));
+        assert_eq!(
+            extract_bam_registry_url(&matches),
+            Err(BamRegistryUrlError::UnsupportedScheme {
+                scheme: scheme.to_owned()
+            })
+        );
+    }
+
+    // A bare host is a base, not the node list, and there is deliberately no
+    // scheme defaulting to rescue it.
+    #[test_case("registry.jito.wtf/nodes.json", ParseError::RelativeUrlWithoutBase)]
+    #[test_case("://nodes.json", ParseError::RelativeUrlWithoutBase)]
+    #[test_case("https://", ParseError::EmptyHost)]
+    fn test_extract_bam_registry_url_invalid_format(input: &str, source: ParseError) {
+        let matches = create_test_registry_matches(Some(input));
+        assert_eq!(
+            extract_bam_registry_url(&matches),
+            Err(BamRegistryUrlError::InvalidUrlFormat {
+                url: input.to_owned(),
+                source
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_bam_registry_url_missing_argument() {
+        let matches = create_test_registry_matches(None);
+        assert_eq!(extract_bam_registry_url(&matches).unwrap(), None);
     }
 
     #[test]
