@@ -6,13 +6,8 @@ use {
     itertools::Itertools,
     rand::{Rng, rng},
     solana_account::ReadableAccount as _,
-<<<<<<< HEAD
-    solana_clock::Epoch,
-=======
     solana_clock::{BankId, Epoch, Slot},
     solana_hash::Hash,
-    solana_perf::packet::bytes::Bytes,
->>>>>>> 8b2d3c32d5 (banking-stage: restore votes after bank replacement (#1596))
     solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank,
@@ -153,20 +148,7 @@ impl VoteStorage {
         );
     }
 
-<<<<<<< HEAD
-    pub fn drain_unprocessed(&mut self, bank: &Bank) -> Vec<SanitizedTransactionView<SharedBytes>> {
-        let slot_hashes = bank
-            .get_account(&sysvar::slot_hashes::id())
-            .and_then(|account| wincode::deserialize::<SlotHashes>(account.data()).ok());
-        if slot_hashes.is_none() {
-            error!(
-                "Slot hashes sysvar doesn't exist on bank {}. Including all votes without \
-                 filtering",
-                bank.slot()
-            );
-        }
-=======
-    pub(crate) fn retain_processed_vote(&mut self, pubkey: Pubkey, bytes: Bytes) {
+    pub(crate) fn retain_processed_vote(&mut self, pubkey: Pubkey, bytes: SharedBytes) {
         let vote = self
             .latest_vote_per_vote_pubkey
             .get_mut(&pubkey)
@@ -174,19 +156,18 @@ impl VoteStorage {
         vote.retained_vote = Some((bytes, vote.source(), (vote.slot(), vote.hash())));
         vote.restore_retained_on_failure = false;
     }
->>>>>>> 8b2d3c32d5 (banking-stage: restore votes after bank replacement (#1596))
 
     pub fn drain_unprocessed(
         &mut self,
         bank: &Bank,
-    ) -> Vec<(Pubkey, SanitizedTransactionView<Bytes>)> {
+    ) -> Vec<(Pubkey, SanitizedTransactionView<SharedBytes>)> {
         self.drain_unprocessed_with_deferred_restores(bank).0
     }
 
     pub(crate) fn drain_unprocessed_with_deferred_restores(
         &mut self,
         bank: &Bank,
-    ) -> (Vec<(Pubkey, SanitizedTransactionView<Bytes>)>, usize) {
+    ) -> (Vec<(Pubkey, SanitizedTransactionView<SharedBytes>)>, usize) {
         let slot_hashes = Self::load_slot_hashes(bank);
         let mut deferred_restore_count = 0;
 
@@ -268,7 +249,7 @@ impl VoteStorage {
     pub(crate) fn take_deferred_retained_vote(
         &mut self,
         pubkey: Pubkey,
-    ) -> Option<(Pubkey, SanitizedTransactionView<Bytes>)> {
+    ) -> Option<(Pubkey, SanitizedTransactionView<SharedBytes>)> {
         self.latest_vote_per_vote_pubkey
             .get_mut(&pubkey)?
             .take_deferred_retained_vote(self.deprecate_legacy_vote_ixs)
@@ -632,28 +613,12 @@ pub(crate) mod tests {
         packet
     }
 
-<<<<<<< HEAD
-    fn to_sanitized_view(packet: BytesPacket) -> SanitizedTransactionView<SharedBytes> {
+    pub(crate) fn to_sanitized_view(packet: BytesPacket) -> SanitizedTransactionView<SharedBytes> {
         SanitizedTransactionView::try_new_sanitized(
             Arc::new(packet.buffer().to_vec()),
             &sanitize_config(true),
         )
         .unwrap()
-=======
-    pub(crate) fn to_sanitized_view(packet: BytesPacket) -> SanitizedTransactionView<Bytes> {
-        SanitizedTransactionView::try_new_sanitized(packet.buffer().clone(), &sanitize_config())
-            .unwrap()
-    }
-
-    fn insert_packets(
-        vote_storage: &mut VoteStorage,
-        vote_source: VoteSource,
-        packets: impl IntoIterator<Item = SanitizedTransactionView<Bytes>>,
-    ) {
-        for packet in packets {
-            vote_storage.insert_packet(vote_source, packet);
-        }
->>>>>>> 8b2d3c32d5 (banking-stage: restore votes after bank replacement (#1596))
     }
 
     #[test]
@@ -667,24 +632,21 @@ pub(crate) mod tests {
         let bank_b = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
         let bank_d = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 2);
 
-<<<<<<< HEAD
-        let vote = packet_from_slots(vec![(0, 1)], &keypair, None);
-        let mut vote_storage = VoteStorage::new(&bank);
-        vote_storage.insert_batch(VoteSource::Tpu, std::iter::once(to_sanitized_view(vote)));
-        assert_eq!(1, vote_storage.len());
-=======
         let vote = packet_from_slots_with_hash(vec![(0, 1)], &keypair, None, root_bank.hash());
         let mut vote_storage = VoteStorage::new(&bank_a);
-        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote));
->>>>>>> 8b2d3c32d5 (banking-stage: restore votes after bank replacement (#1596))
+        vote_storage.insert_batch(VoteSource::Tpu, std::iter::once(to_sanitized_view(vote)));
 
         let (vote_pubkey, vote) = vote_storage.drain_unprocessed(&bank_a).pop().unwrap();
         vote_storage.retain_processed_vote(vote_pubkey, vote.into_inner_data());
 
         // An invalid newer vote must not destroy the retained fallback.
-        vote_storage.insert_packet(
+        vote_storage.insert_batch(
             VoteSource::Tpu,
-            to_sanitized_view(packet_from_slots(vec![(0, 2), (1, 1)], &keypair, None)),
+            std::iter::once(to_sanitized_view(packet_from_slots(
+                vec![(0, 2), (1, 1)],
+                &keypair,
+                None,
+            ))),
         );
 
         vote_storage.clear();
@@ -699,7 +661,7 @@ pub(crate) mod tests {
         // A valid newer vote is preferred, but its retained fallback survives a retry and a
         // subsequent incompatible vote.
         let vote_b = packet_from_slots_with_hash(vec![(0, 1)], &keypair, Some(1), root_bank.hash());
-        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote_b));
+        vote_storage.insert_batch(VoteSource::Tpu, std::iter::once(to_sanitized_view(vote_b)));
 
         // Prefer the newer, fork-compatible B while retaining A as a fallback for bank A.
         assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_a), 0);
@@ -710,7 +672,7 @@ pub(crate) mod tests {
 
         // A newer C that is incompatible with bank B must not continue to mask A.
         let vote_c = packet_from_slots(vec![(0, 2), (1, 1)], &keypair, None);
-        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote_c));
+        vote_storage.insert_batch(VoteSource::Tpu, std::iter::once(to_sanitized_view(vote_c)));
         let (restored_votes, deferred_restore_count) =
             vote_storage.drain_unprocessed_with_deferred_restores(&bank_a);
         assert_eq!(deferred_restore_count, 1);

@@ -25,15 +25,11 @@ pub struct LatestValidatorVote {
     vote_source: VoteSource,
     vote_pubkey: Pubkey,
     authorized_voter_pubkey: Pubkey,
-<<<<<<< HEAD
     vote: Option<SanitizedTransactionView<SharedBytes>>,
-=======
-    vote: Option<SanitizedTransactionView<Bytes>>,
     /// Successfully landed vote retained for a same-slot bank replacement.
-    pub(super) retained_vote: Option<(Bytes, VoteSource, (Slot, Hash))>,
+    pub(super) retained_vote: Option<(SharedBytes, VoteSource, (Slot, Hash))>,
     /// Retained vote is a validated, one-shot fallback for the current bank.
     pub(super) restore_retained_on_failure: bool,
->>>>>>> 8b2d3c32d5 (banking-stage: restore votes after bank replacement (#1596))
     slot: Slot,
     hash: Hash,
     timestamp: Option<UnixTimestamp>,
@@ -183,7 +179,7 @@ impl LatestValidatorVote {
     pub(super) fn take_deferred_retained_vote(
         &mut self,
         deprecate_legacy_vote_ixs: bool,
-    ) -> Option<SanitizedTransactionView<Bytes>> {
+    ) -> Option<SanitizedTransactionView<SharedBytes>> {
         if !std::mem::take(&mut self.restore_retained_on_failure) {
             return None;
         }
@@ -195,7 +191,8 @@ impl LatestValidatorVote {
     fn restore_retained_vote(&mut self, deprecate_legacy_vote_ixs: bool) -> Option<()> {
         let (bytes, source, _) = self.retained_vote.as_ref()?;
         let vote =
-            SanitizedTransactionView::try_new_sanitized(bytes.clone(), &sanitize_config()).ok()?;
+            SanitizedTransactionView::try_new_sanitized(bytes.clone(), &sanitize_config(true))
+                .ok()?;
         let mut restored = Self::new_from_view(vote, *source, deprecate_legacy_vote_ixs).ok()?;
         restored.retained_vote = self.retained_vote.take();
         *self = restored;

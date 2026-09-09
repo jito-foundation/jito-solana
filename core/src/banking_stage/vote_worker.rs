@@ -728,9 +728,9 @@ mod tests {
             None,
         );
         let vote_a_signature = vote_a.signatures[0];
-        worker.storage.insert_packet(
+        worker.storage.insert_batch(
             VoteSource::Tpu,
-            to_sanitized_view(BytesPacket::from_data(vote_a).unwrap()),
+            std::iter::once(to_sanitized_view(BytesPacket::from_data(vote_a).unwrap())),
         );
         let mut banking_stage_stats = BankingStageStats::new();
         let mut slot_metrics_tracker = LeaderSlotMetricsTracker::default();
@@ -747,9 +747,9 @@ mod tests {
             &voting_keypair,
             None,
         );
-        worker.storage.insert_packet(
+        worker.storage.insert_batch(
             VoteSource::Tpu,
-            to_sanitized_view(BytesPacket::from_data(vote_b).unwrap()),
+            std::iter::once(to_sanitized_view(BytesPacket::from_data(vote_b).unwrap())),
         );
 
         // Mirror BankForks::clear_bank() for the replaced bank.
