@@ -854,35 +854,143 @@ mod tests {
         assert_eq!(retired.atomic_batches_enabled, 0);
     }
 
+    fn progress_queue<T>() -> (shaq::spsc::Producer<T>, shaq::spsc::Consumer<T>) {
+        let file = tempfile::tempfile().unwrap();
+        // Multiple of both 4 KiB and macOS 16 KiB pages.
+        let producer = unsafe { shaq::spsc::Producer::create(&file, 65536) }.unwrap();
+        let consumer = unsafe { shaq::spsc::Consumer::join(&file) }.unwrap();
+        (producer, consumer)
+    }
+    fn read_jito_progress_until(
+        consumer: &mut shaq::spsc::Consumer<JitoProgressMessage>,
+        predicate: impl Fn(&JitoProgressMessage) -> bool,
+        mut after_empty_read: impl FnMut(Instant),
+    ) -> JitoProgressMessage {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // A pause after an empty read must not turn that stale observation
+            // into a timeout while the producer publishes before the deadline.
+            let before_deadline = Instant::now() < deadline;
+            match consumer.try_read() {
+                Some(message) if predicate(&message) => return message,
+                Some(_) => {}
+                None => after_empty_read(deadline),
+            }
+            assert!(before_deadline, "Jito progress heartbeat timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn test_jito_progress_read_returns_timely_message_after_consumer_pause() {
+        let (mut producer, mut consumer) = progress_queue();
+        let mut tracker = ProgressTracker::new(
+            Arc::default(),
+            SharedLeaderState::new(0, None, Some((4, 7))),
+            vec![],
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::new(MigrationStatus::post_migration_status()),
+            SharedAlpenglowSlotClock::default(),
+        );
+        assert!(tracker.produce_progress_message().is_none());
+        let mut expected = tracker.last_jito_progress.unwrap().0;
+        expected.bam_generation = 17;
+        let (publish, wait_for_empty_read) = std::sync::mpsc::sync_channel(0);
+        let (published, publication_time) = std::sync::mpsc::sync_channel(0);
+        let (publisher_ready, wait_for_publisher) = std::sync::mpsc::sync_channel(0);
+        let origin = Instant::now();
+        let observed = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                publisher_ready.send(()).unwrap();
+                wait_for_empty_read.recv().unwrap();
+                producer.try_write(expected).unwrap();
+                published.send(Instant::now()).unwrap();
+            });
+            // Only the controlled witness waits for setup. The original tracker
+            // heartbeat test retains its existing worker startup deadline.
+            wait_for_publisher.recv().unwrap();
+            let mut pause_once = Some((publish, publication_time));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                read_jito_progress_until(
+                    &mut consumer,
+                    |_| true,
+                    |deadline| {
+                        if let Some((publish, publication_time)) = pause_once.take() {
+                            let empty_read_at = Instant::now();
+                            assert!(empty_read_at < deadline);
+                            publish.send(()).unwrap();
+                            let published_at = publication_time
+                                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                                .unwrap();
+                            assert!(
+                                published_at < deadline,
+                                "producer missed the original deadline"
+                            );
+                            // Reproduce a reader descheduled after an empty read while
+                            // the producer publishes before the unchanged deadline.
+                            while Instant::now() <= deadline {
+                                std::thread::sleep(
+                                    deadline.saturating_duration_since(Instant::now()),
+                                );
+                            }
+                            eprintln!(
+                                "deadline race witness: empty_read={:?} publication={:?} \
+                                 deadline={:?} reader_resumed={:?}",
+                                empty_read_at.duration_since(origin),
+                                published_at.duration_since(origin),
+                                deadline.duration_since(origin),
+                                origin.elapsed(),
+                            );
+                        }
+                    },
+                )
+            }));
+            match result {
+                Ok(message) => message,
+                Err(panic) => {
+                    let queued = consumer
+                        .try_read()
+                        .expect("timely message must remain queued");
+                    assert_eq!(queued.bam_generation, expected.bam_generation);
+                    assert_eq!(queued.progress, expected.progress);
+                    eprintln!("deadline race witness: timely message remained in the real queue");
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
+        assert_eq!(observed.bam_generation, expected.bam_generation);
+        assert_eq!(observed.progress, expected.progress);
+        assert_eq!(observed.bank_id, expected.bank_id);
+        assert!(consumer.try_read().is_none());
+    }
+
+    #[test]
+    fn test_jito_progress_read_preserves_empty_queue_timeout() {
+        let (_producer, mut consumer) = progress_queue::<JitoProgressMessage>();
+        let started = Instant::now();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_jito_progress_until(&mut consumer, |_| true, |_| {})
+        }))
+        .expect_err("an empty queue must time out");
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        let message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(message, Some("Jito progress heartbeat timed out"));
+        assert!(consumer.try_read().is_none());
+    }
+
     #[test]
     fn test_jito_progress_heartbeat_without_clock_and_during_long_boundary() {
-        fn queue<T>() -> (shaq::spsc::Producer<T>, shaq::spsc::Consumer<T>) {
-            let file = tempfile::tempfile().unwrap();
-            // Multiple of both 4 KiB and macOS 16 KiB pages.
-            let producer = unsafe { shaq::spsc::Producer::create(&file, 65536) }.unwrap();
-            let consumer = unsafe { shaq::spsc::Consumer::join(&file) }.unwrap();
-            (producer, consumer)
-        }
         fn read_until(
             consumer: &mut shaq::spsc::Consumer<JitoProgressMessage>,
             predicate: impl Fn(&JitoProgressMessage) -> bool,
         ) -> JitoProgressMessage {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                if let Some(message) = consumer.try_read()
-                    && predicate(&message)
-                {
-                    return message;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "Jito progress heartbeat timed out"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            read_jito_progress_until(consumer, predicate, |_| {})
         }
-        let (producer, mut ordinary) = queue();
-        let (jito_producer, mut jito) = queue();
+        let (producer, mut ordinary) = progress_queue();
+        let (jito_producer, mut jito) = progress_queue();
         let exit = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicU8::new(0));
         let control = Arc::new(JitoSchedulerControl::default());
