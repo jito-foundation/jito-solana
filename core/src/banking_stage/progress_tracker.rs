@@ -59,7 +59,141 @@ pub fn spawn(
         .unwrap()
 }
 
+// Diagnostic branch only. The probe is owned by one fixture and all times are
+// nanoseconds since its creation; zero means the event has not been observed.
+#[cfg(test)]
+#[derive(Debug)]
+struct ProgressTrackerProbe {
+    origin: Instant,
+    spawn_returned_ns: std::sync::atomic::AtomicU64,
+    worker_entered_ns: std::sync::atomic::AtomicU64,
+    first_produce_entered_ns: std::sync::atomic::AtomicU64,
+    first_produce_returned_ns: std::sync::atomic::AtomicU64,
+    last_produce_entered_ns: std::sync::atomic::AtomicU64,
+    last_produce_returned_ns: std::sync::atomic::AtomicU64,
+    produce_calls: std::sync::atomic::AtomicU64,
+    first_write_attempt_ns: std::sync::atomic::AtomicU64,
+    first_write_success_ns: std::sync::atomic::AtomicU64,
+    last_write_attempt_ns: std::sync::atomic::AtomicU64,
+    last_write_success_ns: std::sync::atomic::AtomicU64,
+    write_attempts: std::sync::atomic::AtomicU64,
+    write_successes: std::sync::atomic::AtomicU64,
+    writer_queue_len: std::sync::atomic::AtomicUsize,
+    writer_queue_capacity: std::sync::atomic::AtomicUsize,
+    writer_terminated_ns: std::sync::atomic::AtomicU64,
+    // 0: not observed, 1: exit flag, 2: ordinary queue full, 3: Jito queue full.
+    writer_exit_reason: AtomicU8,
+    writer_panicking: AtomicBool,
+    reader_attempts: std::sync::atomic::AtomicU64,
+    reader_messages: std::sync::atomic::AtomicU64,
+    last_reader_entered_ns: std::sync::atomic::AtomicU64,
+    last_reader_returned_ns: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(test)]
+impl ProgressTrackerProbe {
+    fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+            spawn_returned_ns: 0.into(),
+            worker_entered_ns: 0.into(),
+            first_produce_entered_ns: 0.into(),
+            first_produce_returned_ns: 0.into(),
+            last_produce_entered_ns: 0.into(),
+            last_produce_returned_ns: 0.into(),
+            produce_calls: 0.into(),
+            first_write_attempt_ns: 0.into(),
+            first_write_success_ns: 0.into(),
+            last_write_attempt_ns: 0.into(),
+            last_write_success_ns: 0.into(),
+            write_attempts: 0.into(),
+            write_successes: 0.into(),
+            writer_queue_len: 0.into(),
+            writer_queue_capacity: 0.into(),
+            writer_terminated_ns: 0.into(),
+            writer_exit_reason: 0.into(),
+            writer_panicking: false.into(),
+            reader_attempts: 0.into(),
+            reader_messages: 0.into(),
+            last_reader_entered_ns: 0.into(),
+            last_reader_returned_ns: 0.into(),
+        }
+    }
+
+    fn now_ns(&self) -> u64 {
+        u64::try_from(self.origin.elapsed().as_nanos())
+            .unwrap_or(u64::MAX)
+            .max(1)
+    }
+
+    fn stamp(&self, timestamp: &std::sync::atomic::AtomicU64) {
+        timestamp.store(self.now_ns(), Ordering::Release);
+    }
+
+    fn first_and_last(
+        &self,
+        first: &std::sync::atomic::AtomicU64,
+        last: &std::sync::atomic::AtomicU64,
+    ) {
+        let now = self.now_ns();
+        let _ = first.compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
+        last.store(now, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+struct ProgressTrackerProbeGuard(Arc<ProgressTrackerProbe>);
+
+#[cfg(test)]
+impl Drop for ProgressTrackerProbeGuard {
+    fn drop(&mut self) {
+        self.0
+            .writer_panicking
+            .store(std::thread::panicking(), Ordering::Release);
+        self.0.stamp(&self.0.writer_terminated_ns);
+    }
+}
+
+// Keep the production spawn function unchanged. This fixture-only copy uses
+// the same thread name, Builder, constructor, and run call with an optional probe.
+#[cfg(test)]
+fn spawn_with_probe(
+    exit: Arc<AtomicBool>,
+    mut producer: shaq::spsc::Producer<ProgressMessage>,
+    shared_leader_state: SharedLeaderState,
+    worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+    ticks_per_slot: u64,
+    migration_status: Arc<MigrationStatus>,
+    alpenglow_slot_clock: SharedAlpenglowSlotClock,
+    mut jito: Option<(
+        shaq::spsc::Producer<JitoProgressMessage>,
+        Arc<AtomicU8>,
+        Arc<JitoSchedulerControl>,
+    )>,
+    probe: Arc<ProgressTrackerProbe>,
+) -> JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("solProgTrker".to_string())
+        .spawn(move || {
+            probe.stamp(&probe.worker_entered_ns);
+            let _guard = ProgressTrackerProbeGuard(probe.clone());
+            let mut tracker = ProgressTracker::new(
+                exit,
+                shared_leader_state,
+                worker_metrics,
+                ticks_per_slot,
+                migration_status,
+                alpenglow_slot_clock,
+            );
+            tracker.diagnostic_probe = Some(probe);
+            tracker.run(&mut producer, jito.as_mut());
+        })
+        .unwrap()
+}
+
 struct ProgressTracker {
+    #[cfg(test)]
+    diagnostic_probe: Option<Arc<ProgressTrackerProbe>>,
     exit: Arc<AtomicBool>,
     shared_leader_state: SharedLeaderState,
     worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
@@ -83,6 +217,8 @@ impl ProgressTracker {
         alpenglow_slot_clock: SharedAlpenglowSlotClock,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            diagnostic_probe: None,
             exit,
             shared_leader_state,
             worker_metrics,
@@ -110,7 +246,23 @@ impl ProgressTracker {
         let mut last_published_jito_progress = None;
         let mut last_jito_publish: Option<Instant> = None;
         while !self.exit.load(Ordering::Relaxed) {
-            if let Some((message, tick_height)) = self.produce_progress_message() {
+            #[cfg(test)]
+            if let Some(probe) = &self.diagnostic_probe {
+                probe.produce_calls.fetch_add(1, Ordering::Relaxed);
+                probe.first_and_last(
+                    &probe.first_produce_entered_ns,
+                    &probe.last_produce_entered_ns,
+                );
+            }
+            let message = self.produce_progress_message();
+            #[cfg(test)]
+            if let Some(probe) = &self.diagnostic_probe {
+                probe.first_and_last(
+                    &probe.first_produce_returned_ns,
+                    &probe.last_produce_returned_ns,
+                );
+            }
+            if let Some((message, tick_height)) = message {
                 let progress = (
                     tick_height,
                     message.leader_state,
@@ -120,6 +272,10 @@ impl ProgressTracker {
                 );
                 if Some(progress) != last_published_progress {
                     if !self.publish(producer, message) {
+                        #[cfg(test)]
+                        if let Some(probe) = &self.diagnostic_probe {
+                            probe.writer_exit_reason.store(2, Ordering::Release);
+                        }
                         break; // external scheduler is so far behind we could not publish a message.
                     }
                     last_published_progress = Some(progress);
@@ -147,8 +303,34 @@ impl ProgressTracker {
                     || last_jito_publish
                         .is_none_or(|last| now.duration_since(last) >= JITO_HEARTBEAT_INTERVAL)
                 {
+                    #[cfg(test)]
+                    if let Some(probe) = &self.diagnostic_probe {
+                        probe.write_attempts.fetch_add(1, Ordering::Relaxed);
+                        probe
+                            .writer_queue_len
+                            .store(jito_producer.len(), Ordering::Release);
+                        probe
+                            .writer_queue_capacity
+                            .store(jito_producer.capacity(), Ordering::Release);
+                        probe.first_and_last(
+                            &probe.first_write_attempt_ns,
+                            &probe.last_write_attempt_ns,
+                        );
+                    }
                     if jito_producer.try_write(message).is_err() {
+                        #[cfg(test)]
+                        if let Some(probe) = &self.diagnostic_probe {
+                            probe.writer_exit_reason.store(3, Ordering::Release);
+                        }
                         break;
+                    }
+                    #[cfg(test)]
+                    if let Some(probe) = &self.diagnostic_probe {
+                        probe.write_successes.fetch_add(1, Ordering::Relaxed);
+                        probe.first_and_last(
+                            &probe.first_write_success_ns,
+                            &probe.last_write_success_ns,
+                        );
                     }
                     last_published_jito_progress = Some(progress);
                     last_jito_publish = Some(now);
@@ -161,6 +343,15 @@ impl ProgressTracker {
 
             self.wait_for_next_progress_boundary(
                 last_jito_publish.map(|last| last + JITO_HEARTBEAT_INTERVAL),
+            );
+        }
+        #[cfg(test)]
+        if let Some(probe) = &self.diagnostic_probe {
+            let _ = probe.writer_exit_reason.compare_exchange(
+                0,
+                1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             );
         }
     }
@@ -866,28 +1057,45 @@ mod tests {
         fn read_until(
             consumer: &mut shaq::spsc::Consumer<JitoProgressMessage>,
             predicate: impl Fn(&JitoProgressMessage) -> bool,
+            phase: &str,
+            probe: &ProgressTrackerProbe,
+            handle: &JoinHandle<()>,
         ) -> JitoProgressMessage {
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                if let Some(message) = consumer.try_read()
-                    && predicate(&message)
-                {
-                    return message;
+                probe.reader_attempts.fetch_add(1, Ordering::Relaxed);
+                probe.stamp(&probe.last_reader_entered_ns);
+                let message = consumer.try_read();
+                probe.stamp(&probe.last_reader_returned_ns);
+                if let Some(message) = message {
+                    probe.reader_messages.fetch_add(1, Ordering::Relaxed);
+                    if predicate(&message) {
+                        return message;
+                    }
                 }
-                assert!(
-                    Instant::now() < deadline,
-                    "Jito progress heartbeat timed out"
-                );
+                let within_deadline = Instant::now() < deadline;
+                if !within_deadline {
+                    eprintln!(
+                        "JITO_HEARTBEAT_DIAGNOSTIC phase={phase:?} now_ns={} worker_finished={} \
+                         reader_cached_queue_len={} reader_queue_capacity={} probe={probe:?}",
+                        probe.now_ns(),
+                        handle.is_finished(),
+                        consumer.len(),
+                        consumer.capacity(),
+                    );
+                }
+                assert!(within_deadline, "Jito progress heartbeat timed out");
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+        let probe = Arc::new(ProgressTrackerProbe::new());
         let (producer, mut ordinary) = queue();
         let (jito_producer, mut jito) = queue();
         let exit = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicU8::new(0));
         let control = Arc::new(JitoSchedulerControl::default());
         let clock = SharedAlpenglowSlotClock::default();
-        let handle = spawn(
+        let handle = spawn_with_probe(
             exit.clone(),
             producer,
             SharedLeaderState::new(0, None, Some((4, 7))),
@@ -896,8 +1104,10 @@ mod tests {
             Arc::new(MigrationStatus::post_migration_status()),
             clock.clone(),
             Some((jito_producer, connected.clone(), control.clone())),
+            probe.clone(),
         );
-        let first = read_until(&mut jito, |_| true);
+        probe.stamp(&probe.spawn_returned_ns);
+        let first = read_until(&mut jito, |_| true, "initial publication", &probe, &handle);
         assert_eq!(
             first.progress.leader_state,
             agave_scheduler_bindings::NOT_LEADER
@@ -906,7 +1116,7 @@ mod tests {
         assert_eq!(first.atomic_batches_enabled, 0);
         assert_eq!(first.bam_connected, 0);
         assert!(ordinary.try_read().is_none());
-        let heartbeat = read_until(&mut jito, |_| true);
+        let heartbeat = read_until(&mut jito, |_| true, "unchanged heartbeat", &probe, &handle);
         assert_eq!(heartbeat.progress, first.progress);
         for state in [
             BamConnectionState::Connecting,
@@ -914,20 +1124,50 @@ mod tests {
             BamConnectionState::BlockEngineDrained,
         ] {
             connected.store(state as u8, Ordering::Release);
-            let heartbeat = read_until(&mut jito, |_| true);
+            let heartbeat = read_until(
+                &mut jito,
+                |_| true,
+                "intermediate BAM mode",
+                &probe,
+                &handle,
+            );
             assert_eq!(heartbeat.bam_connected, 0, "intermediate state {state:?}");
         }
         connected.store(BamConnectionState::Connected as u8, Ordering::Release);
-        read_until(&mut jito, |message| message.bam_connected == 1);
+        read_until(
+            &mut jito,
+            |message| message.bam_connected == 1,
+            "BAM connected",
+            &probe,
+            &handle,
+        );
         control.bam_generation.store(7, Ordering::Release);
-        let refreshed = read_until(&mut jito, |message| message.bam_generation == 7);
+        let refreshed = read_until(
+            &mut jito,
+            |message| message.bam_generation == 7,
+            "BAM generation",
+            &probe,
+            &handle,
+        );
         assert_eq!(refreshed.bam_connected, 1);
 
         // The next ordinary progress boundary is five seconds away. The addon
         // must still publish its heartbeat within the two-second test deadline.
         clock.update(4, Instant::now(), Duration::from_secs(100));
-        read_until(&mut jito, |message| message.progress.current_slot == 4);
-        let heartbeat = read_until(&mut jito, |message| message.progress.current_slot == 4);
+        read_until(
+            &mut jito,
+            |message| message.progress.current_slot == 4,
+            "clock publication",
+            &probe,
+            &handle,
+        );
+        let heartbeat = read_until(
+            &mut jito,
+            |message| message.progress.current_slot == 4,
+            "long-boundary heartbeat",
+            &probe,
+            &handle,
+        );
         assert_eq!(
             heartbeat.progress.leader_state,
             agave_scheduler_bindings::LEADER_STARTING
