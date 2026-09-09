@@ -159,6 +159,19 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                     };
 
                 if let Some(prev_entry_hash) = prev_entry_hash {
+                    info!(
+                        "duplicate-batch leader={} slot={} parent={} entries={} tick_height={} \
+                         max_tick_height={} next_data_index={} next_code_index={} prefix_root={}",
+                        keypair.pubkey(),
+                        bank.slot(),
+                        bank.parent_slot(),
+                        entry_batch_len,
+                        last_tick_height,
+                        bank.max_tick_height(),
+                        self.next_shred_index,
+                        self.next_code_index,
+                        self.chained_merkle_root,
+                    );
                     let original_last_entry = entries.pop().unwrap();
 
                     // Last entry has to be a tick
@@ -259,6 +272,16 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                 assert_eq!(
                     original_last_data_shred.len(),
                     partition_last_data_shred.len()
+                );
+                info!(
+                    "duplicate-variants leader={} slot={} original_root={} partition_root={} \
+                     first_data_index={} final_data_index={}",
+                    keypair.pubkey(),
+                    bank.slot(),
+                    original_last_data_shred[0].merkle_root().unwrap(),
+                    partition_last_data_shred[0].merkle_root().unwrap(),
+                    original_last_data_shred[0].index(),
+                    original_last_data_shred.last().unwrap().index(),
                 );
                 self.next_shred_index += u32::try_from(original_last_data_shred.len()).unwrap();
                 // Update chained_merkle_root to the merkle root of the original last FEC set
@@ -480,7 +503,183 @@ impl BroadcastRun for BroadcastDuplicatesRun {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, solana_entry::entry::create_ticks};
+    use {
+        super::*,
+        solana_entry::entry::create_ticks,
+        solana_ledger::{genesis_utils::create_genesis_config, get_tmp_ledger_path},
+        solana_runtime::bank::{Bank, SlotLeader},
+    };
+
+    #[test]
+    fn test_duplicate_shreds_solitary_final_tick() {
+        check_duplicate_shreds_final_tick_batch(1);
+    }
+
+    #[test]
+    fn test_duplicate_shreds_coalesced_final_tick() {
+        check_duplicate_shreds_final_tick_batch(2);
+    }
+
+    fn check_duplicate_shreds_final_tick_batch(final_batch_ticks: usize) {
+        let genesis = create_genesis_config(10_000);
+        let keypair = genesis.mint_keypair;
+        let initial_hash = genesis.genesis_config.hash();
+        let (parent, bank_forks) =
+            Bank::new_for_tests(&genesis.genesis_config).wrap_with_bank_forks_for_tests();
+        parent.set_tick_height(parent.max_tick_height());
+        Bank::calculate_and_set_block_id_for_dcou(&parent);
+        let original_blockstore = Blockstore::open(&get_tmp_ledger_path!()).unwrap();
+        original_blockstore.insert_shreds_for_bank(parent.clone());
+        let slot = MINIMUM_DUPLICATE_SLOT + DUPLICATE_RATE as u64;
+        let bank =
+            Bank::new_from_parent_with_bank_forks(&bank_forks, parent, SlotLeader::default(), slot);
+        bank.set_tick_height(bank.max_tick_height() - bank.ticks_per_slot());
+        let transaction =
+            system_transaction::transfer(&keypair, &Pubkey::new_unique(), 1, initial_hash);
+        let transaction_entry = Entry::new(&initial_hash, 1, vec![transaction]);
+        let ticks = create_ticks(bank.ticks_per_slot(), 0, transaction_entry.hash);
+        let prefix_ticks = ticks.len() - final_batch_ticks;
+        let expected_original_entries: Vec<_> = std::iter::once(transaction_entry.clone())
+            .chain(ticks.iter().cloned())
+            .collect();
+        let (duplicate_slot_sender, duplicate_slot_receiver) = bounded(1);
+        let (votor_event_sender, _votor_event_receiver) = bounded(1);
+        let mut run = BroadcastDuplicatesRun::new(
+            0,
+            BroadcastDuplicatesConfig {
+                partition: ClusterPartition::Pubkey(vec![Pubkey::new_unique()]),
+                duplicate_slot_sender: Some(duplicate_slot_sender),
+            },
+            Arc::new(MigrationStatus::default()),
+            votor_event_sender,
+        );
+        run.num_slots_broadcasted = DUPLICATE_RATE - 1;
+        let (socket_sender, socket_receiver) = bounded(16);
+        let (blockstore_sender, blockstore_receiver) = bounded(16);
+        let mut pinnable_slice = original_blockstore.new_pinnable_slice();
+        let mut write_batch = original_blockstore.get_write_batch();
+
+        // End the first channel after the prefix, so coalescing cannot consume the
+        // final tick. The second run starts with the desired final batch exactly.
+        let (entry_sender, entry_receiver) = bounded(1024);
+        entry_sender
+            .send((bank.clone(), (transaction_entry.into(), bank.tick_height())))
+            .unwrap();
+        for (index, tick) in ticks[..prefix_ticks].iter().enumerate() {
+            entry_sender
+                .send((
+                    bank.clone(),
+                    (tick.clone().into(), bank.tick_height() + index as u64 + 1),
+                ))
+                .unwrap();
+        }
+        drop(entry_sender);
+        run.run(
+            &keypair,
+            &original_blockstore,
+            &mut pinnable_slice,
+            &mut write_batch,
+            &entry_receiver,
+            &socket_sender,
+            &blockstore_sender,
+        )
+        .unwrap();
+        assert!(duplicate_slot_receiver.try_recv().is_err());
+
+        let (entry_sender, entry_receiver) = bounded(1024);
+        for (index, tick) in ticks[prefix_ticks..].iter().enumerate() {
+            entry_sender
+                .send((
+                    bank.clone(),
+                    (
+                        tick.clone().into(),
+                        bank.tick_height() + (prefix_ticks + index) as u64 + 1,
+                    ),
+                ))
+                .unwrap();
+        }
+        drop(entry_sender);
+        run.run(
+            &keypair,
+            &original_blockstore,
+            &mut pinnable_slice,
+            &mut write_batch,
+            &entry_receiver,
+            &socket_sender,
+            &blockstore_sender,
+        )
+        .unwrap();
+        assert_eq!(duplicate_slot_receiver.try_recv().unwrap(), slot);
+
+        let original_keys = run.original_last_data_shreds.lock().unwrap();
+        let partition_keys = run.partition_last_data_shreds.lock().unwrap();
+        assert!(!original_keys.is_empty());
+        assert_eq!(original_keys.len(), partition_keys.len());
+        assert!(original_keys.is_disjoint(&partition_keys));
+        let original_shreds: Vec<_> = blockstore_receiver
+            .try_iter()
+            .flat_map(|(shreds, _)| shreds.as_ref().clone())
+            .collect();
+        let partition_shreds: Vec<_> = socket_receiver
+            .try_iter()
+            .flat_map(|(shreds, _)| shreds.as_ref().clone())
+            .filter(|shred| !original_keys.contains(&duplicate_shred_key(shred)))
+            .collect();
+        assert!(
+            original_shreds
+                .iter()
+                .chain(&partition_shreds)
+                .all(|shred| shred.verify(&keypair.pubkey()))
+        );
+        let partition_blockstore = Blockstore::open(&get_tmp_ledger_path!()).unwrap();
+        original_blockstore
+            .insert_shreds(original_shreds, false)
+            .unwrap();
+        partition_blockstore
+            .insert_shreds(partition_shreds, false)
+            .unwrap();
+        assert!(original_blockstore.meta(slot).unwrap().unwrap().is_full());
+        assert!(partition_blockstore.meta(slot).unwrap().unwrap().is_full());
+        assert_ne!(
+            original_blockstore
+                .get_last_shred_merkle_root(slot)
+                .unwrap(),
+            partition_blockstore
+                .get_last_shred_merkle_root(slot)
+                .unwrap(),
+        );
+
+        // Both complete variants must be replayable entry streams. In particular,
+        // reserving a solitary final tick must not serialize a block-abort marker.
+        let original_entries = original_blockstore.get_slot_entries(slot, 0);
+        let partition_entries = partition_blockstore.get_slot_entries(slot, 0);
+        assert!(
+            original_entries.is_ok() && partition_entries.is_ok(),
+            "entry decoding failed: original={:?}, partition={:?}",
+            original_entries.as_ref().err(),
+            partition_entries.as_ref().err(),
+        );
+        let original_entries = original_entries.unwrap();
+        let partition_entries = partition_entries.unwrap();
+        assert_eq!(original_entries, expected_original_entries);
+        assert_eq!(partition_entries.len(), original_entries.len() + 1);
+        assert_eq!(
+            &partition_entries[..original_entries.len() - 1],
+            &original_entries[..original_entries.len() - 1],
+        );
+        for entries in [&original_entries, &partition_entries] {
+            let mut previous_hash = initial_hash;
+            for entry in entries {
+                assert!(entry.verify(&previous_hash));
+                previous_hash = entry.hash;
+            }
+            assert!(entries.last().unwrap().is_tick());
+        }
+        assert_ne!(
+            original_entries.last().unwrap().hash,
+            partition_entries.last().unwrap().hash,
+        );
+    }
 
     #[test]
     fn test_special_shred_key_distinguishes_shreds_with_shared_signature() {

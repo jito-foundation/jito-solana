@@ -11,6 +11,11 @@ set -e
 cd "$(dirname "$0")"/..
 source ci/_
 
+if [[ "${BUILDKITE_BRANCH:-}" == "ex/fix-lc2-duplicate-repair" ]]; then
+  python3 ci/lc2-diagnostic.py pipeline | buildkite-agent pipeline upload
+  exit 0
+fi
+
 _ cargo xtask generate-pipeline
 echo +++ pipeline
 cat pipeline.yml
