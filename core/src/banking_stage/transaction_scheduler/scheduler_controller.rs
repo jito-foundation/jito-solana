@@ -1250,11 +1250,7 @@ mod tests {
 
         let GenesisConfigInfo {
             mut genesis_config,
-<<<<<<< HEAD
-            mint_keypair: _,
-=======
             mint_keypair,
->>>>>>> 24b2393c61 (Preserve BAM work across same-slot sad handover (#1608))
             ..
         } = create_slow_genesis_config(u64::MAX);
         genesis_config.fee_rate_governor = FeeRateGovernor::new(5000, 0);

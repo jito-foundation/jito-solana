@@ -855,28 +855,14 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 stats.receive_time_us += receive_time_us;
                 match result {
                     Ok(batch) => batch,
-                    Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError::Receiver),
+                    Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError),
                     Err(RecvTimeoutError::Timeout) => break,
                 }
             } else {
                 match self.parsed_batch_receiver.try_recv() {
                     Ok(batch) => batch,
-<<<<<<< HEAD
                     Err(TryRecvError::Disconnected) => return Err(DisconnectedError),
-                    Err(TryRecvError::Empty) => {
-                        // If the channel is empty, work here is done.
-                        break;
-                    }
-                };
-
-                // If BAM is not enabled, drain the channel
-                if bam_state != BamConnectionState::Connected {
-                    stats.num_dropped_without_parsing += batch.txns_max_age.len();
-                    continue;
-=======
-                    Err(TryRecvError::Disconnected) => return Err(DisconnectedError::Receiver),
                     Err(TryRecvError::Empty) => break,
->>>>>>> 24b2393c61 (Preserve BAM work across same-slot sad handover (#1608))
                 }
             };
 
@@ -906,40 +892,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 self.send_container_full_txn_batch_result(batch.seq_id);
             } else {
                 self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
-<<<<<<< HEAD
-            },
-            BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Forward => {
-                // Ensure nothing is left in the container
-                while let Some(next_batch_id) = container.pop() {
-                    if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
-                        self.send_no_leader_slot_txn_batch_result(seq_id);
-                    }
-                    container.remove_by_id(next_batch_id.id);
-                }
-
-                // Send back any batches that were received while in Forward/Hold state
-                let deadline = Instant::now() + Duration::from_millis(100);
-                loop {
-                    let (batch, receive_time_us) =
-                        measure_us!(self.parsed_batch_receiver.recv_deadline(deadline));
-                    stats.receive_time_us += receive_time_us;
-
-                    let batch = match batch {
-                        Ok(batch) => batch,
-                        Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError),
-                        Err(RecvTimeoutError::Timeout) => {
-                            break;
-                        }
-                    };
-                    self.send_no_leader_slot_txn_batch_result(batch.seq_id);
-                    stats.num_dropped_without_parsing += 1;
-                }
-=======
             }
             if !buffering {
                 // Resume scheduling with a fresh decision after recovering replacement work.
                 break;
->>>>>>> 24b2393c61 (Preserve BAM work across same-slot sad handover (#1608))
             }
         }
 
@@ -1163,7 +1119,9 @@ pub(super) mod tests {
             bam_dependencies::BamConnectionState,
             banking_stage::{
                 tests::create_slow_genesis_config,
-                transaction_scheduler::transaction_state_container::StateContainer,
+                transaction_scheduler::transaction_state_container::{
+                    EXTRA_CAPACITY, StateContainer,
+                },
             },
         },
         ahash::HashSetExt,
@@ -1654,9 +1612,26 @@ pub(super) mod tests {
             );
         }
         container = TransactionStateContainer::with_capacity(0);
+        // v4.2 reserves extra slab entries even with zero requested capacity.
+        // Fill them with real batches: one transaction plus one metadata entry each.
+        let batch_capacity = EXTRA_CAPACITY / 2;
         sender
             .send(MultipleAtomicTxnBatch {
-                batches: vec![transfer_batch(&mint, &root, 1)],
+                batches: (0..batch_capacity)
+                    .map(|seq_id| transfer_batch(&mint, &root, seq_id as u32))
+                    .collect(),
+            })
+            .unwrap();
+        receiver.wait_for_parsed_batches(batch_capacity);
+        let stats = receiver
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert_eq!(container.queue_size(), batch_capacity);
+        assert_eq!(stats.num_dropped_on_capacity, 0);
+        assert!(responses.try_recv().is_err());
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![transfer_batch(&mint, &root, batch_capacity as u32)],
             })
             .unwrap();
         receiver.wait_for_parsed_batches(1);
@@ -1667,6 +1642,7 @@ pub(super) mod tests {
         let BamOutboundMessage::AtomicTxnBatchResult(result) = responses.try_recv().unwrap() else {
             panic!("expected batch result")
         };
+        assert_eq!(result.seq_id, batch_capacity as u32);
         assert!(
             matches!(result.result, Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
             if not_committed.reason == Some(Reason::SchedulingError(SchedulingError::ContainerFull as i32)))
