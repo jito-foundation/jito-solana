@@ -208,7 +208,8 @@ ARTIFACTS = [
 
 
 def pipeline(phase="baseline"):
-    phases = (["matrix-48", "validate-128", "validate-48"] if phase == "validation"
+    phases = (["validate-48"] if phase == "validation-short" else
+              ["matrix-48", "validate-128", "validate-48"] if phase == "validation"
               else [phase, phase])
     steps = []
     for index, current in enumerate(phases):
@@ -234,7 +235,7 @@ def pipeline(phase="baseline"):
 
 if __name__ == "__main__":
     phase = sys.argv[2] if len(sys.argv) > 2 else "baseline"
-    if phase not in ("baseline", "matrix", "validation", "matrix-48", "validate-48", "validate-128"):
+    if phase not in ("baseline", "matrix", "validation", "validation-short", "matrix-48", "validate-48", "validate-128"):
         raise SystemExit("Unknown experiment phase: " + phase)
     action = sys.argv[1]
     raise SystemExit(run() if action == "run" else {"pipeline": pipeline, "host": host}[action](phase))

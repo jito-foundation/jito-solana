@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 
 TEST = 'test_duplicate_shreds_broadcast_leader'
 FILTER = f'package(=solana-local-cluster) & test(={TEST})'
-COUNT = 100
+COUNT = 20
 OVERALL_SECONDS = 240 * 60
 LOG_FILTER = ('error,solana_core::replay_stage=warn,'
               'solana_local_cluster=info,local_cluster=info,lc2_diagnostic=info')

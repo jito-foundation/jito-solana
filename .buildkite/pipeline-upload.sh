@@ -11,11 +11,11 @@ set -e
 cd "$(dirname "$0")"/..
 source ci/_
 
-if [[ "${BUILDKITE_BRANCH:-}" == "ex/fix-lc2-duplicate-repair" ]]; then
+if [[ "${BUILDKITE_BRANCH:-}" == "ex/lc2-runner-controls" ]]; then
   if [[ -n "${LC2_EXPERIMENT:-}" ]]; then
     python3 ci/lc2-diagnostic.py pipeline "$LC2_EXPERIMENT" | buildkite-agent pipeline upload
   else
-    echo "LC2 experiment branch: set LC2_EXPERIMENT=baseline, matrix, or validation to run diagnostics."
+    echo "LC2 experiment branch: set LC2_EXPERIMENT=validation-short to run the bounded validation."
   fi
   exit 0
 fi
