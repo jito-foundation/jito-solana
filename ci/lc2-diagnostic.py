@@ -145,39 +145,80 @@ def run():
 
 def host(phase="baseline"):
     import fcntl
-    # Serialize our diagnostics if both jobs land on the same physical host.
+    # Serialize our diagnostics if two jobs land on the same physical host.
     lock = open("/tmp/jito-lc2-diagnostic.lock", "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
     facts("host")
-    command = (["python3", "ci/lc2-source-matrix.py"] if phase == "matrix"
-               else ["python3", "ci/lc2-diagnostic.py", "run"])
+    expected = int(phase.rsplit("-", 1)[1]) if phase.startswith(("matrix-", "validate-")) else None
+    if expected is not None and len(os.sched_getaffinity(0)) != expected:
+        placement = {"phase": phase, "expected_cpus": expected,
+                     "effective_cpus": sorted(os.sched_getaffinity(0)),
+                     "reason": "cpu_placement_mismatch", "test_execution_started": False,
+                     "exit_code": 78}
+        (OUT / "placement.json").write_text(json.dumps(placement, indent=2))
+        print(json.dumps(placement), flush=True)
+        return 78
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    requested = os.environ.get("BUILDKITE_COMMIT", "")
+    if requested != sha:
+        raise RuntimeError("Checkout does not match the explicitly requested Buildkite commit")
+    if phase.startswith("matrix"):
+        command = ["python3", "ci/lc2-source-matrix.py"]
+        if expected is not None:
+            command += ["--expected-cpus", str(expected)]
+    elif phase.startswith("validate-"):
+        command = ["python3", "ci/lc2-validate.py", "--expected-cpus", str(expected),
+                   "--expected-sha", sha]
+    else:
+        command = ["python3", "ci/lc2-diagnostic.py", "run"]
     result = subprocess.run(["ci/docker-run-default-image.sh", *command], check=False)
     for path in Path("target/lc2-matrix").glob("*/*.log"):
         with path.open("rb") as source, gzip.open(str(path) + ".gz", "wb") as archive:
             import shutil
             shutil.copyfileobj(source, archive)
-    subprocess.run(["buildkite-agent", "artifact", "upload",
-                    "target/lc2-matrix/*/*.json;target/lc2-matrix/*/*.log.gz;target/lc2-matrix/*/*.toml"], check=False)
-    subprocess.run(["buildkite-agent", "artifact", "upload",
-                    "target/lc2-diagnostic/*.json;target/lc2-diagnostic/*.jsonl;target/lc2-diagnostic/*.gz"], check=False)
+    # Buildkite's artifact_paths collects evidence after either success or failure.
     return result.returncode
 
 
+ARTIFACTS = [
+    "target/lc2-matrix/*/*.json", "target/lc2-matrix/*/*.log.gz",
+    "target/lc2-matrix/*/*.jsonl.gz", "target/lc2-matrix/*/*.toml",
+    "target/lc2-diagnostic/*.json", "target/lc2-diagnostic/*.jsonl",
+    "target/lc2-diagnostic/*.gz", "target/lc2-validate/*/*.json",
+    "target/lc2-validate/*/*.gz", "target/lc2-validate/*/*.toml",
+    "target/lc2-validate/*/store/ci/*.xml.gz",
+]
+
+
 def pipeline(phase="baseline"):
+    phases = (["matrix-48", "validate-128", "validate-48"] if phase == "validation"
+              else [phase, phase])
     steps = []
-    for index in range(2):
-        steps.append({"label": "lc2-diagnostic " + phase + "-" + str(index + 1),
-                      "command": "python3 ci/lc2-diagnostic.py host " + phase,
-                      "agents": {"queue": "default"},
-                      "timeout_in_minutes": 260 if phase == "matrix" else 65,
-                      "retry": {"automatic": False}})
+    for index, current in enumerate(phases):
+        step = {"label": "lc2-diagnostic " + current + "-" + str(index + 1),
+                "key": "lc2-" + current + "-" + str(index + 1),
+                "command": "python3 ci/lc2-diagnostic.py host " + current,
+                "agents": {"queue": "default"},
+                "timeout_in_minutes": 65 if current == "baseline" else 260,
+                "artifact_paths": ARTIFACTS,
+                "concurrency": 2,
+                "concurrency_group": "jito-solana/lc2-controlled-experiments",
+                "retry": {"automatic": False}}
+        if phase == "validation":
+            # Only placement failures can retry; compilation and test failures stop.
+            # Seven retries means at most eight scheduling attempts, each retained.
+            step["retry"] = {"automatic": [{"exit_status": 78, "limit": 7}]}
+            if current == "validate-48":
+                step["depends_on"] = "lc2-matrix-48-1"
+                step["allow_dependency_failure"] = True
+        steps.append(step)
     print(json.dumps({"steps": steps}))
     return 0
 
 
 if __name__ == "__main__":
     phase = sys.argv[2] if len(sys.argv) > 2 else "baseline"
-    if phase not in ("baseline", "matrix"):
+    if phase not in ("baseline", "matrix", "validation", "matrix-48", "validate-48", "validate-128"):
         raise SystemExit("Unknown experiment phase: " + phase)
     action = sys.argv[1]
     raise SystemExit(run() if action == "run" else {"pipeline": pipeline, "host": host}[action](phase))

@@ -5,9 +5,12 @@ Run inside the CI container: python3 ci/lc2-source-matrix.py
 All source checkouts, archives and evidence stay under target/lc2-matrix.
 """
 
+import argparse
 import collections
 import datetime
+import gzip
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -33,6 +36,10 @@ SOURCES = {
 TEST = "test_duplicate_shreds_broadcast_leader"
 FILTER = f"package(=solana-local-cluster) & test(={TEST})"
 PAIRS = 10
+HELPER_SPEC = importlib.util.spec_from_file_location(
+    "lc2_validate_helpers", Path(__file__).with_name("lc2-validate.py"))
+HELPERS = importlib.util.module_from_spec(HELPER_SPEC)
+HELPER_SPEC.loader.exec_module(HELPERS)
 CONFIG = """[profile.ci]
 retries = 0
 test-threads = 1
@@ -71,26 +78,35 @@ def stop(process):
     process.wait()
 
 
-def execute(argv, cwd, log, env, timeout, check=True):
+def execute(argv, cwd, log, env, timeout, check=True, binary=None):
     argv = [str(arg) for arg in argv]
     record = {"argv": argv, "cwd": str(cwd), "log": str(log),
               "timeout_s": timeout, "started_at": time.time()}
     print(json.dumps({"event": "command_start", **record}), flush=True)
     started = time.monotonic()
+    samples_path = log.with_name(log.stem + "-processes.jsonl.gz")
+    samples = gzip.open(samples_path, "wt") if binary else None
+    if binary:
+        record["process_samples"] = str(samples_path)
     with log.open("wb") as output:
         process = subprocess.Popen(
             argv, cwd=cwd, env=env, stdout=output,
             stderr=subprocess.STDOUT, start_new_session=True,
         )
         try:
+            next_sample = started
             while True:
+                if samples and time.monotonic() >= next_sample:
+                    samples.write(json.dumps(HELPERS.process_sample(process.pid, binary)) + "\n")
+                    samples.flush()
+                    next_sample = time.monotonic() + 10
                 remaining = timeout - (time.monotonic() - started)
                 if remaining <= 0:
                     stop(process)
                     record["timed_out"] = True
                     break
                 try:
-                    process.wait(timeout=min(60, remaining))
+                    process.wait(timeout=min(10 if binary else 60, remaining))
                     break
                 except subprocess.TimeoutExpired:
                     print(json.dumps({"event": "command_running",
@@ -102,6 +118,8 @@ def execute(argv, cwd, log, env, timeout, check=True):
             record["interrupted"] = True
             raise
         finally:
+            if samples:
+                samples.close()
             record["elapsed_s"] = time.monotonic() - started
             record["process_exit_code"] = process.returncode
             record["exit_code"] = 124 if record.get("timed_out") else process.returncode
@@ -113,6 +131,9 @@ def execute(argv, cwd, log, env, timeout, check=True):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-cpus", type=int, choices=(48, 128))
+    args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%SZ")
     output = repo / "target" / "lc2-matrix" / f"{stamp}-{uuid.uuid4().hex[:8]}"
@@ -127,7 +148,7 @@ def main():
     settings = {key: env.get(key) for key in (
         "RUSTFLAGS", "RUST_BACKTRACE", "RUSTUP_TOOLCHAIN", "RUST_LOG",
         "RUSTC_WRAPPER", "CARGO_BUILD_JOBS", "SOLANA_RAYON_THREADS",
-        "SOLANA_MAX_RAYON_THREADS", "RAYON_NUM_THREADS", "BUILDKITE_JOB_ID",
+        "SOLANA_MAX_RAYON_THREADS", "RAYON_NUM_THREADS", "TOKIO_WORKER_THREADS", "BUILDKITE_JOB_ID",
     )}
     seed = int.from_bytes(os.urandom(8), "big")
     rng = random.Random(seed)
@@ -137,10 +158,20 @@ def main():
         rng.shuffle(labels)
         schedule.extend({"pair": pair, "source": label} for label in labels)
     summary = {"output": str(output), "seed": seed, "settings": settings,
+               "expected_cpus": args.expected_cpus, "test_execution_started": False,
                "schedule": schedule, "sources": {}, "trials": []}
     save(output / "summary.json", summary)
     print(json.dumps({"event": "matrix_start", **summary}), flush=True)
     try:
+        summary["container_facts"] = HELPERS.facts(output, env)
+        if (args.expected_cpus is not None and
+                len(summary["container_facts"]["effective_cpus"]) != args.expected_cpus):
+            summary.update(complete=False, reason="cpu_placement_mismatch", exit_code=78)
+            save(output / "summary.json", summary)
+            print(json.dumps({"event": "matrix_placement_mismatch", "exit_code": 78,
+                              "summary": str(output / "summary.json")}), flush=True)
+            return 78
+        save(output / "summary.json", summary)
         for args, label in [(["rustc", "--version"], "rustc"),
                             (["cargo", "nextest", "--version"], "nextest")]:
             execute(args, repo, output / f"{label}.log", env, 60)
@@ -193,7 +224,11 @@ def main():
                 raise RuntimeError(f"{label} Cargo.lock changed during compilation")
             archive.chmod(0o444)
             provenance["archive_sha256"] = digest(archive)
+            extracted = output / f"{label}-extracted"
+            extracted.mkdir()
+            provenance["extracted"] = str(extracted)
             common = ["--archive-file", archive, "--workspace-remap", source,
+                      "--extract-to", extracted,
                       "--config-file", config, "--profile", "ci", "-E", FILTER]
             execute(["cargo", "nextest", "list", *common, "--message-format", "json"],
                     source, output / f"{label}-tests.log", env, 120)
@@ -205,21 +240,39 @@ def main():
                         if test["filter-match"]["status"] == "matches" and not test["ignored"]]
             if selected != [("solana-local-cluster", TEST)]:
                 raise RuntimeError(f"Unexpected {label} selected tests: {selected}")
+            matched_suites = [suite for listing in listings
+                              for suite in listing["rust-suites"].values()
+                              if suite["package-name"] == "solana-local-cluster"
+                              and TEST in suite["testcases"]
+                              and suite["testcases"][TEST]["filter-match"]["status"] == "matches"]
+            if len(matched_suites) != 1:
+                raise RuntimeError(f"Unexpected {label} selected binary count")
+            binary = Path(matched_suites[0]["binary-path"]).resolve()
+            provenance["binary"] = str(binary)
+            provenance["binary_sha256"] = digest(binary)
             provenance["selected_tests"] = selected
             save(output / "summary.json", summary)
         for number, trial in enumerate(schedule, 1):
             label = trial["source"]
             provenance = summary["sources"][label]
             source = Path(provenance["source"])
+            binary = Path(provenance["binary"])
+            if digest(binary) != provenance["binary_sha256"]:
+                raise RuntimeError(f"{label} binary changed before trial {number}")
+            summary["test_execution_started"] = True
             result = execute([
                 "cargo", "nextest", "run", "--archive-file", provenance["archive"],
                 "--workspace-remap", source, "--config-file", config, "--profile", "ci",
+                "--extract-to", provenance["extracted"], "--extract-overwrite",
                 "--test-threads", "1", "--retries", "0", "--no-tests", "fail",
                 "--failure-output", "immediate", "--success-output", "immediate",
                 "--status-level", "all", "--final-status-level", "all", "-E", FILTER,
-            ], source, output / f"trial-{number:02d}-{label}.log", env, 900, False)
+            ], source, output / f"trial-{number:02d}-{label}.log", env, 900, False, binary=binary)
             summary["trials"].append({**trial, **result, "sha": provenance["sha"],
-                                      "archive_sha256": provenance["archive_sha256"]})
+                                      "archive_sha256": provenance["archive_sha256"],
+                                      "binary_sha256": provenance["binary_sha256"]})
+            if digest(binary) != provenance["binary_sha256"]:
+                raise RuntimeError(f"{label} binary changed during trial {number}")
             save(output / "summary.json", summary)
         for provenance in summary["sources"].values():
             if digest(Path(provenance["archive"])) != provenance["archive_sha256"]:

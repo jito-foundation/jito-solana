@@ -15,7 +15,7 @@ if [[ "${BUILDKITE_BRANCH:-}" == "ex/fix-lc2-duplicate-repair" ]]; then
   if [[ -n "${LC2_EXPERIMENT:-}" ]]; then
     python3 ci/lc2-diagnostic.py pipeline "$LC2_EXPERIMENT" | buildkite-agent pipeline upload
   else
-    echo "LC2 experiment branch: set LC2_EXPERIMENT=baseline or matrix to run diagnostics."
+    echo "LC2 experiment branch: set LC2_EXPERIMENT=baseline, matrix, or validation to run diagnostics."
   fi
   exit 0
 fi
