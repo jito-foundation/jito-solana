@@ -2157,14 +2157,6 @@ impl ReplayStage {
                         .entry(*duplicate_slot)
                         .and_modify(|x| *x += 1)
                         .or_insert(1);
-                    info!(
-                        target: "lc2_diagnostic",
-                        "lc2-purge validator={my_pubkey} ledger={:?} slot={duplicate_slot} \
-                         attempt={attempt_no} expected={correct_hash} actual={frozen_hash:?} \
-                         meta={:?}",
-                        blockstore.ledger_path(),
-                        blockstore.meta(*duplicate_slot),
-                    );
                     if *attempt_no > MAX_REPAIR_RETRY_LOOP_ATTEMPTS {
                         panic!(
                             "We have tried to repair duplicate slot: {duplicate_slot} more than \

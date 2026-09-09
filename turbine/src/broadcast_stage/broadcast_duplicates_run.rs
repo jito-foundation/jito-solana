@@ -159,20 +159,6 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                     };
 
                 if let Some(prev_entry_hash) = prev_entry_hash {
-                    info!(
-                        target: "lc2_diagnostic",
-                        "duplicate-batch leader={} slot={} parent={} entries={} tick_height={} \
-                         max_tick_height={} next_data_index={} next_code_index={} prefix_root={}",
-                        keypair.pubkey(),
-                        bank.slot(),
-                        bank.parent_slot(),
-                        entry_batch_len,
-                        last_tick_height,
-                        bank.max_tick_height(),
-                        self.next_shred_index,
-                        self.next_code_index,
-                        self.chained_merkle_root,
-                    );
                     let original_last_entry = entries.pop().unwrap();
 
                     // Last entry has to be a tick
@@ -279,17 +265,6 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                 assert_eq!(
                     original_last_data_shred.len(),
                     partition_last_data_shred.len()
-                );
-                info!(
-                    target: "lc2_diagnostic",
-                    "duplicate-variants leader={} slot={} original_root={} partition_root={} \
-                     first_data_index={} final_data_index={}",
-                    keypair.pubkey(),
-                    bank.slot(),
-                    original_last_data_shred[0].merkle_root().unwrap(),
-                    partition_last_data_shred[0].merkle_root().unwrap(),
-                    original_last_data_shred[0].index(),
-                    original_last_data_shred.last().unwrap().index(),
                 );
                 self.next_shred_index += u32::try_from(original_last_data_shred.len()).unwrap();
                 // Update chained_merkle_root to the merkle root of the original last FEC set

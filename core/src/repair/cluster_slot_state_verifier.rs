@@ -829,13 +829,6 @@ fn apply_state_changes(
                 duplicate_slots_to_repair.insert(slot, duplicate_confirmed_hash);
             }
             ResultingStateChange::DuplicateConfirmedSlotMatchesCluster(bank_frozen_hash) => {
-                if let Some(attempts) = purge_repair_slot_counter.get(&slot) {
-                    info!(
-                        target: "lc2_diagnostic",
-                        "lc2-recovered ledger={:?} slot={slot} hash={bank_frozen_hash} attempts={attempts}",
-                        blockstore.ledger_path()
-                    );
-                }
                 not_duplicate_confirmed_frozen_hash = None;
                 // When we detect that our frozen slot matches the cluster version (note this
                 // will catch both bank frozen first -> confirmation, or confirmation first ->

@@ -364,13 +364,6 @@ pub(super) fn mark_replay_dead_slot(
     progress: &mut ProgressMap,
     dead_slot_context: &mut DeadSlotContext<'_>,
 ) {
-    info!(
-        target: "lc2_diagnostic",
-        "lc2-dead ledger={:?} slot={} parent={} error={err:?}",
-        dead_slot_context.notifications.blockstore.ledger_path(),
-        bank.slot(),
-        bank.parent_slot(),
-    );
     bank.clear_accounts_lt_hash_async_progress_is_at_end();
     if let Some(reason) = soft_dead_reason(
         dead_slot_context.notifications.blockstore.as_ref(),
