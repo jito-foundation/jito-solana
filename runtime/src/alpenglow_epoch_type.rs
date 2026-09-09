@@ -119,6 +119,16 @@ impl RewardEpochDelegatedStakes {
     }
 }
 
+#[cfg(test)]
+impl RewardEpochDelegatedStakes {
+    pub(crate) fn new_for_tests(epoch: u64) -> Self {
+        Self {
+            epoch,
+            delegated_stakes: HashMap::new(),
+        }
+    }
+}
+
 impl From<RewardEpochDelegatedStakesAccount> for RewardEpochDelegatedStakes {
     fn from(account: RewardEpochDelegatedStakesAccount) -> Self {
         Self {
@@ -133,7 +143,7 @@ impl From<RewardEpochDelegatedStakesAccount> for RewardEpochDelegatedStakes {
 }
 
 #[derive(Debug)]
-pub(crate) enum AlpenglowEpochType {
+pub(crate) enum AlpenglowEpochType<'a> {
     /// This is a full tower epoch.
     Tower,
     /// The epoch started in tower and then switched to alpenglow
@@ -141,16 +151,16 @@ pub(crate) enum AlpenglowEpochType {
         num_tower_slots: Slot,
         num_ag_slots: Slot,
         migration_epoch: Epoch,
-        reward_epoch_delegated_stakes: RewardEpochDelegatedStakes,
+        reward_epoch_delegated_stakes: &'a RewardEpochDelegatedStakes,
     },
     /// This is a full alpenglow epoch
     Alpenglow {
         migration_epoch: Epoch,
-        reward_epoch_delegated_stakes: RewardEpochDelegatedStakes,
+        reward_epoch_delegated_stakes: &'a RewardEpochDelegatedStakes,
     },
 }
 
-impl AlpenglowEpochType {
+impl<'a> AlpenglowEpochType<'a> {
     pub(crate) fn is_alpenglow_or_migration_epoch(bank: &Bank, epoch: Epoch) -> bool {
         debug_assert!(epoch < bank.epoch());
         bank.get_alpenglow_migration_slot()
@@ -162,13 +172,10 @@ impl AlpenglowEpochType {
     ///
     /// Calling this function with an epoch >= `Bank::epoch` can return false information as it is
     /// possible that we have not observed the genesis cert yet but will in the upcoming slots.
-    ///
-    /// We pass `reward_epoch_delegated_stakes` as a closure to avoid the potential deserialization
-    /// of `REWARD_EPOCH_DELEGATED_STAKES_ACCOUNT` in the Tower case.
     pub(crate) fn get(
         bank: &Bank,
         epoch: Epoch,
-        reward_epoch_delegated_stakes: impl FnOnce() -> Option<RewardEpochDelegatedStakes>,
+        reward_epoch_delegated_stakes: Option<&'a RewardEpochDelegatedStakes>,
     ) -> Self {
         debug_assert!(epoch < bank.epoch());
         let Some(migration_slot) = bank.get_alpenglow_migration_slot() else {
@@ -178,7 +185,7 @@ impl AlpenglowEpochType {
         match migration_epoch.cmp(&epoch) {
             Ordering::Less => {
                 let reward_epoch_delegated_stakes =
-                    reward_epoch_delegated_stakes().unwrap_or_else(|| {
+                    reward_epoch_delegated_stakes.unwrap_or_else(|| {
                         panic!(
                             "Missing reward epoch delegated stakes for non-Tower reward epoch \
                              {epoch}"
@@ -204,7 +211,7 @@ impl AlpenglowEpochType {
                 let num_ag_slots = slots_in_epoch - num_tower_slots;
                 assert_eq!(slots_in_epoch, num_tower_slots + num_ag_slots);
                 let reward_epoch_delegated_stakes =
-                    reward_epoch_delegated_stakes().unwrap_or_else(|| {
+                    reward_epoch_delegated_stakes.unwrap_or_else(|| {
                         panic!(
                             "Missing reward epoch delegated stakes for non-Tower reward epoch \
                              {epoch}"
