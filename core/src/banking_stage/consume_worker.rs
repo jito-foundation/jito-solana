@@ -169,17 +169,19 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         // The scheduler already reserved cost on this exact bank, in scheduling order. Taking
         // the admission out of the work marks the reservation as settled by this worker; work
         // that goes back still carrying one is released by the scheduler.
-        let admission_results = work
-            .admission
-            .take_if(|admission| admission.0.bank_id() == bank.bank_id())
-            .map(|(_, results)| results);
+        if let Some((owner, _)) = &work.admission
+            && owner.bank_id() != bank.bank_id()
+        {
+            // A replacement Bank needs ordered admission again, through the scheduler.
+            return self.retry(work);
+        }
+        let admission_results = work.admission.take().map(|(_, results)| results);
         if admission_results.is_none()
             && let Some(tips) = &self.tip_processing_dependencies
             && !tips.process_tip_programs(&self.consumer, bank)
         {
             return self.retry(work);
         }
-        // A stale admission stays attached; admit locally on the replacement bank as before.
         let output = self
             .consumer
             .process_and_record_aged_transactions_with_policy(
@@ -1791,7 +1793,7 @@ fn try_drain_iter<T>(work: T, receiver: &Receiver<T>) -> impl Iterator<Item = T>
 }
 
 /// Returns an active leader state if available, otherwise None.
-pub(super) fn active_leader_state(
+fn active_leader_state(
     shared_leader_state: &SharedLeaderState,
 ) -> Option<arc_swap::Guard<Arc<LeaderState>>> {
     let guard = shared_leader_state.load();
@@ -3139,8 +3141,8 @@ mod tests {
 
     #[test_case(None, false; "scheduler")]
     #[test_case(Some(true), false; "replacement_worker")]
-    #[test_case(Some(false), false; "replacement_failure")]
-    #[test_case(Some(true), true; "reconnect_between_fallback_workers")]
+    #[test_case(Some(false), false; "replacement_preparation_recovers")]
+    #[test_case(Some(true), true; "reconnect_between_returned_workers")]
     fn test_tip_preparation_precedes_bam_admission(
         replacement_succeeds: Option<bool>,
         reconnect_between_workers: bool,
@@ -3238,35 +3240,35 @@ mod tests {
                 )
                 .unwrap();
         }
+        let schedule = |scheduler: &mut BamScheduler<_>,
+                        container: &mut TransactionStateContainer<_>| {
+            scheduler
+                .schedule(container, bank.slot(), u64::MAX)
+                .unwrap()
+                .num_scheduled
+        };
+        let wait_for_scheduling =
+            |scheduler: &mut BamScheduler<_>, container: &mut TransactionStateContainer<_>| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while schedule(scheduler, container) == 0 {
+                    assert!(Instant::now() < deadline, "tip preparation did not recover");
+                    std::thread::yield_now();
+                }
+            };
         let decision = BufferedPacketsDecision::Consume(bank.clone());
         scheduler
             .receive_completed(&mut container, &decision)
             .unwrap();
         set_builder(Pubkey::default());
         for _ in 0..2 {
-            assert_eq!(
-                scheduler
-                    .schedule(&mut container, bank.slot(), u64::MAX)
-                    .unwrap()
-                    .num_scheduled,
-                0
-            );
+            assert_eq!(schedule(&mut scheduler, &mut container), 0);
             assert!(worker.consume_receiver.try_recv().is_err());
             assert_eq!(block_costs(&bank), (0, 0));
         }
         set_builder(tips.cluster_info.id());
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while scheduler
-            .schedule(&mut container, bank.slot(), u64::MAX)
-            .unwrap()
-            .num_scheduled
-            == 0
-        {
-            assert!(Instant::now() < deadline, "tip preparation did not recover");
-            std::thread::yield_now();
-        }
-        let work = worker.consume_receiver.try_recv().unwrap();
-        let second_work =
+        wait_for_scheduling(&mut scheduler, &mut container);
+        let mut work = worker.consume_receiver.try_recv().unwrap();
+        let mut second_work =
             reconnect_between_workers.then(|| worker.consume_receiver.try_recv().unwrap());
         assert_eq!(work.admission.as_ref().unwrap().1, vec![Ok(())]);
         let signature = *work.transactions[0].signature();
@@ -3300,60 +3302,69 @@ mod tests {
             } else {
                 Pubkey::default()
             });
-        }
-        worker.consume(work).unwrap();
-        let finished = frame.consumed_receiver.try_recv().unwrap();
-        let succeeded = replacement_succeeds != Some(false);
-        assert_eq!(
-            frame.bank.get_balance(&recipient),
-            if succeeded { amount } else { 0 }
-        );
-        assert_eq!(
-            finished.work.admission.is_some(),
-            replacement_succeeds.is_some()
-        );
-        assert!(
-            matches!(
-                &finished.extra_info.as_ref().unwrap().processed_results[0],
-                TransactionResult::Committed(result) if succeeded && result.execution_success
-            ) || matches!(
-                &finished.extra_info.as_ref().unwrap().processed_results[0],
-                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout) if !succeeded
-            )
-        );
-        let records: Vec<_> = frame.record_receiver.drain().collect();
-        if succeeded {
-            assert_eq!(
-                records.last().unwrap().transactions[0].signatures[0],
-                signature
-            );
+            // Return later work first. Neither worker may admit locally on the replacement.
+            let returned_work = second_work.take().into_iter().chain(std::iter::once(work));
+            let decision = BufferedPacketsDecision::Consume(frame.bank.clone());
+            for returned in returned_work {
+                worker.consume(returned).unwrap();
+                assert_eq!(block_costs(&frame.bank), (0, 0));
+                assert!(frame.record_receiver.try_recv().is_err());
+                scheduler
+                    .receive_completed(&mut container, &decision)
+                    .unwrap();
+                if scheduler.has_in_flight_transactions() {
+                    assert_eq!(schedule(&mut scheduler, &mut container), 0,);
+                    // Reconnection changes metadata while another old admission is outstanding.
+                    set_builder(tips.cluster_info.id());
+                }
+            }
+            assert_eq!(block_costs(&bank), (prepared_cost, 0));
+            if !succeeds {
+                assert_eq!(schedule(&mut scheduler, &mut container), 0,);
+                assert!(worker.consume_receiver.try_recv().is_err());
+                assert_eq!(block_costs(&frame.bank), (0, 0));
+                set_builder(frame.mint_keypair.pubkey());
+            }
+            wait_for_scheduling(&mut scheduler, &mut container);
             assert_eq!(
                 config(&frame.bank).block_builder(),
                 tips.block_builder_fee_info.load().block_builder
             );
-        } else {
-            assert!(records.is_empty());
-            assert_eq!(block_costs(&frame.bank), (0, 0));
-        }
-        worker.consumed_sender.send(finished).unwrap();
-        let decision = BufferedPacketsDecision::Consume(frame.bank.clone());
-        scheduler
-            .receive_completed(&mut container, &decision)
-            .unwrap();
-        if let Some(work) = second_work {
-            // Reconnect before all old-bank work drains: the second fallback must recheck B
-            // itself, because the scheduler cannot adopt B yet.
-            assert!(scheduler.has_in_flight_transactions());
-            set_builder(tips.cluster_info.id());
-            worker.consume(work).unwrap();
-            assert_eq!(config(&frame.bank).block_builder(), tips.cluster_info.id());
-            let finished = frame.consumed_receiver.try_recv().unwrap();
-            assert!(finished.work.admission.is_some());
-            assert!(
-                matches!(&finished.extra_info.as_ref().unwrap().processed_results[0],
-                TransactionResult::Committed(result) if result.execution_success)
+            frame.record_receiver.drain().for_each(drop);
+            work = worker.consume_receiver.try_recv().unwrap();
+            assert_eq!(
+                work.admission.as_ref().unwrap().0.bank_id(),
+                frame.bank.bank_id()
             );
-            assert_eq!(frame.record_receiver.drain().count(), 2);
+            assert_eq!(*work.transactions[0].signature(), signature);
+            second_work =
+                reconnect_between_workers.then(|| worker.consume_receiver.try_recv().unwrap());
+        }
+        let decision = BufferedPacketsDecision::Consume(frame.bank.clone());
+        for (index, work) in std::iter::once(work).chain(second_work).enumerate() {
+            if index > 0 {
+                assert!(scheduler.has_in_flight_transactions());
+            }
+            worker.consume(work).unwrap();
+            if index > 0 {
+                assert_eq!(config(&frame.bank).block_builder(), tips.cluster_info.id());
+            }
+            let finished = frame.consumed_receiver.try_recv().unwrap();
+            assert_eq!(frame.bank.get_balance(&recipient), amount);
+            assert!(finished.work.admission.is_none());
+            assert!(matches!(
+                &finished.extra_info.as_ref().unwrap().processed_results[0],
+                TransactionResult::Committed(result) if result.execution_success
+            ));
+            let records: Vec<_> = frame.record_receiver.drain().collect();
+            assert_eq!(records.len(), 1);
+            if index == 0 {
+                assert_eq!(records[0].transactions[0].signatures[0], signature);
+            }
+            assert_eq!(
+                config(&frame.bank).block_builder(),
+                tips.block_builder_fee_info.load().block_builder
+            );
             worker.consumed_sender.send(finished).unwrap();
             scheduler
                 .receive_completed(&mut container, &decision)
@@ -3365,23 +3376,11 @@ mod tests {
         }
         assert_eq!(block_costs(&frame.bank).1, 0);
         let settled = block_costs(&frame.bank);
-        if replacement_succeeds == Some(true) {
-            // The fallback prepared B using Block Engine metadata while BAM was disconnected.
-            // Reconnection publishes BAM's builder before the scheduler first adopts B.
-            set_builder(tips.cluster_info.id());
-        }
         scheduler
             .schedule(&mut container, frame.bank.slot(), u64::MAX)
             .unwrap();
-        if replacement_succeeds == Some(true) && !reconnect_between_workers {
-            assert_eq!(config(&frame.bank).block_builder(), tips.cluster_info.id());
-            assert!(block_costs(&frame.bank).0 > settled.0);
-            assert_eq!(block_costs(&frame.bank).1, 0);
-            assert_eq!(frame.record_receiver.drain().count(), 1);
-        } else {
-            assert_eq!(block_costs(&frame.bank), settled);
-            assert!(frame.record_receiver.try_recv().is_err());
-        }
+        assert_eq!(block_costs(&frame.bank), settled);
+        assert!(frame.record_receiver.try_recv().is_err());
     }
 
     #[test_case("builder")]
