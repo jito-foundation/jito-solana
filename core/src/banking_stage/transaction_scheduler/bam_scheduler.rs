@@ -33,16 +33,12 @@ use {
     solana_nohash_hasher::IntMap,
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
-    solana_runtime::bank_forks::BankForks,
+    solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction_error::TransactionError,
-    std::{
-        borrow::Borrow,
-        sync::{Arc, RwLock},
-        time::Instant,
-    },
+    std::{borrow::Borrow, time::Instant},
     tokio::sync::mpsc::Sender as TokioSender,
 };
 
@@ -63,14 +59,6 @@ fn passthrough_priority(
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
 
-// Sized from 30 days of mainnet data ending 2026-08-18. Atomic-only ClickHouse counts of distinct
-// `(source, seq_id)` batches per validator-slot had p99=149, p99.9=236, 99.94% <=256, and max=540.
-// The full-slot count conservatively upper-bounds the pre-ParentReady subset stored here.
-// Mainnet-validator Influx `bam_connection-metrics.bundle_received` active 25 ms samples, which
-// also include non-atomic batches, had p99=183, p99.9=272, 99.86% <=256, and max=881. Thus 256
-// keeps the atomic p99.9 inline in 4 KiB while rarer bursts spill safely.
-const DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY: usize = 256;
-
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
@@ -89,11 +77,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
-    deferred_atomic_batches:
-        SmallVec<[TransactionPriorityId; DEFERRED_ATOMIC_BATCHES_INLINE_CAPACITY]>,
 
     extra_checks_enabled: bool,
-    bank_forks: Arc<RwLock<BankForks>>,
     shared_leader_state: SharedLeaderState,
 }
 
@@ -112,7 +97,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         consume_work_sender: Sender<ConsumeWork<Tx>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         response_sender: TokioSender<BamOutboundMessage>,
-        bank_forks: Arc<RwLock<BankForks>>,
         shared_leader_state: SharedLeaderState,
     ) -> Self {
         Self {
@@ -129,9 +113,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             last_schedule_time: Instant::now(),
             slot: None,
             reusable_consume_work: Vec::new(),
-            deferred_atomic_batches: SmallVec::new(),
             extra_checks_enabled: true,
-            bank_forks,
             shared_leader_state,
         }
     }
@@ -151,29 +133,21 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     /// Insert all incoming transactions into the `PrioGraph`.
-    fn pull_into_prio_graph<S: StateContainer<Tx>>(&mut self, container: &mut S) {
-        let Some(slot) = self.slot else {
-            warn!("Slot is not set, cannot pull transactions into prio-graph");
-            return;
-        };
-
-        let working_bank = self.bank_forks.read().unwrap().working_bank();
-        let atomic_batches_enabled = self.shared_leader_state.load().atomic_batches_enabled();
-        self.deferred_atomic_batches.clear();
+    fn pull_into_prio_graph<S: StateContainer<Tx>>(
+        &mut self,
+        container: &mut S,
+        working_bank: &Bank,
+    ) {
+        let slot = working_bank.slot();
 
         while let Some(next_batch_id) = container.pop() {
-            let Some((batch_ids, revert_on_error, max_schedule_slot, seq_id)) =
+            let Some((batch_ids, _, max_schedule_slot, seq_id)) =
                 container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
                 container.remove_by_id(next_batch_id.id);
                 continue;
             };
-
-            if revert_on_error && !atomic_batches_enabled {
-                self.deferred_atomic_batches.push(next_batch_id);
-                continue;
-            }
 
             if max_schedule_slot < slot {
                 // If the slot has changed, we cannot schedule this batch
@@ -226,24 +200,17 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 Self::get_transactions_account_access(txns.into_iter()),
             );
         }
-
-        // Atomic batches must wait until ParentReady confirms or replaces the provisional bank.
-        // Non-atomic batches can still be rescheduled after sad handover.
-        container.push_ids_into_queue(self.deferred_atomic_batches.drain(..));
     }
 
     fn send_to_workers(
         &mut self,
         container: &mut impl StateContainer<Tx>,
         num_scheduled: &mut usize,
+        working_bank: &Bank,
     ) {
-        let Some(slot) = self.slot else {
-            warn!("Slot is not set, cannot schedule transactions");
-            return;
-        };
+        let slot = working_bank.slot();
 
         let now = Instant::now();
-        let working_bank = self.bank_forks.read().unwrap().working_bank();
         while let Some(id) = self.prio_graph.pop() {
             let (batch_ids, revert_on_error, max_schedule_slot, seq_id) =
                 container.get_batch(id.id).unwrap();
@@ -722,8 +689,16 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
 
         let mut num_scheduled = 0;
 
-        self.pull_into_prio_graph(container);
-        self.send_to_workers(container, &mut num_scheduled);
+        // Pin both validation passes to the same resolved bank, even if BankForks advances.
+        let leader_state = self.shared_leader_state.load();
+        if leader_state.atomic_batches_enabled()
+            && let Some(bank) = leader_state.working_bank()
+            && !bank.is_complete()
+            && Some(bank.slot()) == self.slot
+        {
+            self.pull_into_prio_graph(container, bank);
+            self.send_to_workers(container, &mut num_scheduled, bank);
+        }
 
         // TODO(seg): Double check the zeros here
         Ok(SchedulingSummary {
@@ -831,6 +806,7 @@ mod tests {
                 },
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
+                    bam_receive_and_buffer::tests::set_leader_bank,
                     bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE},
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
@@ -879,12 +855,16 @@ mod tests {
         let (consume_work_sender, consume_work_receiver) = unbounded();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
         let (response_sender, response_receiver) = tokio::sync::mpsc::channel(100);
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        set_leader_bank(
+            &mut shared_leader_state,
+            Some(bank_forks.read().unwrap().working_bank()),
+        );
         let scheduler = BamScheduler::new(
             consume_work_sender,
             finished_consume_work_receiver,
             response_sender,
-            bank_forks.clone(),
-            SharedLeaderState::new(0, None, None),
+            shared_leader_state,
         );
         TestScheduler {
             scheduler,
@@ -971,6 +951,140 @@ mod tests {
         let mut container = TransactionStateContainer::with_capacity(100);
         let result = scheduler.schedule(&mut container, 0).unwrap();
         assert_eq!(result.num_scheduled, 0);
+    }
+
+    #[test]
+    fn test_unresolved_bank_behavior() {
+        let (bank_forks, _) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(bank.clone()),
+            0,
+            None,
+            None,
+            false,
+        )));
+        let mut test = create_test_scheduler(1, &bank_forks);
+        test.scheduler.shared_leader_state = shared_leader_state.clone();
+        test.scheduler.extra_checks_enabled = false;
+        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+        for (fifo_index, (revert_on_error, seq_id)) in
+            [(true, 71), (false, 72)].into_iter().enumerate()
+        {
+            let transaction = prioritized_tranfers(
+                &Keypair::new(),
+                [Pubkey::new_unique()],
+                1_000,
+                u64::from(seq_id),
+            );
+            container
+                .insert_new_batch(
+                    smallvec::smallvec![(transaction, MaxAge::MAX)],
+                    u64::MAX - fifo_index as u64,
+                    revert_on_error,
+                    bank.slot(),
+                    seq_id,
+                )
+                .unwrap();
+        }
+        test.scheduler
+            .receive_completed(
+                &mut container,
+                &BufferedPacketsDecision::Consume(bank.clone()),
+            )
+            .unwrap();
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        assert_eq!(container.queue_size(), 2);
+        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert!(test.response_receiver.try_recv().is_err());
+
+        // A stale Consume decision must not dispatch through the no-bank replacement gap.
+        shared_leader_state.set_bank_replacement();
+        assert_eq!(
+            test.scheduler
+                .schedule(&mut container, 0, 0)
+                .unwrap()
+                .num_scheduled,
+            0
+        );
+        assert_eq!(container.queue_size(), 2);
+
+        // A held controller iteration preserves work through resolution.
+        set_leader_bank(&mut shared_leader_state, Some(bank.clone()));
+        test.scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert_eq!(test.scheduler.slot, Some(bank.slot()));
+        assert_eq!(container.queue_size(), 2);
+
+        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        assert_eq!(container.queue_size(), 0);
+        let atomic_work = test.consume_work_receivers[0].try_recv().unwrap();
+        let non_atomic_work = test.consume_work_receivers[0].try_recv().unwrap();
+        assert!(atomic_work.revert_on_error);
+        assert!(!non_atomic_work.revert_on_error);
+        assert!(test.consume_work_receivers[0].try_recv().is_err());
+        assert!(test.response_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_scheduler_validates_selected_leader_bank() {
+        let (bank_forks, mint) = test_bank_forks();
+        let bank = Arc::new(Bank::new_from_parent(
+            bank_forks.read().unwrap().working_bank(),
+            solana_leader_schedule::SlotLeader::new_unique(),
+            1,
+        ));
+        bank.register_unique_recent_blockhash_for_test();
+        let mut test = create_test_scheduler(1, &bank_forks);
+        set_leader_bank(&mut test.scheduler.shared_leader_state, Some(bank.clone()));
+        let transaction = solana_system_transaction::transfer(
+            &mint,
+            &Pubkey::new_unique(),
+            1,
+            bank.last_blockhash(),
+        );
+        let mut container = TransactionStateContainer::with_capacity(10);
+        container
+            .insert_new_batch(
+                smallvec::smallvec![(
+                    RuntimeTransaction::from_transaction_for_tests(transaction),
+                    MaxAge::MAX
+                )],
+                u64::MAX,
+                false,
+                bank.slot(),
+                1,
+            )
+            .unwrap();
+        test.scheduler
+            .receive_completed(
+                &mut container,
+                &BufferedPacketsDecision::Consume(bank.clone()),
+            )
+            .unwrap();
+        // BankForks still exposes a different bank which cannot validate this blockhash.
+        assert_ne!(
+            bank.bank_id(),
+            bank_forks.read().unwrap().working_bank().bank_id()
+        );
+        assert_eq!(
+            test.scheduler
+                .schedule(&mut container, 0, 0)
+                .unwrap()
+                .num_scheduled,
+            1
+        );
+        assert_eq!(
+            test.consume_work_receivers[0]
+                .try_recv()
+                .unwrap()
+                .target_slot,
+            bank.slot()
+        );
+        assert!(test.response_receiver.try_recv().is_err());
     }
 
     #[test]
@@ -1285,14 +1399,13 @@ mod tests {
             (&keypair_a, vec![Pubkey::new_unique()], 1000, 0, u64::MAX),
             (&keypair_b, vec![Pubkey::new_unique()], 2000, 1, u64::MAX),
         ]);
-        scheduler.pull_into_prio_graph(&mut container);
+        scheduler.pull_into_prio_graph(&mut container, &bank);
         assert!(
             !scheduler.prio_graph.is_empty(),
             "Prio graph should have transactions"
         );
 
-        let leader_state = LeaderState::new(Some(bank), 0, None, None);
-        scheduler.shared_leader_state.store(Arc::new(leader_state));
+        set_leader_bank(&mut scheduler.shared_leader_state, Some(bank));
         scheduler.shared_leader_state.set_bank_replacement();
         scheduler
             .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
@@ -1362,7 +1475,7 @@ mod tests {
         container.insert_new_batch(txns_max_age, priority, false, u64::MAX, 0);
 
         // Must not panic; the bundle becomes a single schedulable node.
-        scheduler.pull_into_prio_graph(&mut container);
+        scheduler.pull_into_prio_graph(&mut container, &bank);
 
         assert!(
             !scheduler.prio_graph.is_empty(),
