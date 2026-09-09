@@ -16,4 +16,5 @@ echo "--- coverage: root (part 2)"
   --features dev-context-only-utils \
   --lib \
   --bins \
+  --no-fail-fast \
   "${packages[@]}"

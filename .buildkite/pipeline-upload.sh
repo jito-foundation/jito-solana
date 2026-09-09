@@ -1,18 +1,30 @@
 #!/usr/bin/env bash
-#
-# This script is used to upload the full buildkite pipeline. The steps defined
-# in the buildkite UI should simply be:
-#
-#   steps:
-#    - command: ".buildkite/pipeline-upload.sh"
-#
-
+# Validate the final heartbeat fixture correction in normal and coverage runs.
 set -e
 cd "$(dirname "$0")"/..
 source ci/_
 
-_ cargo xtask generate-pipeline
-echo +++ pipeline
+cat >pipeline.yml <<'YAML'
+steps:
+  - name: heartbeat-core-nextest
+    command: >-
+      ci/docker-run-default-image.sh
+      bash -c 'source ci/stable/common.sh; cargo nextest run --locked --profile ci --cargo-profile ci --package solana-core --tests --features dev-context-only-utils --no-fail-fast --retries 0 --verbose'
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+  - name: heartbeat-coverage-2
+    command: >-
+      ci/docker-run-default-image.sh
+      env RUST_BACKTRACE=full NO_INTERCEPT=1
+      bash -c 'ci/coverage/part-2.sh 2>heartbeat-final-coverage-stderr.log'
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+    env:
+      FETCH_CODECOV_ENVS: 'true'
+    artifact_paths:
+      - heartbeat-final-coverage-stderr.log
+YAML
 cat pipeline.yml
-
 _ buildkite-agent pipeline upload pipeline.yml
