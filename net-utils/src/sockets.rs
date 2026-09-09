@@ -563,7 +563,7 @@ mod tests {
         let server_tcp_listener = TcpListener::bind((ip_addr, 0)).unwrap();
         for _ in 0..MAX_PORT_VERIFY_THREADS * 2 {
             tcp_listeners.push(TcpListener::bind((ip_addr, 0)).unwrap());
-            udp_sockets.push(UdpSocket::bind((ip_addr, 0)).unwrap());
+            udp_sockets.push(bind_to(ip_addr, 0).unwrap());
         }
 
         let ip_echo_server_addr = server_tcp_listener.local_addr().unwrap();
