@@ -68,8 +68,8 @@ impl QosService {
         let transaction_costs =
             Self::compute_transaction_costs(&bank.feature_set, transactions.iter(), pre_results);
 
-        let mut cost_tracker = bank.write_cost_tracker().unwrap();
         let mut results = Vec::with_capacity(transaction_costs.len());
+        let mut cost_tracker = bank.write_cost_tracker().unwrap();
         let mut reserved_cost = 0;
         for cost_result in &transaction_costs {
             results.push(match cost_result {
@@ -96,7 +96,6 @@ impl QosService {
             });
         }
         cost_tracker.add_transactions_in_flight(results.iter().flatten().count());
-        drop(cost_tracker);
         Some((results, reserved_cost))
     }
 

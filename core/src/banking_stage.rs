@@ -679,6 +679,11 @@ impl BankingStage {
             let (finished_work_sender, finished_work_receiver) = unbounded();
 
             // Spawn the worker threads
+            let consumer = Consumer::new(
+                self.committer.clone(),
+                self.transaction_recorder.clone(),
+                self.log_messages_bytes_limit,
+            );
             let mut worker_metrics = Vec::with_capacity(num_workers);
             for index in 0..num_workers {
                 let id = index + BAM_METRICS_ID_OFFSET as usize;
@@ -686,11 +691,7 @@ impl BankingStage {
                     id as u32,
                     exit.clone(),
                     work_receiver.clone(),
-                    Consumer::new(
-                        self.committer.clone(),
-                        self.transaction_recorder.clone(),
-                        self.log_messages_bytes_limit,
-                    ),
+                    consumer.clone(),
                     finished_work_sender.clone(),
                     self.poh_recorder.read().unwrap().shared_leader_state(),
                     tip_processing_dependencies.clone(),
@@ -711,6 +712,7 @@ impl BankingStage {
             let bam_scheduler_exit = exit.clone();
             let bam_scheduler_bank_forks = self.bank_forks.clone();
             let bam_shared_leader_state = self.poh_recorder.read().unwrap().shared_leader_state();
+            let tip_processing = tip_processing_dependencies.map(|tips| (consumer, tips));
             threads.push(
                 Builder::new()
                     .name("solBamSched".to_string())
@@ -720,6 +722,7 @@ impl BankingStage {
                             finished_work_receiver,
                             bam_dependencies.outbound_sender.clone(),
                             bam_shared_leader_state.clone(),
+                            tip_processing,
                         );
                         let receive_and_buffer = BamReceiveAndBuffer::new(
                             bam_scheduler_exit.clone(),

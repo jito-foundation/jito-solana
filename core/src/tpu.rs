@@ -454,9 +454,8 @@ impl Tpu {
             bundle_account_locker.clone(),
             Some(TipProcessingDependencies {
                 tip_manager: tip_manager.clone(),
-                last_tip_updated_bank: Arc::new(Mutex::new(None)),
+                tip_programs_lock: Arc::new(Mutex::new(())),
                 block_builder_fee_info: block_builder_fee_info.clone(),
-                bam_enabled: bam_enabled.clone(),
                 cluster_info: cluster_info.clone(),
                 bundle_account_locker: bundle_account_locker.clone(),
             }),

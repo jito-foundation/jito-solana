@@ -2054,6 +2054,7 @@ mod tests {
             finished_work_receiver,
             response_sender,
             shared_leader_state.clone(),
+            None,
         );
         let optimistic_decision = BufferedPacketsDecision::Consume(optimistic_bank);
         bam_scheduler
