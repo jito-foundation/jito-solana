@@ -1282,7 +1282,6 @@ mod tests {
             consume_work_sender,
             finished_work_receiver,
             response_sender,
-            bank_forks.clone(),
             shared_leader_state.clone(),
         );
 

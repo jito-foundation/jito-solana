@@ -697,7 +697,6 @@ impl BankingStage {
                             work_sender,
                             finished_work_receiver,
                             bam_dependencies.outbound_sender.clone(),
-                            bam_scheduler_bank_forks.clone(),
                             bam_shared_leader_state.clone(),
                         );
                         let receive_and_buffer = BamReceiveAndBuffer::new(
