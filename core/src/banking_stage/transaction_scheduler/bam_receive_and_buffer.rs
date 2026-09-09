@@ -331,7 +331,11 @@ impl BamReceiveAndBuffer {
                 return None;
             }
         }
-        Some((bank_forks.read().unwrap().working_bank(), true))
+        // BankForks can expose a provisional bank before its leader state is published.
+        Some((
+            bank_forks.read().unwrap().working_bank(),
+            shared_leader_state.is_none(),
+        ))
     }
 
     fn send_no_leader_slot_txn_batch_result(&self, seq_id: u32) {
@@ -1842,6 +1846,62 @@ pub(super) mod tests {
             assert!(result.is_err());
             assert_eq!(stats.num_dropped_on_fee_payer, 1);
             assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
+        }
+    }
+
+    #[test]
+    fn test_unpublished_bank_defers_fork_checks() {
+        let (bank_forks, mint) = test_bank_forks();
+        let root = bank_forks.read().unwrap().root_bank();
+        let optimistic_parent = child_bank(&root, 1);
+        let transaction = transfer(&mint, &Pubkey::new_unique(), 1, root.last_blockhash());
+        optimistic_parent.process_transaction(&transaction).unwrap();
+        let provisional = Bank::new_from_parent(optimistic_parent, SlotLeader::new_unique(), 4)
+            .mark_leader_bank();
+        let provisional = bank_forks
+            .write()
+            .unwrap()
+            .insert(provisional)
+            .clone_without_scheduler();
+        let replacement = child_bank(&root, 4);
+        let shared = SharedLeaderState::new(0, None, None);
+
+        // BCL has inserted the provisional bank into BankForks, but has not yet
+        // called set_bank_with_atomic_batches_enabled(..., false).
+        let (selected, enabled) =
+            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&shared)).unwrap();
+        assert!(Arc::ptr_eq(&selected, &provisional));
+        let (without_shared, checks_without_shared) =
+            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, None).unwrap();
+        assert!(Arc::ptr_eq(&without_shared, &provisional));
+        for revert_on_error in [false, true] {
+            let parse = |bank: &Bank, checks| {
+                let mut batch =
+                    batch_with_transaction(&VersionedTransaction::from(transaction.clone()));
+                batch.max_schedule_slot = 4;
+                let mut metrics = BamReceiveAndBufferMetrics::default();
+                let (verified, _) = run_batch_verify(vec![batch], 4, &mut metrics);
+                let (mut packets, _, seq_id, max_schedule_slot) =
+                    verified.into_iter().next().unwrap().unwrap();
+                BamReceiveAndBuffer::parse_batch(
+                    &mut packets,
+                    seq_id,
+                    revert_on_error,
+                    max_schedule_slot,
+                    (&root, bank),
+                    &HashSet::new(),
+                    checks,
+                    &mut metrics,
+                )
+                .0
+            };
+            assert!(parse(&selected, enabled).is_ok());
+            assert!(parse(&replacement, true).is_ok());
+            assert!(matches!(
+                parse(&without_shared, checks_without_shared),
+                Err(Reason::TransactionError(error))
+                    if error.reason == TransactionErrorReason::AlreadyProcessed as i32
+            ));
         }
     }
 
