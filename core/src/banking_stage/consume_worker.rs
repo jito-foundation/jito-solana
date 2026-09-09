@@ -1961,6 +1961,235 @@ pub(crate) mod external {
         }
 
         #[test]
+        fn test_jito_scheduler_client_executes_real_vote_while_bam_connected() {
+            use {
+                crate::banking_stage::transaction_scheduler::check_worker::external::ExternalCheckWorker,
+                agave_scheduler_bindings::{
+                    SharableTransactionRegion, TpuToPackMessage, tpu_message_flags,
+                },
+                solana_account::ReadableAccount,
+                solana_transaction::{
+                    simple_vote_transaction_checker::is_simple_vote_transaction,
+                    versioned::{VersionedTransaction, sanitized::SanitizedVersionedTransaction},
+                },
+                solana_vote::vote_transaction::new_tower_sync_transaction,
+                solana_vote_interface::state::{TowerSync, VoteStateV4},
+            };
+
+            let GenesisConfigInfo {
+                genesis_config,
+                mint_keypair,
+                voting_keypair,
+                ..
+            } = create_slow_genesis_config(1_000_000);
+            let (root_bank, _root_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+            let (bank, forks) =
+                Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1)
+                    .wrap_with_bank_forks_for_tests();
+            let mut state = SharedLeaderState::new(0, None, None);
+            state.store(Arc::new(LeaderState::new(
+                Some(bank.clone()),
+                bank.tick_height(),
+                None,
+                None,
+            )));
+            let mut logon = jito_scheduler::client_logon(1, 1);
+            logon.allocator_size = 64 * 1024 * 1024;
+            let (mut server, files) = Server::setup_session(logon).unwrap();
+            let client = client::setup_session(&logon, files).unwrap();
+            let mut addon = server.jito.take().unwrap();
+            let execution = server.workers.pop().unwrap();
+            let checking = server.check_workers.pop().unwrap();
+            let (record_sender, mut records) = record_channels(false);
+            records.restart(bank.bank_id());
+            let (vote_sender, _vote_receiver) = bounded(1024);
+            let consumer = Consumer::new(
+                Committer::new(None, vote_sender, None),
+                TransactionRecorder::new(record_sender),
+                None,
+            );
+            let exit = Arc::new(AtomicBool::new(false));
+            let node = Node::new_localhost_with_pubkey(&mint_keypair.pubkey());
+            let dependencies = TipProcessingDependencies {
+                tip_manager: TipManager::new(TipManagerConfig::default()),
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
+                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                    block_builder: mint_keypair.pubkey(),
+                    block_builder_commission: 0,
+                })),
+                bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
+                cluster_info: Arc::new(ClusterInfo::new(
+                    node.info,
+                    Arc::new(mint_keypair.insecure_clone()),
+                    SocketAddrSpace::Unspecified,
+                )),
+                bundle_account_locker: BundleAccountLocker::default(),
+            };
+            let mut worker = ExternalWorker::new(
+                0,
+                exit.clone(),
+                consumer,
+                execution.worker_to_pack,
+                execution.allocator,
+                state.clone(),
+                BundleAccountLocker::default(),
+                Arc::default(),
+            )
+            .with_jito_worker(execution.jito)
+            .with_tip_processing_deps(Some(dependencies));
+            let mut receiver = execution.pack_to_worker;
+            let mut checker = ExternalCheckWorker::new(
+                exit.clone(),
+                checking.pack_to_check_worker,
+                checking.check_worker_to_pack,
+                checking.allocator,
+                state,
+                forks.read().unwrap().sharable_banks(),
+                Arc::default(),
+            );
+            let vote_pubkey = voting_keypair.pubkey();
+            let before = bank.get_account(&vote_pubkey).unwrap();
+            assert!(
+                VoteStateV4::deserialize(before.data(), &vote_pubkey)
+                    .unwrap()
+                    .votes
+                    .is_empty()
+            );
+            // Vote for the actual frozen parent; the mint pays the transaction fee,
+            // while the genesis account's authorized voter signs the TowerSync.
+            let vote = new_tower_sync_transaction(
+                TowerSync::new_from_slots(vec![root_bank.slot()], root_bank.hash(), None),
+                bank.confirmed_last_blockhash(),
+                &mint_keypair,
+                &voting_keypair,
+                &voting_keypair,
+                None,
+            );
+            vote.verify().unwrap();
+            let recipient = Pubkey::new_unique();
+            let ordinary = transfer(
+                &mint_keypair,
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            // Both use the TPU queue. Derive its vote flag from the real transaction,
+            // so the transfer cannot pass merely because the fixture labels it a vote.
+            for (transaction, expected_vote) in [(&ordinary, false), (&vote, true)] {
+                let sanitized = SanitizedVersionedTransaction::try_from(
+                    VersionedTransaction::from(transaction.clone()),
+                )
+                .unwrap();
+                let is_vote = is_simple_vote_transaction(&sanitized);
+                assert_eq!(is_vote, expected_vote);
+                let bytes = wincode::serialize(transaction).unwrap();
+                let allocator = &server.tpu_to_pack.allocator;
+                let pointer = allocator
+                    .allocate(u32::try_from(bytes.len()).unwrap())
+                    .unwrap();
+                // SAFETY: this fresh allocation is large enough for the serialized
+                // transaction; successful publication transfers ownership to the client.
+                let offset = unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.as_ptr(), bytes.len());
+                    allocator.offset(pointer)
+                };
+                server
+                    .tpu_to_pack
+                    .producer
+                    .try_write(TpuToPackMessage {
+                        transaction: SharableTransactionRegion {
+                            offset,
+                            length: u32::try_from(bytes.len()).unwrap(),
+                        },
+                        flags: if is_vote {
+                            tpu_message_flags::IS_SIMPLE_VOTE
+                        } else {
+                            0
+                        },
+                        src_addr: [0; 16],
+                    })
+                    .unwrap();
+            }
+            let progress = jito_scheduler_bindings::JitoProgressMessage {
+                bam_generation: 0,
+                progress: agave_scheduler_bindings::ProgressMessage {
+                    leader_state: agave_scheduler_bindings::LEADER_READY,
+                    current_slot_progress: 1,
+                    epoch: bank.epoch(),
+                    current_slot: bank.slot(),
+                    next_leader_slot: bank.slot() + 1,
+                    leader_range_end: bank.slot() + 3,
+                    remaining_cost_units: 60_000_000,
+                    remaining_allocated_accounts_data_size: 100_000_000,
+                    latest_blockhash: bank.last_blockhash().to_bytes(),
+                    target_bank_time_ms: 400,
+                },
+                bank_id: bank.bank_id(),
+                atomic_batches_enabled: 1,
+                bam_connected: 1,
+            };
+            // Publish Connected before the client can dequeue either TPU message.
+            addon.progress.try_write(progress).unwrap();
+            let client_exit = exit.clone();
+            let handle = std::thread::spawn(move || {
+                jito_scheduler::run(
+                    client,
+                    client_exit,
+                    jito_scheduler::SchedulerConfig::default(),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut committed = false;
+            let mut subsequent_heartbeats = 0;
+            loop {
+                addon.progress.try_write(progress).ok();
+                checker.iterate(Duration::from_millis(1)).unwrap();
+                worker.iterate(&mut receiver, &mut false).unwrap();
+                if !committed && bank.has_signature(&vote.signatures[0]) {
+                    committed = true;
+                    // TPU completions are consumed inside the client. Discard earlier
+                    // heartbeats, then observe two later loop iterations so the worker
+                    // response is consumed before shutdown (heartbeat precedes responses).
+                    while addon.completion.try_read().is_some() {}
+                } else if committed {
+                    while let Some(message) = addon.completion.try_read() {
+                        assert_eq!(message.id, jito_scheduler_bindings::HEARTBEAT_ID);
+                        subsequent_heartbeats += 1;
+                    }
+                    if subsequent_heartbeats >= 2 {
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    exit.store(true, Ordering::Relaxed);
+                    let result = handle.join().unwrap();
+                    panic!("scheduler did not commit a real vote with BAM connected: {result:?}");
+                }
+            }
+            exit.store(true, Ordering::Relaxed);
+            let stats = handle.join().unwrap().unwrap();
+            assert!(stats.check_requests > 0);
+            assert_eq!(stats.submitted_batches, 1);
+            assert_eq!(stats.completed_batches, 1);
+            assert_eq!(stats.dropped_transactions, 1);
+            assert_eq!(bank.get_signature_status(&vote.signatures[0]), Some(Ok(())));
+            assert_eq!(bank.get_signature_status(&ordinary.signatures[0]), None);
+            assert_eq!(bank.get_balance(&recipient), 0);
+            let after = bank.get_account(&vote_pubkey).unwrap();
+            let vote_state = VoteStateV4::deserialize(after.data(), &vote_pubkey).unwrap();
+            assert_ne!(after.data(), before.data());
+            assert_eq!(vote_state.votes.len(), 1);
+            assert_eq!(vote_state.votes.back().unwrap().slot(), root_bank.slot());
+            let recorded = records.drain().collect::<Vec<_>>();
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(
+                recorded[0].transactions,
+                vec![VersionedTransaction::from(vote)]
+            );
+            assert!(recorded[0].reschedule_on_sad_handover);
+        }
+
+        #[test]
         fn test_jito_atomic_waits_for_parent_ready() {
             let mut frame = setup_external_test_frame_with_jito(&[], true);
             frame.record_receiver.restart(frame.bank.bank_id());

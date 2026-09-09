@@ -49,7 +49,7 @@ use {
         bank_forks::BankForks,
         genesis_utils::{
             GenesisConfigInfo, ValidatorVoteKeypairs,
-            create_genesis_config_with_vote_accounts_and_cluster_type,
+            create_genesis_config_with_vote_accounts_and_cluster_type_and_rent,
         },
     },
     solana_shred_version::compute_shred_version,
@@ -134,6 +134,8 @@ pub struct ClusterConfig {
     pub skip_warmup_slots: bool,
     pub cluster_type: ClusterType,
     pub poh_config: PohConfig,
+    /// Rent used to construct genesis vote/stake accounts and initialize the bank.
+    pub rent: Rent,
     pub additional_accounts: Vec<(Pubkey, AccountSharedData)>,
     pub vote_use_quic: bool,
 }
@@ -170,6 +172,7 @@ impl Default for ClusterConfig {
             stakers_slot_offset: DEFAULT_DEV_SLOTS_PER_EPOCH,
             cluster_type: ClusterType::Development,
             poh_config: PohConfig::default(),
+            rent: Rent::free(),
             skip_warmup_slots: false,
             additional_accounts: vec![],
             vote_use_quic: DEFAULT_VOTE_USE_QUIC,
@@ -331,13 +334,14 @@ impl LocalCluster {
             mut genesis_config,
             mint_keypair,
             ..
-        } = create_genesis_config_with_vote_accounts_and_cluster_type(
+        } = create_genesis_config_with_vote_accounts_and_cluster_type_and_rent(
             config.mint_lamports,
             &keys_in_genesis,
             stakes_in_genesis,
             config.cluster_type,
             &feature_set,
             matches!(alpenglow_mode, AlpenglowMode::Enabled), /* is_alpenglow */
+            config.rent.clone(),
         );
 
         // In-genesis validators only receive the generic validator account funding from the

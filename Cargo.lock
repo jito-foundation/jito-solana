@@ -4152,19 +4152,33 @@ dependencies = [
 name = "jito-scheduler"
 version = "4.4.0-alpha.2"
 dependencies = [
+ "agave-logger",
  "agave-scheduler-bindings",
  "agave-scheduling-utils",
  "agave-transaction-view",
+ "arc-swap",
+ "crossbeam-channel",
+ "jito-protos",
  "jito-scheduler-bindings",
  "rts-alloc",
+ "solana-commitment-config",
+ "solana-core",
  "solana-hash 4.6.0",
  "solana-keypair",
+ "solana-local-cluster",
  "solana-message",
+ "solana-net-utils",
  "solana-pubkey 4.3.0",
+ "solana-rent",
+ "solana-signature",
+ "solana-signer",
  "solana-system-transaction",
  "solana-transaction",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tonic",
  "wincode",
 ]
 

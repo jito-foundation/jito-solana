@@ -25,6 +25,12 @@ path = "junit.xml"
 filter = "package(solana-zk-elgamal-proof-program-tests) & test(/^test_batched_range_proof_u256$/)"
 threads-required = "num-cpus"
 
+# This integration test starts a complete validator and the scheduler executable.
+# Give it the partition's test capacity, as LocalCluster jobs run serially.
+[[profile.ci.overrides]]
+filter = "package(jito-scheduler) & binary(validator_process)"
+threads-required = "num-cpus"
+
 [[profile.ci.overrides]]
 filter = "package(solana-turbine) | package(solana-gossip) | package(solana-perf) | package(agave-votor-transport)"
 retries = 0
