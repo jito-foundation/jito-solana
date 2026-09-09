@@ -3,6 +3,7 @@ use {
     agave_snapshots::{
         SnapshotArchiveKind, SnapshotInterval, paths as snapshot_paths,
         snapshot_archive_info::SnapshotArchiveInfoGetter, snapshot_config::SnapshotConfig,
+        snapshot_hash::SnapshotHash,
     },
     agave_votor_messages::migration::MIGRATION_SLOT_OFFSET,
     arc_swap::ArcSwap,
@@ -4940,6 +4941,148 @@ fn test_duplicate_with_pruned_ancestor() {
     );
 }
 
+// Archive generation can skip slots, and advancing the full snapshot base purges older
+// incrementals. Remember observations so comparison does not depend on files coexisting.
+#[derive(Debug, Default)]
+struct ObservedSnapshotHashes {
+    full: HashMap<Slot, SnapshotHash>,
+    incremental: HashMap<(Slot, Slot), SnapshotHash>,
+}
+
+impl ObservedSnapshotHashes {
+    fn observe(&mut self, config: &SnapshotValidatorConfig) {
+        for archive in
+            snapshot_paths::full_snapshot_archives_iter(config.full_snapshot_archives_dir.path())
+        {
+            if let Some(previous) = self.full.insert(archive.slot(), *archive.hash()) {
+                assert_eq!(previous, *archive.hash(), "full snapshot hash changed");
+            }
+        }
+        for archive in snapshot_paths::incremental_snapshot_archives_iter(
+            config.incremental_snapshot_archives_dir.path(),
+        ) {
+            let key = (archive.base_slot(), archive.slot());
+            if let Some(previous) = self.incremental.insert(key, *archive.hash()) {
+                assert_eq!(
+                    previous,
+                    *archive.hash(),
+                    "incremental snapshot hash changed"
+                );
+            }
+        }
+    }
+}
+
+fn common_snapshot_slots(
+    observations: &[ObservedSnapshotHashes; 3],
+    minimum_full_slot: Slot,
+    minimum_incremental_slot: Slot,
+) -> Option<(Slot, Slot)> {
+    // Compare by slot before checking hashes. A different common snapshot must never
+    // hide a state mismatch at a key that two validators have already produced.
+    for (i, left) in observations.iter().enumerate() {
+        for (j, right) in observations.iter().enumerate().skip(i + 1) {
+            for (&slot, hash) in &left.full {
+                if slot >= minimum_full_slot
+                    && let Some(other) = right.full.get(&slot)
+                {
+                    assert_eq!(
+                        hash, other,
+                        "full snapshot archive does not match at slot {slot}: validators {i} and \
+                         {j}"
+                    );
+                }
+            }
+            for (&(base, slot), hash) in &left.incremental {
+                if base >= minimum_full_slot
+                    && slot >= minimum_incremental_slot
+                    && let Some(other) = right.incremental.get(&(base, slot))
+                {
+                    assert_eq!(
+                        hash, other,
+                        "incremental snapshot archive does not match at base {base}, slot {slot}: \
+                         validators {i} and {j}"
+                    );
+                }
+            }
+        }
+    }
+
+    observations[0]
+        .incremental
+        .keys()
+        .copied()
+        .filter(|&(base, slot)| {
+            base >= minimum_full_slot
+                && slot >= minimum_incremental_slot
+                && observations.iter().all(|seen| {
+                    seen.full.contains_key(&base) && seen.incremental.contains_key(&(base, slot))
+                })
+        })
+        .max()
+}
+
+#[test]
+fn test_common_snapshot_slots_accepts_skipped_and_purged_archives() {
+    let full_hash = SnapshotHash(Hash::new_unique());
+    let incremental_hash = SnapshotHash(Hash::new_unique());
+    let mut seen = std::array::from_fn(|_| ObservedSnapshotHashes {
+        full: HashMap::from([(300, full_hash)]),
+        incremental: HashMap::from([((300, 330), incremental_hash)]),
+    });
+    // Previously copied snapshots cannot satisfy the fresh comparison.
+    assert_eq!(common_snapshot_slots(&seen, 300, 340), None);
+    // Validator3 skipped the leader's chosen 340 snapshot while catching up.
+    seen[0].incremental.insert((300, 340), incremental_hash);
+    seen[1].incremental.insert((300, 340), incremental_hash);
+    seen[2].incremental.insert((300, 360), incremental_hash);
+    assert_eq!(common_snapshot_slots(&seen, 300, 340), None);
+    // Validator1 observed 360 before its archive was purged at the next full snapshot.
+    seen[0].incremental.insert((300, 360), incremental_hash);
+    seen[0].full.insert(400, full_hash);
+    seen[1].incremental.insert((300, 360), incremental_hash);
+    assert_eq!(common_snapshot_slots(&seen, 300, 340), Some((300, 360)));
+}
+
+#[test]
+fn test_common_snapshot_slots_requires_same_base_and_all_validators() {
+    let hash = SnapshotHash(Hash::new_unique());
+    let mut seen = std::array::from_fn(|_| ObservedSnapshotHashes {
+        full: HashMap::from([(300, hash), (400, hash)]),
+        incremental: HashMap::from([((300, 410), hash)]),
+    });
+    seen[2].incremental = HashMap::from([((400, 410), hash)]);
+    assert_eq!(common_snapshot_slots(&seen, 300, 410), None);
+    seen[2].incremental.insert((300, 410), hash);
+    assert_eq!(common_snapshot_slots(&seen, 300, 410), Some((300, 410)));
+}
+
+#[test]
+#[should_panic(expected = "full snapshot archive does not match")]
+fn test_common_snapshot_slots_rejects_full_hash_mismatch() {
+    let hash = SnapshotHash(Hash::new_unique());
+    let mut seen = std::array::from_fn(|_| ObservedSnapshotHashes {
+        full: HashMap::from([(300, hash)]),
+        incremental: HashMap::from([((300, 340), hash)]),
+    });
+    seen[2].full.insert(300, SnapshotHash(Hash::new_unique()));
+    common_snapshot_slots(&seen, 300, 340);
+}
+
+#[test]
+#[should_panic(expected = "incremental snapshot archive does not match")]
+fn test_common_snapshot_slots_rejects_mismatch_despite_other_matching_key() {
+    let hash = SnapshotHash(Hash::new_unique());
+    let mut seen = std::array::from_fn(|_| ObservedSnapshotHashes {
+        full: HashMap::from([(300, hash)]),
+        incremental: HashMap::from([((300, 340), hash), ((300, 350), hash)]),
+    });
+    seen[2]
+        .incremental
+        .insert((300, 350), SnapshotHash(Hash::new_unique()));
+    common_snapshot_slots(&seen, 300, 340);
+}
+
 /// Test fastboot to ensure a node can boot from local state and still produce correct snapshots
 ///
 /// 1. Start node 1 and wait for it to take snapshots
@@ -5107,19 +5250,21 @@ fn test_boot_from_local_state() {
          {incremental_snapshot_archive:?}"
     );
     info!("Waiting for validator3 to create snapshots... DONE");
+    let minimum_incremental_slot = incremental_snapshot_archive.slot();
+    let mut observations = std::array::from_fn(|_| ObservedSnapshotHashes::default());
+    observations[2]
+        .full
+        .insert(full_snapshot_archive.slot(), *full_snapshot_archive.hash());
+    observations[2].incremental.insert(
+        (
+            incremental_snapshot_archive.base_slot(),
+            incremental_snapshot_archive.slot(),
+        ),
+        *incremental_snapshot_archive.hash(),
+    );
 
-    // Ensure that all validators have the correct state by comparing snapshots.
-    // Since validator1 has been running the longest, if may be ahead of the others,
-    // so use it as the comparison for others.
-    // - wait for validator1 to take new snapshots
-    // - wait for the other validators to have high enough snapshots
-    // - ensure the other validators' snapshots match validator1's
-    //
-    // NOTE: There's a chance validator 2 or 3 has crossed the next full snapshot past what
-    // validator 1 has.  If that happens, validator 2 or 3 may have purged the snapshots needed
-    // to compare with validator 1, and thus assert.  If that happens, the full snapshot interval
-    // may need to be adjusted larger.
-
+    // Establish a fresh comparison threshold after validator3 has booted and created
+    // snapshots. Each validator may skip intermediate archive slots while catching up.
     info!("Waiting for validator1 to create snapshots...");
     let (incremental_snapshot_archive, full_snapshot_archive) =
         LocalCluster::wait_for_next_incremental_snapshot(
@@ -5134,108 +5279,43 @@ fn test_boot_from_local_state() {
     );
     info!("Waiting for validator1 to create snapshots... DONE");
 
-    // These structs are used to provide better error logs if the asserts below are violated.
-    // The `allow(dead_code)` annotation is to appease clippy, which thinks the field is unused...
-    #[allow(dead_code)]
-    #[derive(Debug)]
-    struct SnapshotSlot(Slot);
-    #[allow(dead_code)]
-    #[derive(Debug)]
-    struct BaseSlot(Slot);
-
-    for (i, other_validator_config) in [(2, &validator2_config), (3, &validator3_config)] {
-        info!("Checking if validator{i} has the same snapshots as validator1...");
-        let timer = Instant::now();
-        loop {
-            if let Some(other_full_snapshot_slot) =
-                snapshot_paths::get_highest_full_snapshot_archive_slot(
-                    &other_validator_config.full_snapshot_archives_dir,
-                )
-            {
-                let other_incremental_snapshot_slot =
-                    snapshot_paths::get_highest_incremental_snapshot_archive_slot(
-                        &other_validator_config.incremental_snapshot_archives_dir,
-                        other_full_snapshot_slot,
-                    );
-                if other_full_snapshot_slot >= full_snapshot_archive.slot()
-                    && other_incremental_snapshot_slot >= Some(incremental_snapshot_archive.slot())
-                {
-                    break;
-                }
-            }
-            assert!(
-                timer.elapsed() < Duration::from_secs(60),
-                "It should not take longer than 60 seconds to take snapshots",
-            );
-            std::thread::yield_now();
+    observations[0]
+        .full
+        .insert(full_snapshot_archive.slot(), *full_snapshot_archive.hash());
+    observations[0].incremental.insert(
+        (
+            incremental_snapshot_archive.base_slot(),
+            incremental_snapshot_archive.slot(),
+        ),
+        *incremental_snapshot_archive.hash(),
+    );
+    let timer = Instant::now();
+    loop {
+        for (seen, config) in observations.iter_mut().zip([
+            &validator1_config,
+            &validator2_config,
+            &validator3_config,
+        ]) {
+            seen.observe(config);
         }
-        let other_full_snapshot_archives = snapshot_paths::full_snapshot_archives_iter(
-            other_validator_config.full_snapshot_archives_dir.path(),
-        )
-        .collect::<Vec<_>>();
-        debug!("validator{i} full snapshot archives: {other_full_snapshot_archives:?}");
+        if let Some((base, slot)) = common_snapshot_slots(
+            &observations,
+            full_snapshot_archive.slot(),
+            incremental_snapshot_archive
+                .slot()
+                .max(minimum_incremental_slot),
+        ) {
+            info!(
+                "All validators have matching full snapshot {base} and incremental snapshot {slot}"
+            );
+            break;
+        }
         assert!(
-            other_full_snapshot_archives
-                .iter()
-                .any(
-                    |other_full_snapshot_archive| other_full_snapshot_archive.slot()
-                        == full_snapshot_archive.slot()
-                        && other_full_snapshot_archive.hash() == full_snapshot_archive.hash()
-                ),
-            "full snapshot archive does not match!\n  validator1: {:?}\n  validator{i}: {:?}",
-            (
-                SnapshotSlot(full_snapshot_archive.slot()),
-                full_snapshot_archive.hash(),
-            ),
-            other_full_snapshot_archives
-                .iter()
-                .sorted_unstable()
-                .rev()
-                .map(|snap| (SnapshotSlot(snap.slot()), snap.hash()))
-                .collect::<Vec<_>>(),
+            timer.elapsed() < Duration::from_secs(60),
+            "It should not take longer than 60 seconds to take common fresh snapshots: \
+             {observations:?}",
         );
-
-        let other_incremental_snapshot_archives =
-            snapshot_paths::incremental_snapshot_archives_iter(
-                other_validator_config
-                    .incremental_snapshot_archives_dir
-                    .path(),
-            )
-            .collect::<Vec<_>>();
-        debug!(
-            "validator{i} incremental snapshot archives: {other_incremental_snapshot_archives:?}"
-        );
-        assert!(
-            other_incremental_snapshot_archives
-                .iter()
-                .any(
-                    |other_incremental_snapshot_archive| other_incremental_snapshot_archive
-                        .base_slot()
-                        == incremental_snapshot_archive.base_slot()
-                        && other_incremental_snapshot_archive.slot()
-                            == incremental_snapshot_archive.slot()
-                        && other_incremental_snapshot_archive.hash()
-                            == incremental_snapshot_archive.hash()
-                ),
-            "incremental snapshot archive does not match!\n  validator1: {:?}\n  validator{i}: \
-             {:?}",
-            (
-                BaseSlot(incremental_snapshot_archive.base_slot()),
-                SnapshotSlot(incremental_snapshot_archive.slot()),
-                incremental_snapshot_archive.hash(),
-            ),
-            other_incremental_snapshot_archives
-                .iter()
-                .sorted_unstable()
-                .rev()
-                .map(|snap| (
-                    BaseSlot(snap.base_slot()),
-                    SnapshotSlot(snap.slot()),
-                    snap.hash(),
-                ))
-                .collect::<Vec<_>>(),
-        );
-        info!("Checking if validator{i} has the same snapshots as validator1... DONE");
+        std::thread::yield_now();
     }
 }
 
