@@ -3101,7 +3101,11 @@ mod tests {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
         let tips = frame.tip_processing_dependencies.take().unwrap();
-        assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            &frame.bank,
+            &tips.block_builder_fee_info.load()
+        ));
         frame.record_receiver.drain().for_each(drop);
         let parent = frame.bank.clone();
         frame.bank = Arc::new(Bank::new_from_parent(
@@ -3334,6 +3338,189 @@ mod tests {
         assert!(frame.record_receiver.try_recv().is_err());
     }
 
+    #[test_case(false, false, false; "idle_builder_change")]
+    #[test_case(false, true, false; "idle_commission_change")]
+    #[test_case(true, false, false; "inflight_builder_change")]
+    #[test_case(true, true, false; "inflight_commission_change")]
+    #[test_case(false, false, true; "reconnect_after_builder_change")]
+    #[test_case(false, true, true; "reconnect_after_commission_change")]
+    fn test_tip_metadata_refresh_before_admission(
+        inflight: bool,
+        commission_only: bool,
+        reconnect: bool,
+    ) {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.activate_bank();
+        let bank = frame.bank.clone();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
+        let config = || {
+            let config = JitoTipPaymentConfig::from_account_shared_data(
+                &bank
+                    .get_account(&tips.tip_manager.tip_payment_config_pubkey())
+                    .unwrap(),
+                &jito_tip_payment::id(),
+            )
+            .unwrap();
+            (
+                config.block_builder(),
+                config.block_builder_commission_pct(),
+            )
+        };
+        let (response_sender, _responses) = tokio::sync::mpsc::channel(4);
+        let mut scheduler = BamScheduler::new(
+            frame.consume_sender.clone(),
+            frame.consumed_receiver.clone(),
+            response_sender,
+            frame.shared_leader_state.clone(),
+            Some((worker.consumer.clone(), tips.clone())),
+        );
+        let mut container = TransactionStateContainer::with_capacity(4);
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        let schedule = |scheduler: &mut BamScheduler<_>,
+                        container: &mut TransactionStateContainer<_>| {
+            scheduler
+                .schedule(container, bank.slot(), u64::MAX)
+                .unwrap()
+                .num_scheduled
+        };
+        let enqueue =
+            |container: &mut TransactionStateContainer<_>, payer: &Keypair, recipient, seq_id| {
+                let transaction = sanitize_transactions(vec![system_transaction::transfer(
+                    payer,
+                    &recipient,
+                    bank.get_minimum_balance_for_rent_exemption(0),
+                    bank.last_blockhash(),
+                )])
+                .pop()
+                .unwrap();
+                let signature = *transaction.signature();
+                container
+                    .insert_new_batch(
+                        [(transaction, MaxAge::MAX)].into_iter().collect(),
+                        u64::MAX - u64::from(seq_id),
+                        false,
+                        bank.slot(),
+                        seq_id,
+                    )
+                    .unwrap();
+                signature
+            };
+
+        // The first empty poll prepares X. No BAM tip has arrived yet.
+        assert_eq!(schedule(&mut scheduler, &mut container), 0);
+        let original = config();
+        assert_eq!(original, (frame.mint_keypair.pubkey(), 0));
+        assert!(frame.record_receiver.drain().count() > 0);
+        let old_work = inflight.then(|| {
+            enqueue(&mut container, &frame.mint_keypair, Pubkey::new_unique(), 0);
+            assert_eq!(schedule(&mut scheduler, &mut container), 1);
+            worker.consume_receiver.try_recv().unwrap()
+        });
+        let changed = if commission_only {
+            (original.0, 1)
+        } else {
+            (tips.cluster_info.id(), original.1)
+        };
+        if reconnect {
+            // While BAM scheduling is paused, Block Engine can prepare this same Bank for Y.
+            // Reconnecting BAM republishes X with equal values but a new snapshot.
+            let other_builder = Arc::new(BlockBuilderFeeInfo {
+                block_builder: changed.0,
+                block_builder_commission: changed.1,
+            });
+            tips.block_builder_fee_info.store(other_builder.clone());
+            assert!(tips.process_tip_programs(&worker.consumer, &bank, &other_builder));
+            assert_eq!(config(), changed);
+            assert_eq!(frame.record_receiver.drain().count(), 1);
+        }
+        let prior = config();
+        let expected = if reconnect { original } else { changed };
+        let publish = || {
+            tips.block_builder_fee_info
+                .store(Arc::new(BlockBuilderFeeInfo {
+                    block_builder: expected.0,
+                    block_builder_commission: expected.1,
+                }));
+        };
+        publish();
+        // This tip is independent of the outstanding ordinary transfer.
+        let signature = enqueue(
+            &mut container,
+            &tips.cluster_info.keypair(),
+            *tips.tip_manager.get_tip_accounts().iter().next().unwrap(),
+            1,
+        );
+        if let Some(work) = old_work {
+            let reserved = block_costs(&bank);
+            assert_eq!(schedule(&mut scheduler, &mut container), 0);
+            assert!(worker.consume_receiver.try_recv().is_err());
+            assert!(frame.record_receiver.try_recv().is_err());
+            assert_eq!(block_costs(&bank), reserved);
+            assert_eq!(config(), prior);
+            assert!(worker.consume(work).unwrap().is_none());
+            scheduler
+                .receive_completed(&mut container, &decision)
+                .unwrap();
+            assert_eq!(frame.record_receiver.drain().count(), 1);
+        }
+
+        // Even a previously prepared Bank must hold new work if refresh fails.
+        let config_key = tips.tip_manager.tip_payment_config_pubkey();
+        let settled = block_costs(&bank);
+        tips.bundle_account_locker
+            .account_locks()
+            .lock_accounts([std::iter::once((&config_key, true))]);
+        assert_eq!(schedule(&mut scheduler, &mut container), 0);
+        assert!(worker.consume_receiver.try_recv().is_err());
+        assert!(frame.record_receiver.try_recv().is_err());
+        assert_eq!(block_costs(&bank), settled);
+        assert_eq!(config(), prior);
+        tips.bundle_account_locker
+            .account_locks()
+            .unlock_accounts([std::iter::once((&config_key, true))]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while schedule(&mut scheduler, &mut container) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "metadata refresh did not recover"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(config(), expected);
+        let records: Vec<_> = frame.record_receiver.drain().collect();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0]
+                .transactions
+                .iter()
+                .all(|tx| tx.signatures[0] != signature)
+        );
+        let work = worker.consume_receiver.try_recv().unwrap();
+        assert_eq!(work.admission.as_ref().unwrap().1.as_slice(), &[Ok(())]);
+        assert!(worker.consume(work).unwrap().is_none());
+        let finished = frame.consumed_receiver.try_recv().unwrap();
+        assert!(matches!(&finished.extra_info.as_ref().unwrap()[0],
+            TransactionResult::Committed(result) if result.execution_success));
+        worker.consumed_sender.send(finished).unwrap();
+        scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        let records: Vec<_> = frame.record_receiver.drain().collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].transactions[0].signatures[0], signature);
+        assert_eq!(block_costs(&bank).1, 0);
+
+        // Publishing an equal snapshot must not record another crank transaction or charge.
+        publish();
+        let settled = block_costs(&bank);
+        assert_eq!(schedule(&mut scheduler, &mut container), 0);
+        assert_eq!(block_costs(&bank), settled);
+        assert!(frame.record_receiver.try_recv().is_err());
+    }
+
     #[test_case("builder")]
     #[test_case("construction")]
     #[test_case("recording")]
@@ -3344,7 +3531,11 @@ mod tests {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
         let tips = frame.tip_processing_dependencies.take().unwrap();
-        assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            &frame.bank,
+            &tips.block_builder_fee_info.load()
+        ));
         frame.record_receiver.drain().for_each(drop);
         // Earlier success must not mask metadata or account changes on this same Bank.
         let bank = &frame.bank;
@@ -3378,7 +3569,11 @@ mod tests {
                 .set_limits(CostTrackerLimits::new(u64::MAX, cost, u64::MAX)),
             _ => {}
         }
-        assert!(!tips.process_tip_programs(&worker.consumer, bank));
+        assert!(!tips.process_tip_programs(
+            &worker.consumer,
+            bank,
+            &tips.block_builder_fee_info.load()
+        ));
         if failure != "construction" {
             assert_eq!(bank.get_account(&config_key).unwrap(), original);
         }
@@ -3401,9 +3596,17 @@ mod tests {
                 block_builder: tips.cluster_info.id(),
                 block_builder_commission: 0,
             }));
-        assert!(tips.process_tip_programs(&worker.consumer, bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            bank,
+            &tips.block_builder_fee_info.load()
+        ));
         assert_eq!(frame.record_receiver.drain().count(), 1);
-        assert!(tips.process_tip_programs(&worker.consumer, bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            bank,
+            &tips.block_builder_fee_info.load()
+        ));
         assert!(frame.record_receiver.try_recv().is_err());
     }
 
@@ -3413,7 +3616,11 @@ mod tests {
         frame.genesis_config.rent = Rent::free();
         let bank = Arc::new(Bank::new_for_tests(&frame.genesis_config));
         let tips = frame.tip_processing_dependencies.take().unwrap();
-        assert!(tips.process_tip_programs(&worker.consumer, &bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            &bank,
+            &tips.block_builder_fee_info.load()
+        ));
         assert_eq!(block_costs(&bank), (0, 0));
         assert!(frame.record_receiver.try_recv().is_err());
     }

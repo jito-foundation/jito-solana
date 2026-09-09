@@ -121,14 +121,18 @@ pub struct TipProcessingDependencies {
 }
 
 impl TipProcessingDependencies {
-    /// Prepare this exact Bank on the scheduler thread before admitting BAM work.
-    pub(super) fn process_tip_programs(&self, consumer: &Consumer, bank: &Arc<Bank>) -> bool {
+    /// Prepare this Bank on the scheduler thread using the metadata snapshot it caches.
+    pub(super) fn process_tip_programs(
+        &self,
+        consumer: &Consumer,
+        bank: &Arc<Bank>,
+        builder: &BlockBuilderFeeInfo,
+    ) -> bool {
         let bank_key = (bank.slot(), bank.bank_id());
         // Match BundleStage's local-cluster policy: free-rent PDAs are discarded by AccountsDb.
         if bank.rent_collector().rent.minimum_balance(0) == 0 {
             return true;
         }
-        let builder = self.block_builder_fee_info.load();
         if builder.block_builder == Pubkey::default() {
             return false;
         }
@@ -166,7 +170,7 @@ impl TipProcessingDependencies {
                 .get_initialize_tip_programs_bundle(bank, &keypair),
         ) && process(
             self.tip_manager
-                .get_tip_programs_crank_bundle(bank, &keypair, &builder),
+                .get_tip_programs_crank_bundle(bank, &keypair, builder),
         )
     }
 }

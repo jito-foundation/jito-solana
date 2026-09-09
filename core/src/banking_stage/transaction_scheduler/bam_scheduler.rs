@@ -23,6 +23,7 @@ use {
                 bam_utils::convert_txn_error_to_proto, scheduler_common::SchedulingCommon,
             },
         },
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
     crossbeam_channel::{Receiver, Sender},
     histogram::Histogram,
@@ -84,6 +85,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     /// Prepared Bank whose cost tracker holds the current reservations.
     admission_bank: Option<(BankId, Slot)>,
+    /// Snapshot successfully prepared on `admission_bank`; republication can follow a cutover.
+    prepared_tip_config: Option<Arc<BlockBuilderFeeInfo>>,
     /// Estimated cost reserved on `admission_bank` by dispatched work that has not settled.
     inflight_reserved_cost: u64,
     /// Deferred or returned batches in original dispatch order, with their last attempted estimate.
@@ -126,6 +129,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             tip_processing,
             tip_retry_at: None,
             admission_bank: None,
+            prepared_tip_config: None,
             inflight_reserved_cost: 0,
             pending_admission: BTreeMap::new(),
         }
@@ -216,9 +220,20 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         admission_bank: &Arc<Bank>,
     ) -> Result<usize, SchedulerError> {
         let slot = admission_bank.slot();
+        // One immutable metadata snapshot governs this admission pass and its preparation.
+        let tip_processing = self
+            .tip_processing
+            .as_ref()
+            .map(|(consumer, tips)| (consumer, tips, tips.block_builder_fee_info.load()));
+        let same_tip_config = match (&self.prepared_tip_config, &tip_processing) {
+            (Some(prepared), Some((_, _, builder))) => Arc::ptr_eq(prepared, builder),
+            (None, None) => true,
+            _ => false,
+        };
 
-        if self.admission_bank != Some((admission_bank.bank_id(), slot)) {
-            // Drain old admissions before retrying returned work on a replacement Bank.
+        if self.admission_bank != Some((admission_bank.bank_id(), slot)) || !same_tip_config {
+            // Outstanding work finishes against the old configuration. Drain its reservations
+            // before changing Banks or cranking new metadata ahead of the next admission pass.
             if !self.inflight_batch_info.is_empty() {
                 return Ok(0);
             }
@@ -227,8 +242,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             }) {
                 return Ok(0);
             }
-            if let Some((consumer, tips)) = &self.tip_processing
-                && !tips.process_tip_programs(consumer, admission_bank)
+            if let Some((consumer, tips, builder)) = &tip_processing
+                && !tips.process_tip_programs(consumer, admission_bank, builder)
             {
                 // The controller busy-polls; do not sign/execute a failing crank every poll.
                 self.tip_retry_at = Some((
@@ -243,7 +258,11 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 *attempted_cost = None;
             }
             self.admission_bank = Some((admission_bank.bank_id(), slot));
+            self.prepared_tip_config = tip_processing
+                .as_ref()
+                .map(|(_, _, builder)| Arc::clone(builder));
         }
+        drop(tip_processing);
 
         if self.prio_graph.is_empty() && self.pending_admission.is_empty() {
             return Ok(0);
