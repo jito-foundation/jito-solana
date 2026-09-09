@@ -217,16 +217,23 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         )
         .expect("Expected to create a new shredder");
 
-        let (data_shreds, coding_shreds) = shredder.component_to_merkle_shreds_for_tests(
-            keypair,
-            &receive_results.component,
-            last_tick_height == bank.max_tick_height() && last_entries.is_none(),
-            self.chained_merkle_root,
-            self.next_shred_index,
-            self.next_code_index,
-            &self.reed_solomon_cache,
-            &mut stats,
-        );
+        // A solitary final tick leaves no prefix after it is reserved for the two
+        // variants below. Serializing that empty prefix would emit a block-abort
+        // marker into both variants.
+        let (data_shreds, coding_shreds) = if entries.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            shredder.component_to_merkle_shreds_for_tests(
+                keypair,
+                &receive_results.component,
+                last_tick_height == bank.max_tick_height() && last_entries.is_none(),
+                self.chained_merkle_root,
+                self.next_shred_index,
+                self.next_code_index,
+                &self.reed_solomon_cache,
+                &mut stats,
+            )
+        };
         if let Some(shred) = data_shreds.iter().max_by_key(|shred| shred.index()) {
             self.chained_merkle_root = shred.merkle_root().unwrap();
         }
@@ -246,9 +253,8 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                     &self.reed_solomon_cache,
                     &mut stats,
                 );
-                // Don't mark the last shred as last so that validators won't
-                // know that they've gotten all the shreds, and will continue
-                // trying to repair.
+                // Both variants are complete blocks; the extra entry produces a
+                // different bank hash for the partition to resolve through repair.
                 let (partition_last_data_shred, _) = shredder.component_to_merkle_shreds_for_tests(
                     keypair,
                     &BlockComponent::EntryBatch(duplicate_extra_last_entries),
