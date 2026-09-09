@@ -87,6 +87,10 @@ pub struct BamReceiveAndBuffer {
     shutdown: Arc<AtomicBool>,
     shared_leader_state: Option<SharedLeaderState>,
     next_fifo_priority: u64,
+    #[cfg(test)]
+    before_nonleader_receive: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    replacement_wait_receiver: crossbeam_channel::Receiver<()>,
 }
 
 struct ParsedBatch {
@@ -112,6 +116,8 @@ impl BamReceiveAndBuffer {
             crossbeam_channel::unbounded::<ParsedBatch>();
         let (recv_stats_sender, recv_stats_receiver) =
             crossbeam_channel::unbounded::<ReceivingStats>();
+        #[cfg(test)]
+        let (replacement_wait_sender, replacement_wait_receiver) = crossbeam_channel::bounded(1);
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
@@ -128,6 +134,8 @@ impl BamReceiveAndBuffer {
                 bank_forks,
                 parsing_leader_state,
                 blacklisted_accounts,
+                #[cfg(test)]
+                replacement_wait_sender,
             )
         });
 
@@ -140,9 +148,14 @@ impl BamReceiveAndBuffer {
             shutdown,
             shared_leader_state,
             next_fifo_priority: u64::MAX,
+            #[cfg(test)]
+            before_nonleader_receive: None,
+            #[cfg(test)]
+            replacement_wait_receiver,
         }
     }
 
+    #[cfg_attr(test, allow(clippy::too_many_arguments))]
     fn run_parsing(
         exit: Arc<AtomicBool>,
         shutdown: Arc<AtomicBool>,
@@ -153,6 +166,7 @@ impl BamReceiveAndBuffer {
         bank_forks: Arc<RwLock<BankForks>>,
         shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
+        #[cfg(test)] replacement_wait_sender: crossbeam_channel::Sender<()>,
     ) {
         let sigverify_thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(2)
@@ -206,6 +220,8 @@ impl BamReceiveAndBuffer {
                     break working_bank;
                 }
                 // Keep the received burst intact until the replacement resolves.
+                #[cfg(test)]
+                let _ = replacement_wait_sender.try_send(());
                 std::thread::sleep(TIMEOUT);
             };
             let root_bank = bank_forks.read().unwrap().root_bank();
@@ -355,44 +371,6 @@ impl BamReceiveAndBuffer {
         self.shared_leader_state
             .as_ref()
             .is_some_and(|shared_leader_state| shared_leader_state.load().bank_slot().is_some())
-    }
-
-    fn buffer_batch(
-        &mut self,
-        container: &mut TransactionStateContainer<
-            RuntimeTransaction<ResolvedTransactionView<Bytes>>,
-        >,
-        batch: ParsedBatch,
-        bam_state: BamConnectionState,
-        stats: &mut ReceivingStats,
-    ) {
-        if bam_state != BamConnectionState::Connected {
-            stats.num_dropped_without_parsing += batch.txns_max_age.len();
-            return;
-        }
-
-        let ParsedBatch {
-            txns_max_age,
-            revert_on_error,
-            max_schedule_slot,
-            seq_id,
-        } = batch;
-
-        if container
-            .insert_new_batch(
-                txns_max_age,
-                self.next_fifo_priority,
-                revert_on_error,
-                max_schedule_slot,
-                seq_id,
-            )
-            .is_none()
-        {
-            stats.num_dropped_on_capacity += 1;
-            self.send_container_full_txn_batch_result(seq_id);
-            return;
-        }
-        self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
     }
 
     fn parse_batch(
@@ -856,70 +834,77 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let bam_state = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire));
-
-        // Receive all stats
         let mut stats = ReceivingStats::default();
         while let Ok(batch_stats) = self.recv_stats_receiver.try_recv() {
             stats.accumulate(batch_stats);
         }
 
-        let should_buffer_batches = matches!(
+        let buffering = matches!(
             decision,
             BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
         ) || self.should_buffer_batches();
-        match (should_buffer_batches, bam_state) {
-            // Preserve batches during the short Block Engine handoff. Connecting may be
-            // long-lived, so retain the existing drain behavior for that state.
-            (
-                true,
-                BamConnectionState::DrainingBlockEngine | BamConnectionState::BlockEngineDrained,
-            ) => {}
-            (true, _) => loop {
-                let batch = match self.parsed_batch_receiver.try_recv() {
+        if !buffering {
+            while let Some(next_batch_id) = container.pop() {
+                if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
+                    self.send_no_leader_slot_txn_batch_result(seq_id);
+                }
+                container.remove_by_id(next_batch_id.id);
+            }
+            #[cfg(test)]
+            if let Some(before_receive) = self.before_nonleader_receive.take() {
+                before_receive();
+            }
+        }
+
+        let deadline = (!buffering).then(|| Instant::now() + Duration::from_millis(100));
+        loop {
+            let batch = if let Some(deadline) = deadline {
+                let (result, receive_time_us) =
+                    measure_us!(self.parsed_batch_receiver.recv_deadline(deadline));
+                stats.receive_time_us += receive_time_us;
+                match result {
+                    Ok(batch) => batch,
+                    Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError::Receiver),
+                    Err(RecvTimeoutError::Timeout) => break,
+                }
+            } else {
+                match self.parsed_batch_receiver.try_recv() {
                     Ok(batch) => batch,
                     Err(TryRecvError::Disconnected) => return Err(DisconnectedError::Receiver),
-                    Err(TryRecvError::Empty) => {
-                        // If the channel is empty, work here is done.
-                        break;
-                    }
-                };
-
-                self.buffer_batch(container, batch, bam_state, &mut stats);
-            },
-            (false, _) => {
-                // Ensure nothing is left in the container
-                while let Some(next_batch_id) = container.pop() {
-                    if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
-                        self.send_no_leader_slot_txn_batch_result(seq_id);
-                    }
-                    container.remove_by_id(next_batch_id.id);
+                    Err(TryRecvError::Empty) => break,
                 }
+            };
 
-                // Allow the parser to catch up, but refresh leader state before rejecting work.
-                let deadline = Instant::now() + Duration::from_millis(100);
-                loop {
-                    let (batch, receive_time_us) =
-                        measure_us!(self.parsed_batch_receiver.recv_deadline(deadline));
-                    stats.receive_time_us += receive_time_us;
-
-                    let batch = match batch {
-                        Ok(batch) => batch,
-                        Err(RecvTimeoutError::Disconnected) => {
-                            return Err(DisconnectedError::Receiver);
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            break;
-                        }
-                    };
-                    if self.should_buffer_batches() {
-                        self.buffer_batch(container, batch, bam_state, &mut stats);
-                        break;
-                    } else {
-                        self.send_no_leader_slot_txn_batch_result(batch.seq_id);
-                        stats.num_dropped_without_parsing += 1;
-                    }
-                }
+            // Both leadership and the BAM connection can change while receive is blocked.
+            if !buffering && !self.should_buffer_batches() {
+                self.send_no_leader_slot_txn_batch_result(batch.seq_id);
+                stats.num_dropped_without_parsing += 1;
+                continue;
+            }
+            let bam_state = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire));
+            if matches!(
+                bam_state,
+                BamConnectionState::Disconnected | BamConnectionState::Connecting
+            ) {
+                stats.num_dropped_without_parsing += batch.txns_max_age.len();
+            } else if container
+                .insert_new_batch(
+                    batch.txns_max_age,
+                    self.next_fifo_priority,
+                    batch.revert_on_error,
+                    batch.max_schedule_slot,
+                    batch.seq_id,
+                )
+                .is_none()
+            {
+                stats.num_dropped_on_capacity += 1;
+                self.send_container_full_txn_batch_result(batch.seq_id);
+            } else {
+                self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
+            }
+            if !buffering {
+                // Resume scheduling with a fresh decision after recovering replacement work.
+                break;
             }
         }
 
@@ -1136,7 +1121,7 @@ impl SigverifyMetrics {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use {
         super::*,
         crate::{
@@ -1251,6 +1236,31 @@ mod tests {
         )
     }
 
+    pub(crate) fn transfer_batch(payer: &Keypair, bank: &Bank, seq_id: u32) -> AtomicTxnBatch {
+        let transaction = transfer(payer, &Pubkey::new_unique(), 1, bank.last_blockhash());
+        AtomicTxnBatch {
+            seq_id,
+            ..batch_with_packet_data(wincode::serialize(&transaction).unwrap().into())
+        }
+    }
+
+    pub(crate) fn set_leader_bank(state: &mut SharedLeaderState, bank: Option<Arc<Bank>>) {
+        state.store(Arc::new(LeaderState::new(bank, 0, None, None)));
+    }
+
+    impl BamReceiveAndBuffer {
+        pub(crate) fn wait_for_parsed_batches(&self, count: usize) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.parsed_batch_receiver.len() < count {
+                assert!(
+                    Instant::now() < deadline,
+                    "parser did not produce {count} batches"
+                );
+                std::thread::sleep(TIMEOUT);
+            }
+        }
+    }
+
     #[allow(clippy::type_complexity)]
     fn setup_bam_receive_and_buffer(
         receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
@@ -1279,58 +1289,21 @@ mod tests {
         (exit, receive_and_buffer, container, response_receiver)
     }
 
-    #[test]
-    fn test_select_parsing_bank_during_replacement() {
-        let (bank_forks, _mint_keypair) = test_bank_forks();
-        let root_bank = bank_forks.read().unwrap().root_bank();
-        let old_bank = child_bank(&root_bank, 1);
-        let new_bank = child_bank(&root_bank, 1);
-
-        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        let select = |state: &SharedLeaderState| {
-            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(state))
-        };
-        let leader_state = LeaderState::new(Some(old_bank.clone()), 0, None, None);
-        shared_leader_state.store(Arc::new(leader_state));
-        let selected = select(&shared_leader_state).unwrap();
-        assert!(Arc::ptr_eq(&selected, &old_bank));
-
-        shared_leader_state.set_bank_replacement();
-        assert!(select(&shared_leader_state).is_none());
-
-        let leader_state = LeaderState::new(Some(new_bank.clone()), 0, None, None);
-        shared_leader_state.store(Arc::new(leader_state));
-        let selected = select(&shared_leader_state).unwrap();
-        assert!(Arc::ptr_eq(&selected, &new_bank));
-
-        shared_leader_state.store(Arc::new(LeaderState::new(None, 0, None, None)));
-        let working_bank = bank_forks.read().unwrap().working_bank();
-        let selected = select(&shared_leader_state).unwrap();
-        assert!(Arc::ptr_eq(&selected, &working_bank));
-    }
-
     fn verify_container<Tx: TransactionWithMeta>(
         container: &mut impl StateContainer<Tx>,
         expected_length: usize,
     ) {
-        let mut actual_length: usize = 0;
-        while let Some(id) = container.pop() {
-            let Some((ids, _, _, _)) = container.get_batch(id.id) else {
-                panic!(
-                    "transaction in queue position {} with id {} must exist.",
-                    actual_length, id.id
-                );
-            };
+        for _ in 0..expected_length {
+            let id = container.pop().expect("expected queued batch");
+            let (ids, _, _, _) = container.get_batch(id.id).expect("batch must exist");
             for id in ids {
                 assert!(
                     container.get_transaction(*id).is_some(),
-                    "Transaction ID {id} not found in container",
+                    "transaction must exist"
                 );
             }
-            actual_length += 1;
         }
-
-        assert_eq!(actual_length, expected_length);
+        assert!(container.pop().is_none(), "unexpected extra batch");
     }
 
     type TestVerifyResult = Result<(Vec<PacketVerificationResult>, bool, u32, u64), (Reason, u32)>;
@@ -1480,270 +1453,189 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_and_buffer_simple_transfer_across_bam_handoff() {
-        let (sender, receiver) = unbounded();
-        let (bank_forks, mint_keypair) = test_bank_forks();
-        let (exit, mut receive_and_buffer, mut container, _response_receiver) =
-            setup_bam_receive_and_buffer(receiver, bank_forks.clone(), None, HashSet::new());
-        let bam_enabled = receive_and_buffer.bam_enabled.clone();
-        bam_enabled.store(
-            BamConnectionState::DrainingBlockEngine as u8,
-            Ordering::Release,
-        );
-        let transaction = transfer(
-            &mint_keypair,
-            &Pubkey::new_unique(),
-            1,
-            bank_forks.read().unwrap().root_bank().last_blockhash(),
-        );
-        sender
-            .send(MultipleAtomicTxnBatch {
-                batches: vec![AtomicTxnBatch {
-                    seq_id: 1,
-                    packets: vec![Packet {
-                        data: wincode::serialize(&transaction).unwrap().into(),
-                        meta: None,
-                    }],
-                    max_schedule_slot: Slot::MAX,
-                }],
-            })
-            .unwrap();
+    fn test_receive_and_buffer_replacement_and_connection_transitions() {
+        use BamConnectionState::*;
+        for decision in [
+            BufferedPacketsDecision::Forward,
+            BufferedPacketsDecision::ForwardAndHold,
+        ] {
+            for (initial, state, published) in [
+                (Connecting, Disconnected, false),
+                (Connecting, Connecting, false),
+                (Connecting, DrainingBlockEngine, false),
+                (Connecting, BlockEngineDrained, true),
+                (Connecting, Connected, false),
+                (Connected, Connected, true),
+            ] {
+                let (sender, receiver) = unbounded();
+                let (bank_forks, mint) = test_bank_forks();
+                let replacement = bank_forks.read().unwrap().working_bank();
+                let mut shared = SharedLeaderState::new(0, None, None);
+                set_leader_bank(&mut shared, Some(replacement.clone()));
+                let (_exit, mut receiver, mut container, mut responses) =
+                    setup_bam_receive_and_buffer(
+                        receiver,
+                        bank_forks,
+                        Some(shared.clone()),
+                        HashSet::new(),
+                    );
+                let batches = (70_001..=70_002)
+                    .map(|seq_id| transfer_batch(&mint, &replacement, seq_id))
+                    .collect();
+                sender.send(MultipleAtomicTxnBatch { batches }).unwrap();
+                // Prepare real parsed work first; delivery below is independent of parser timing.
+                let batches = (0..2)
+                    .map(|_| {
+                        receiver
+                            .parsed_batch_receiver
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                let (parsed_sender, parsed_receiver) = unbounded();
+                receiver.parsed_batch_receiver = parsed_receiver;
+                set_leader_bank(&mut shared, None);
+                let bam_enabled = receiver.bam_enabled.clone();
+                bam_enabled.store(initial as u8, Ordering::Release);
+                let publish_bank = replacement.clone();
+                let delivery = parsed_sender.clone();
+                let connection = bam_enabled.clone();
+                receiver.before_nonleader_receive = Some(Box::new(move || {
+                    set_leader_bank(&mut shared, Some(publish_bank.clone()));
+                    shared.set_bank_replacement();
+                    assert!(shared.load().working_bank().is_none());
+                    if published {
+                        set_leader_bank(&mut shared, Some(publish_bank));
+                    }
+                    connection.store(state as u8, Ordering::Release);
+                    for batch in batches {
+                        delivery.send(batch).unwrap();
+                    }
+                }));
 
-        let start = Instant::now();
-        loop {
-            if receive_and_buffer
-                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
-                .unwrap()
-                .num_received
-                > 0
-            {
-                break;
+                let stats = receiver
+                    .receive_and_buffer_packets(&mut container, &decision)
+                    .unwrap();
+                let retained = !matches!(state, Disconnected | Connecting);
+                assert!(receiver.before_nonleader_receive.is_none());
+                assert_eq!(
+                    container.queue_size(),
+                    usize::from(retained),
+                    "{decision:?}, {state:?}"
+                );
+                assert_eq!(stats.num_dropped_without_parsing, usize::from(!retained));
+                assert!(responses.try_recv().is_err());
+                // The stale invocation must retain the first batch itself; a fresh decision
+                // only drains the second batch and must preserve their FIFO ordering.
+                bam_enabled.store(Connected as u8, Ordering::Release);
+                receiver
+                    .receive_and_buffer_packets(
+                        &mut container,
+                        &BufferedPacketsDecision::Consume(replacement),
+                    )
+                    .unwrap();
+                let mut seq_ids = Vec::new();
+                while let Some(id) = container.pop() {
+                    seq_ids.push(container.get_batch(id.id).unwrap().3);
+                }
+                assert_eq!(
+                    seq_ids,
+                    if retained {
+                        vec![70_001, 70_002]
+                    } else {
+                        vec![70_002]
+                    }
+                );
+                assert!(responses.try_recv().is_err());
             }
-            assert!(start.elapsed() < Duration::from_secs(30));
         }
-        assert!(container.is_empty());
-
-        bam_enabled.store(
-            BamConnectionState::BlockEngineDrained as u8,
-            Ordering::Release,
-        );
-        receive_and_buffer
-            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
-            .unwrap();
-        assert!(container.is_empty());
-
-        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Release);
-        let start = Instant::now();
-        while container.is_empty() && start.elapsed() < Duration::from_secs(30) {
-            receive_and_buffer
-                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
-                .unwrap();
-        }
-
-        verify_container(&mut container, 1);
-        exit.store(true, Ordering::Relaxed);
     }
 
     #[test]
-    fn test_receive_and_buffer_preserves_replacement_batches_during_stale_forward_drain() {
+    fn test_parser_replacement_handoff_and_rejection() {
         let (sender, receiver) = unbounded();
-        let (bank_forks, mint_keypair) = test_bank_forks();
-        let root_bank = bank_forks.read().unwrap().root_bank();
-        let old_bank = child_bank(&root_bank, 1);
-        let replacement_bank = child_bank(&root_bank, 1);
-        replacement_bank.register_unique_recent_blockhash_for_test();
-        assert_eq!(old_bank.slot(), replacement_bank.slot());
-        assert_ne!(old_bank.bank_id(), replacement_bank.bank_id());
-
-        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
-            setup_bam_receive_and_buffer(
-                receiver,
-                bank_forks,
-                Some(shared_leader_state.clone()),
-                HashSet::new(),
-            );
-
-        // Reject a probe first so replacement begins while the same Forward call
-        // is blocked on its fixed receive deadline.
-        const DRAIN_PROBE_SEQ_ID: u32 = 70_000;
-        let drain_probe = transfer(
-            &mint_keypair,
-            &Pubkey::new_unique(),
-            1,
-            old_bank.last_blockhash(),
+        let (bank_forks, mint) = test_bank_forks();
+        let root = bank_forks.read().unwrap().root_bank();
+        let old_bank = child_bank(&root, 1);
+        let bank = child_bank(&root, 1);
+        bank.register_unique_recent_blockhash_for_test();
+        assert_eq!(old_bank.slot(), bank.slot());
+        assert_ne!(old_bank.bank_id(), bank.bank_id());
+        let mut shared = SharedLeaderState::new(0, None, None);
+        let parsing_state = shared.clone();
+        let select = || BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&parsing_state));
+        let (_exit, mut receiver, mut container, mut responses) = setup_bam_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            Some(shared.clone()),
+            HashSet::new(),
         );
-        let mut drain_probe_batch =
-            batch_with_packet_data(wincode::serialize(&drain_probe).unwrap().into());
-        drain_probe_batch.seq_id = DRAIN_PROBE_SEQ_ID;
-        sender
-            .send(MultipleAtomicTxnBatch {
-                batches: vec![drain_probe_batch],
-            })
-            .unwrap();
-
-        let stale_drain = std::thread::spawn(move || {
-            receive_and_buffer
-                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Forward)
+        for state in [
+            BamConnectionState::DrainingBlockEngine,
+            BamConnectionState::BlockEngineDrained,
+        ] {
+            receiver.bam_enabled.store(state as u8, Ordering::Release);
+            set_leader_bank(&mut shared, Some(old_bank.clone()));
+            assert!(Arc::ptr_eq(&select().unwrap(), &old_bank));
+            shared.set_bank_replacement();
+            assert!(select().is_none());
+            while receiver.replacement_wait_receiver.try_recv().is_ok() {}
+            sender
+                .send(MultipleAtomicTxnBatch {
+                    batches: vec![transfer_batch(&mint, &bank, 1)],
+                })
                 .unwrap();
-            (receive_and_buffer, container)
-        });
-
-        let probe_deadline = Instant::now() + Duration::from_secs(5);
-        let response = loop {
-            if let Ok(response) = response_receiver.try_recv() {
-                break response;
-            }
-            assert!(
-                Instant::now() < probe_deadline,
-                "timed out waiting for the drain probe result"
-            );
-            std::thread::yield_now();
-        };
-        let BamOutboundMessage::AtomicTxnBatchResult(result) = response else {
-            panic!("expected drain probe result");
-        };
-        assert_eq!(result.seq_id, DRAIN_PROBE_SEQ_ID);
-        assert!(matches!(
-            &result.result,
-            Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
-                if matches!(
-                    &not_committed.reason,
-                    Some(Reason::SchedulingError(reason))
-                        if *reason == SchedulingError::OutsideLeaderSlot as i32
-                )
-        ));
-
-        // Hide the retiring Bank so parsing retains work until its replacement is ready.
-        shared_leader_state.store(Arc::new(LeaderState::new(Some(old_bank), 0, None, None)));
-        shared_leader_state.set_bank_replacement();
-        assert!(shared_leader_state.load().working_bank().is_none());
-
-        const DURING_REPLACEMENT_SEQ_ID: u32 = 70_001;
-        let during_replacement_transaction = transfer(
-            &mint_keypair,
-            &Pubkey::new_unique(),
-            1,
-            replacement_bank.last_blockhash(),
-        );
-        let mut during_replacement_batch = batch_with_packet_data(
-            wincode::serialize(&during_replacement_transaction)
-                .unwrap()
-                .into(),
-        );
-        during_replacement_batch.seq_id = DURING_REPLACEMENT_SEQ_ID;
-        sender
-            .send(MultipleAtomicTxnBatch {
-                batches: vec![during_replacement_batch],
-            })
-            .unwrap();
-        let receive_deadline = Instant::now() + Duration::from_secs(5);
-        while !sender.is_empty() {
-            assert!(
-                Instant::now() < receive_deadline,
-                "parser did not receive the replacement-pending batch"
-            );
-            std::thread::yield_now();
-        }
-        assert!(
-            response_receiver.try_recv().is_err(),
-            "replacement-pending batch escaped before the new Bank was published"
-        );
-
-        // Publishing the replacement releases pending parsing while the stale
-        // Forward call is still active.
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(replacement_bank.clone()),
-            0,
-            None,
-            None,
-        )));
-
-        // Work sent after publication must use the replacement state rather than
-        // the cached Forward decision.
-        const POST_REPLACEMENT_SEQ_ID: u32 = 70_002;
-        let post_replacement_transaction = transfer(
-            &mint_keypair,
-            &Pubkey::new_unique(),
-            1,
-            replacement_bank.last_blockhash(),
-        );
-        let mut post_replacement_batch = batch_with_packet_data(
-            wincode::serialize(&post_replacement_transaction)
-                .unwrap()
-                .into(),
-        );
-        post_replacement_batch.seq_id = POST_REPLACEMENT_SEQ_ID;
-        sender
-            .send(MultipleAtomicTxnBatch {
-                batches: vec![post_replacement_batch],
-            })
-            .unwrap();
-
-        let (mut receive_and_buffer, mut container) = stale_drain.join().unwrap();
-        let current_leader_state = shared_leader_state.load();
-        let current_bank = current_leader_state
-            .working_bank()
-            .expect("replacement Bank must be active when the stale drain exits");
-        assert!(Arc::ptr_eq(current_bank, &replacement_bank));
-
-        let mut unexpected_responses = Vec::new();
-        while let Ok(BamOutboundMessage::AtomicTxnBatchResult(result)) =
-            response_receiver.try_recv()
-        {
-            let outside_leader_slot = matches!(
-                &result.result,
-                Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
-                    if matches!(
-                        &not_committed.reason,
-                        Some(Reason::SchedulingError(reason))
-                            if *reason == SchedulingError::OutsideLeaderSlot as i32
-                    )
-            );
-            unexpected_responses.push((result.seq_id, outside_leader_slot));
-        }
-        assert!(
-            unexpected_responses.is_empty(),
-            "replacement batches received responses from the stale Forward drain (seq_id, \
-             outside_leader_slot): {unexpected_responses:?}"
-        );
-
-        // A fresh Consume decision must recover retained work and accept new work.
-        const CONTROL_SEQ_ID: u32 = 70_003;
-        let control_transaction = transfer(
-            &mint_keypair,
-            &Pubkey::new_unique(),
-            1,
-            replacement_bank.last_blockhash(),
-        );
-        let mut control_batch =
-            batch_with_packet_data(wincode::serialize(&control_transaction).unwrap().into());
-        control_batch.seq_id = CONTROL_SEQ_ID;
-        sender
-            .send(MultipleAtomicTxnBatch {
-                batches: vec![control_batch],
-            })
-            .unwrap();
-
-        let consume = BufferedPacketsDecision::Consume(replacement_bank);
-        let buffer_deadline = Instant::now() + Duration::from_secs(5);
-        while container.queue_size() < 3 {
-            receive_and_buffer
-                .receive_and_buffer_packets(&mut container, &consume)
+            // Observe the actual parser holding raw ingress before publishing the new bank.
+            receiver
+                .replacement_wait_receiver
+                .recv_timeout(Duration::from_secs(5))
                 .unwrap();
-            assert!(
-                response_receiver.try_recv().is_err(),
-                "replacement or control batch was unexpectedly rejected"
-            );
-            assert!(
-                Instant::now() < buffer_deadline,
-                "timed out waiting for replacement and control batches"
-            );
-            std::thread::yield_now();
+            assert!(receiver.parsed_batch_receiver.is_empty());
+            assert!(responses.try_recv().is_err());
+            set_leader_bank(&mut shared, Some(bank.clone()));
+            assert!(Arc::ptr_eq(&select().unwrap(), &bank));
+            receiver.wait_for_parsed_batches(1);
+            receiver
+                .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+                .unwrap();
+            assert!(!container.is_empty());
+            assert!(responses.try_recv().is_err());
         }
-
-        verify_container(&mut container, 3);
-        exit.store(true, Ordering::Relaxed);
+        set_leader_bank(&mut shared, None);
+        assert!(Arc::ptr_eq(&select().unwrap(), &root));
+        // A genuine boundary still rejects work buffered during handoff.
+        receiver
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Forward)
+            .unwrap();
+        assert!(container.is_empty());
+        for _ in 0..2 {
+            let BamOutboundMessage::AtomicTxnBatchResult(result) = responses.try_recv().unwrap()
+            else {
+                panic!("expected batch result")
+            };
+            assert!(
+                matches!(result.result, Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
+                if not_committed.reason == Some(Reason::SchedulingError(SchedulingError::OutsideLeaderSlot as i32)))
+            );
+        }
+        container = TransactionStateContainer::with_capacity(0);
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![transfer_batch(&mint, &root, 1)],
+            })
+            .unwrap();
+        receiver.wait_for_parsed_batches(1);
+        let stats = receiver
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert_eq!(stats.num_dropped_on_capacity, 1);
+        let BamOutboundMessage::AtomicTxnBatchResult(result) = responses.try_recv().unwrap() else {
+            panic!("expected batch result")
+        };
+        assert!(
+            matches!(result.result, Some(atomic_txn_batch_result::Result::NotCommitted(not_committed))
+            if not_committed.reason == Some(Reason::SchedulingError(SchedulingError::ContainerFull as i32)))
+        );
     }
 
     #[test]
