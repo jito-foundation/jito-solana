@@ -435,7 +435,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     /// Generates a `bundle_result::Result` based on the processed results for 'revert_on_error' batches.
-    fn generate_revert_on_error_bundle_result<I: IntoIterator<Item = TransactionResult>>(
+    pub(crate) fn generate_revert_on_error_bundle_result<
+        I: IntoIterator<Item = TransactionResult>,
+    >(
         processed_results: I,
     ) -> atomic_txn_batch_result::Result {
         let mut saw_commit_cancelled = false;
@@ -490,7 +492,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     /// Generates a `bundle_result::Result` based on the processed result of a single transaction.
-    fn generate_bundle_result(processed: TransactionResult) -> atomic_txn_batch_result::Result {
+    pub(crate) fn generate_bundle_result(
+        processed: TransactionResult,
+    ) -> atomic_txn_batch_result::Result {
         match processed {
             TransactionResult::Committed(result) => atomic_txn_batch_result::Result::Committed(
                 jito_protos::proto::bam_types::Committed {

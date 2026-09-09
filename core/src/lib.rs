@@ -30,6 +30,7 @@ pub mod epoch_specs;
 pub mod fetch_stage;
 pub mod forwarding_stage;
 pub mod gen_keys;
+pub mod jito_scheduler;
 pub mod multicast_shred_check_service;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;

@@ -79,6 +79,7 @@ futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
+jito-scheduler-bindings = { workspace = true }
 lazy-lru = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
@@ -201,6 +202,7 @@ jemalloc-ctl = { workspace = true }
 sysctl = { workspace = true }
 
 [dev-dependencies]
+jito-scheduler = { workspace = true }
 agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["agave-unstable-api"] }
 bencher = { workspace = true }
 bitvec = { workspace = true }

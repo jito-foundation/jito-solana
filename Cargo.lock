@@ -305,6 +305,7 @@ dependencies = [
  "agave-scheduler-bindings",
  "agave-transaction-view",
  "ahash 0.8.12",
+ "jito-scheduler-bindings",
  "libc",
  "nix",
  "rts-alloc",
@@ -4145,6 +4146,35 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "jito-scheduler"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-scheduler-bindings",
+ "agave-scheduling-utils",
+ "agave-transaction-view",
+ "jito-scheduler-bindings",
+ "rts-alloc",
+ "solana-hash 4.6.0",
+ "solana-keypair",
+ "solana-message",
+ "solana-pubkey 4.3.0",
+ "solana-system-transaction",
+ "solana-transaction",
+ "tempfile",
+ "thiserror 2.0.20",
+ "wincode",
+]
+
+[[package]]
+name = "jito-scheduler-bindings"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-scheduler-bindings",
+ "rts-alloc",
+ "tempfile",
 ]
 
 [[package]]
@@ -8202,6 +8232,8 @@ dependencies = [
  "histogram",
  "itertools 0.15.0",
  "jito-protos",
+ "jito-scheduler",
+ "jito-scheduler-bindings",
  "lazy-lru",
  "libc",
  "log",
@@ -9362,6 +9394,8 @@ version = "4.4.0-alpha.2"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
+ "agave-scheduler-bindings",
+ "agave-scheduling-utils",
  "agave-snapshots",
  "agave-votor",
  "agave-votor-messages",
@@ -9372,6 +9406,7 @@ dependencies = [
  "fs_extra",
  "gag",
  "itertools 0.15.0",
+ "jito-scheduler",
  "log",
  "rand 0.9.4",
  "rayon",

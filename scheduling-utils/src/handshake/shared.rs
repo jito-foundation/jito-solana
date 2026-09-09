@@ -3,6 +3,9 @@ use {
         CheckWorkerToPackMessage, ExecutionWorkerToPackMessage, PackToCheckWorkerMessage,
         PackToExecutionWorkerMessage, ProgressMessage, TpuToPackMessage,
     },
+    jito_scheduler_bindings::{
+        JitoExecutionRequest, JitoExecutionResponse, JitoIngressMessage, JitoProgressMessage,
+    },
     rts_alloc::Allocator,
     thiserror::Error,
 };
@@ -66,10 +69,42 @@ impl ClientLogon {
     }
 }
 
-pub mod logon_flags {}
+pub mod logon_flags {
+    /// Opt in to the versioned Jito addon without changing the Agave logon layout.
+    /// The high byte carries the addon version; zero retains the upstream session.
+    pub const JITO: u16 = 1 | (jito_scheduler_bindings::JITO_PROTOCOL_VERSION << 8);
+}
+
+/// Linux SCM_RIGHTS permits at most 253 descriptors per message. Jito sessions
+/// use eight global descriptors and four per execution worker.
+pub const MAX_JITO_WORKERS: usize = 61;
+
+pub struct JitoClientSession {
+    pub ingress: shaq::spsc::Consumer<JitoIngressMessage>,
+    pub completion: shaq::spsc::Producer<JitoExecutionResponse>,
+    pub progress: shaq::spsc::Consumer<JitoProgressMessage>,
+}
+
+pub struct JitoAgaveSession {
+    pub allocator: Allocator,
+    pub ingress: shaq::spsc::Producer<JitoIngressMessage>,
+    pub completion: shaq::spsc::Consumer<JitoExecutionResponse>,
+    pub progress: shaq::spsc::Producer<JitoProgressMessage>,
+}
+
+pub struct JitoClientWorkerSession {
+    pub request: shaq::spsc::Producer<JitoExecutionRequest>,
+    pub response: shaq::spsc::Consumer<JitoExecutionResponse>,
+}
+
+pub struct JitoAgaveWorkerSession {
+    pub request: shaq::spsc::Consumer<JitoExecutionRequest>,
+    pub response: shaq::spsc::Producer<JitoExecutionResponse>,
+}
 
 /// The complete initialized scheduling session.
 pub struct ClientSession {
+    pub jito: Option<JitoClientSession>,
     pub allocators: Vec<Allocator>,
     pub tpu_to_pack: shaq::spsc::Consumer<TpuToPackMessage>,
     pub progress_tracker: shaq::spsc::Consumer<ProgressMessage>,
@@ -80,6 +115,7 @@ pub struct ClientSession {
 
 /// A per worker scheduling session.
 pub struct ClientWorkerSession {
+    pub jito: Option<JitoClientWorkerSession>,
     pub pack_to_worker: shaq::spsc::Producer<PackToExecutionWorkerMessage>,
     pub worker_to_pack: shaq::spsc::Consumer<ExecutionWorkerToPackMessage>,
 }
@@ -103,6 +139,7 @@ pub enum ClientHandshakeError {
 
 /// An initialized scheduling session.
 pub struct AgaveSession {
+    pub jito: Option<JitoAgaveSession>,
     pub flags: u16,
     pub tpu_to_pack: AgaveTpuToPackSession,
     pub progress_tracker: shaq::spsc::Producer<ProgressMessage>,
@@ -118,6 +155,7 @@ pub struct AgaveTpuToPackSession {
 
 /// Shared memory objects for a single banking worker.
 pub struct AgaveWorkerSession {
+    pub jito: Option<JitoAgaveWorkerSession>,
     pub allocator: Allocator,
     pub pack_to_worker: shaq::spsc::Consumer<PackToExecutionWorkerMessage>,
     pub worker_to_pack: shaq::spsc::Producer<ExecutionWorkerToPackMessage>,
@@ -145,6 +183,10 @@ pub enum AgaveHandshakeError {
     EofDuringHandshake,
     #[error("Version; server={server}; client={client}")]
     Version { server: u64, client: u64 },
+    #[error("Unsupported logon flags or Jito addon version; flags={0:#x}")]
+    UnsupportedFlags(u16),
+    #[error("Jito scheduler addon required")]
+    JitoRequired,
     #[error("Worker count; count={0}")]
     WorkerCount(usize),
     #[error("Check worker count; count={0}")]

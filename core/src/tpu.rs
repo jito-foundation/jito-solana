@@ -183,7 +183,7 @@ impl Tpu {
         _generator_config: Option<GeneratorConfig>, /* vestigial code for replay invalidator */
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
         banking_control_receiver: mpsc::Receiver<BankingControlMsg>,
-        scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>)>,
+        scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>, bool)>,
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
         block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
@@ -429,11 +429,24 @@ impl Tpu {
             bam_tpu_info,
             bam_shred_receiver_addresses: bam_shred_receiver_addresses.clone(),
         };
+        let jito_mode = scheduler_bindings
+            .as_ref()
+            .is_some_and(|(_, _, jito)| *jito);
+        let jito_control =
+            jito_mode.then(|| Arc::new(crate::jito_scheduler::JitoSchedulerControl::default()));
+        let jito_dependencies =
+            jito_control
+                .as_ref()
+                .map(|control| crate::jito_scheduler::JitoBindingsDependencies {
+                    bundles: verified_bundle_receiver.clone(),
+                    control: control.clone(),
+                });
         // Scheduler bindings are immutable for the lifetime of the TPU. Exclude the BAM runtime
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
-        let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
+        let bam_dependencies =
+            (scheduler_bindings.is_none() || jito_mode).then_some(bam_dependencies);
 
-        let banking_stage = BankingStage::new_num_threads(
+        let banking_stage = BankingStage::new_num_threads_with_jito(
             block_production_method,
             poh_recorder.clone(),
             transaction_recorder.clone(),
@@ -461,11 +474,12 @@ impl Tpu {
                 bundle_account_locker: bundle_account_locker.clone(),
             }),
             bam_dependencies.clone(),
+            jito_dependencies,
         );
 
         #[cfg(unix)]
-        if let Some((path, banking_control_sender)) = scheduler_bindings {
-            super::scheduler_bindings_server::spawn(&path, banking_control_sender);
+        if let Some((path, banking_control_sender, require_jito)) = scheduler_bindings {
+            super::scheduler_bindings_server::spawn(&path, banking_control_sender, require_jito);
         }
         #[cfg(not(unix))]
         assert!(scheduler_bindings.is_none());
@@ -481,7 +495,7 @@ impl Tpu {
             ForwardAddressGetter::new(cluster_info.clone(), poh_recorder.clone()),
         );
 
-        let bundle_stage = BundleStage::new(
+        let bundle_stage = BundleStage::new_with_jito(
             cluster_info,
             bank_forks.clone(),
             poh_recorder,
@@ -497,16 +511,18 @@ impl Tpu {
             bam_enabled,
             prioritization_fee_cache.clone(),
             filter_keys.iter().copied().collect::<AHashSet<_>>(),
+            jito_control.clone(),
         );
 
         let bam_manager = bam_dependencies.map(|bam_dependencies| {
-            BamManager::new(
+            BamManager::new_with_jito(
                 exit.clone(),
                 bam_url,
                 bam_dependencies,
                 bam_outbound_receiver,
                 poh_recorder.clone(),
                 key_notifiers.clone(),
+                jito_control,
             )
         });
 

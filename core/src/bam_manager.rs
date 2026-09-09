@@ -78,6 +78,27 @@ impl BamManager {
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
     ) -> Self {
+        Self::new_with_jito(
+            exit,
+            bam_url,
+            dependencies,
+            outbound_receiver,
+            poh_recorder,
+            identity_notifiers,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_jito(
+        exit: Arc<AtomicBool>,
+        bam_url: Arc<ArcSwap<Option<String>>>,
+        dependencies: BamDependencies,
+        outbound_receiver: mpsc::Receiver<BamOutboundMessage>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
+        identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        jito_control: Option<Arc<crate::jito_scheduler::JitoSchedulerControl>>,
+    ) -> Self {
         let identity_changed = Arc::new(AtomicBool::new(false));
         let new_identity = Arc::new(ArcSwap::from_pointee(None));
 
@@ -103,6 +124,7 @@ impl BamManager {
                     poh_recorder,
                     identity_changed,
                     new_identity,
+                    jito_control,
                 )
             }),
         }
@@ -116,6 +138,7 @@ impl BamManager {
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_changed: Arc<AtomicBool>,
         new_identity: Arc<ArcSwap<Option<Pubkey>>>,
+        jito_control: Option<Arc<crate::jito_scheduler::JitoSchedulerControl>>,
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
@@ -175,11 +198,16 @@ impl BamManager {
                         .bam_enabled
                         .store(BamConnectionState::Connecting as u8, Ordering::Release);
                     builder_config_version = 0;
-                    let result = runtime.block_on(BamConnection::try_init(
+                    if let Some(control) = &jito_control {
+                        let _generation_guard = control.bam_generation_lock.write().unwrap();
+                        control.bam_generation.fetch_add(1, Ordering::AcqRel);
+                    }
+                    let result = runtime.block_on(BamConnection::try_init_with_jito(
                         url.clone(),
                         dependencies.cluster_info.clone(),
                         dependencies.batch_sender.clone(),
                         &mut outbound_receiver,
+                        jito_control.clone(),
                     ));
                     let connection = match result {
                         Ok(connection) => connection,
@@ -202,7 +230,12 @@ impl BamManager {
                              retry",
                         );
                         Self::set_bam_disconnected(&dependencies);
-                        outbound_receiver = Some(runtime.block_on(connection.shutdown()));
+                        outbound_receiver = Some(Self::shutdown_connection(
+                            connection,
+                            &runtime,
+                            &dependencies,
+                            jito_control.as_deref(),
+                        ));
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
                     }
@@ -217,7 +250,10 @@ impl BamManager {
                 }
             };
 
-            let disconnect = if !connection.is_healthy() {
+            let scheduler_lost = jito_control
+                .as_ref()
+                .is_some_and(|control| control.reconnect_bam.swap(false, Ordering::AcqRel));
+            let disconnect = if scheduler_lost || !connection.is_healthy() {
                 Self::set_bam_disconnected(&dependencies);
                 warn!("BAM connection unhealthy");
                 true
@@ -239,7 +275,12 @@ impl BamManager {
             };
 
             if disconnect {
-                outbound_receiver = Some(runtime.block_on(connection.shutdown()));
+                outbound_receiver = Some(Self::shutdown_connection(
+                    connection,
+                    &runtime,
+                    &dependencies,
+                    jito_control.as_deref(),
+                ));
                 continue;
             }
 
@@ -259,7 +300,12 @@ impl BamManager {
                          back to Block Engine"
                     );
                     Self::set_bam_disconnected(&dependencies);
-                    outbound_receiver = Some(runtime.block_on(connection.shutdown()));
+                    outbound_receiver = Some(Self::shutdown_connection(
+                        connection,
+                        &runtime,
+                        &dependencies,
+                        jito_control.as_deref(),
+                    ));
                     std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                     continue;
                 }
@@ -290,6 +336,24 @@ impl BamManager {
             // Sleep for a short duration to avoid busy-waiting
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    fn shutdown_connection(
+        connection: BamConnection,
+        runtime: &tokio::runtime::Runtime,
+        dependencies: &BamDependencies,
+        jito_control: Option<&crate::jito_scheduler::JitoSchedulerControl>,
+    ) -> mpsc::Receiver<BamOutboundMessage> {
+        let mut outbound_receiver = runtime.block_on(connection.shutdown());
+        if let Some(control) = jito_control {
+            // The old network producer has joined. Clear both mode-specific inputs
+            // before authenticating another stream. Delayed external results retain
+            // their generation and are also checked by the next connection.
+            while dependencies.batch_receiver.try_recv().is_ok() {}
+            while control.bam_batches.1.try_recv().is_ok() {}
+            while outbound_receiver.try_recv().is_ok() {}
+        }
+        outbound_receiver
     }
 
     fn handle_identity_change(

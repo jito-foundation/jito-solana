@@ -1,19 +1,16 @@
 use {
     crate::handshake::{
         AgaveCheckWorkerSession, AgaveHandshakeError, AgaveTpuToPackSession, AgaveWorkerSession,
-        ClientLogon,
+        ClientLogon, JitoAgaveSession, JitoAgaveWorkerSession, MAX_JITO_WORKERS, logon_flags,
         shared::{
             AgaveSession, GLOBAL_ALLOCATORS, LOGON_FAILURE, LOGON_SUCCESS, MAX_ALLOCATOR_HANDLES,
             MAX_WORKERS, VERSION,
         },
     },
-    agave_scheduler_bindings::{
-        CheckWorkerToPackMessage, PackToCheckWorkerMessage, PackToExecutionWorkerMessage,
-    },
+    agave_scheduler_bindings::{CheckWorkerToPackMessage, PackToCheckWorkerMessage},
     nix::sys::socket::{self, ControlMessage, MsgFlags, UnixAddr},
     rts_alloc::Allocator,
     std::{
-        ffi::CStr,
         fs::File,
         io::{IoSlice, Read, Write},
         os::{
@@ -29,13 +26,20 @@ type ShaqError = shaq::error::Error;
 type RtsAllocError = rts_alloc::error::Error;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
-const SHMEM_NAME: &CStr = c"/agave-scheduler-bindings";
+#[cfg(any(
+    target_os = "linux",
+    target_os = "l4re",
+    target_os = "android",
+    target_os = "emscripten"
+))]
+const SHMEM_NAME: &std::ffi::CStr = c"/agave-scheduler-bindings";
 
 /// Implements the Agave side of the scheduler bindings handshake protocol.
 pub struct Server {
     listener: UnixListener,
 
     buffer: [u8; 1024],
+    jito_required: bool,
 }
 
 impl Server {
@@ -45,7 +49,13 @@ impl Server {
         Ok(Self {
             listener,
             buffer: [0; 1024],
+            jito_required: false,
         })
+    }
+
+    /// Require the Jito addon before accepting a session or publishing success.
+    pub fn require_jito(&mut self) {
+        self.jito_required = true;
     }
 
     pub fn accept(&mut self) -> Result<AgaveSession, AgaveHandshakeError> {
@@ -81,6 +91,9 @@ impl Server {
     ) -> Result<AgaveSession, AgaveHandshakeError> {
         // Receive & validate the logon message.
         let logon = self.recv_logon(stream)?;
+        if self.jito_required && logon.flags != logon_flags::JITO {
+            return Err(AgaveHandshakeError::JitoRequired);
+        }
 
         // Setup the requested shared memory regions.
         let (session, files) = Self::setup_session(logon)?;
@@ -130,8 +143,21 @@ impl Server {
         const LOGON_END: usize = 8 + core::mem::size_of::<ClientLogon>();
         let logon = ClientLogon::try_from_bytes(&self.buffer[8..LOGON_END]).unwrap();
 
-        // Put a hard limit of 64 worker threads for now.
-        if !(1..=MAX_WORKERS).contains(&logon.worker_count) {
+        Self::validate_logon(&logon)?;
+
+        Ok(logon)
+    }
+
+    fn validate_logon(logon: &ClientLogon) -> Result<(), AgaveHandshakeError> {
+        if logon.flags != 0 && logon.flags != logon_flags::JITO {
+            return Err(AgaveHandshakeError::UnsupportedFlags(logon.flags));
+        }
+        let max_workers = if logon.flags == logon_flags::JITO {
+            MAX_JITO_WORKERS
+        } else {
+            MAX_WORKERS
+        };
+        if !(1..=max_workers).contains(&logon.worker_count) {
             return Err(AgaveHandshakeError::WorkerCount(logon.worker_count));
         }
 
@@ -148,12 +174,14 @@ impl Server {
             ));
         }
 
-        Ok(logon)
+        Ok(())
     }
 
     pub fn setup_session(
         logon: ClientLogon,
     ) -> Result<(AgaveSession, Vec<File>), AgaveHandshakeError> {
+        Self::validate_logon(&logon)?;
+        let jito_enabled = logon.flags == logon_flags::JITO;
         // Setup the allocator in shared memory (`worker_count`, `check_worker_count`, and
         // `allocator_handles` have been validated so this won't panic).
         let (allocator_file, tpu_to_pack_allocator) = Self::create_allocator(&logon)?;
@@ -187,6 +215,26 @@ impl Server {
             })
             .collect::<Result<Vec<_>, AgaveHandshakeError>>()?;
 
+        // Append Jito global descriptors only after all upstream descriptors.
+        let (jito, jito_files) = if jito_enabled {
+            let (ingress_file, ingress) = Self::create_producer(logon.tpu_to_pack_capacity, true)?;
+            let (completion_file, completion) =
+                Self::create_consumer(logon.worker_to_pack_capacity)?;
+            let (progress_file, progress) =
+                Self::create_producer(logon.progress_tracker_capacity, false)?;
+            (
+                Some(JitoAgaveSession {
+                    allocator: Allocator::join(&allocator_file)?,
+                    ingress,
+                    completion,
+                    progress,
+                }),
+                vec![ingress_file, completion_file, progress_file],
+            )
+        } else {
+            (None, Vec::new())
+        };
+
         // Setup the worker sessions.
         let (worker_files, workers) = (0..logon.worker_count).try_fold(
             (Vec::default(), Vec::default()),
@@ -199,7 +247,18 @@ impl Server {
                     Self::create_producer(logon.worker_to_pack_capacity, true)?;
 
                 fds.extend([pack_to_worker_file, worker_to_pack_file]);
+                let jito = if jito_enabled {
+                    let (request_file, request) =
+                        Self::create_consumer(logon.pack_to_worker_capacity)?;
+                    let (response_file, response) =
+                        Self::create_producer(logon.worker_to_pack_capacity, true)?;
+                    fds.extend([request_file, response_file]);
+                    Some(JitoAgaveWorkerSession { request, response })
+                } else {
+                    None
+                };
                 workers.push(AgaveWorkerSession {
+                    jito,
                     allocator,
                     pack_to_worker,
                     worker_to_pack,
@@ -211,6 +270,7 @@ impl Server {
 
         Ok((
             AgaveSession {
+                jito,
                 flags: logon.flags,
                 tpu_to_pack: AgaveTpuToPackSession {
                     allocator: tpu_to_pack_allocator,
@@ -229,12 +289,15 @@ impl Server {
             ]
             .into_iter()
             .chain(worker_files)
+            .chain(jito_files)
             .collect(),
         ))
     }
 
     fn create_allocator(logon: &ClientLogon) -> Result<(File, Allocator), RtsAllocError> {
         let allocator_count = GLOBAL_ALLOCATORS
+            .checked_add(usize::from(logon.flags == logon_flags::JITO))
+            .unwrap()
             .checked_add(logon.worker_count)
             .unwrap()
             .checked_add(logon.check_worker_count)
@@ -283,13 +346,10 @@ impl Server {
         }
     }
 
-    fn create_consumer(
-        capacity: usize,
-    ) -> Result<(File, shaq::spsc::Consumer<PackToExecutionWorkerMessage>), ShaqError> {
+    fn create_consumer<T>(capacity: usize) -> Result<(File, shaq::spsc::Consumer<T>), ShaqError> {
         let create = |huge: bool| {
             let file = Self::create_shmem(huge)?;
-            let minimum_file_size =
-                shaq::spsc::minimum_file_size::<PackToExecutionWorkerMessage>(capacity);
+            let minimum_file_size = shaq::spsc::minimum_file_size::<T>(capacity);
             let file_size = Self::align_file_size(minimum_file_size, huge);
 
             // SAFETY: uniquely creating as consumer.
@@ -370,19 +430,15 @@ impl Server {
             return Err(std::io::ErrorKind::Unsupported.into());
         }
 
+        // POSIX names are global. Never unlink another concurrently created queue.
+        static NEXT_SHMEM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_SHMEM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = std::ffi::CString::new(format!("/agv-{:x}-{id:x}", std::process::id()))
+            .expect("shared memory name has no NUL");
         unsafe {
-            // Clean up the previous link if one exists.
-            let ret = libc::shm_unlink(SHMEM_NAME.as_ptr());
-            if ret == -1 {
-                let err = std::io::Error::last_os_error();
-                if err.kind() != std::io::ErrorKind::NotFound {
-                    return Err(err);
-                }
-            }
-
             // Create a new shared memory object.
             let ret = libc::shm_open(
-                SHMEM_NAME.as_ptr(),
+                name.as_ptr(),
                 libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -399,7 +455,7 @@ impl Server {
             let file = File::from_raw_fd(ret);
 
             // Clean up after ourself.
-            let ret = libc::shm_unlink(SHMEM_NAME.as_ptr());
+            let ret = libc::shm_unlink(name.as_ptr());
             if ret == -1 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -411,7 +467,13 @@ impl Server {
     fn align_file_size(size: usize, huge: bool) -> usize {
         match huge {
             true => size.next_multiple_of(2 * 1024 * 1024),
-            false => size.next_multiple_of(4096),
+            false => {
+                // The joined mapping uses fstat length. On macOS shm objects round
+                // to the native page size, which may exceed 4096 bytes.
+                let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+                let page_size = usize::try_from(page_size).expect("valid OS page size");
+                size.next_multiple_of(page_size)
+            }
         }
     }
 }

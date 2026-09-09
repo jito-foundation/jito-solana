@@ -47,6 +47,8 @@ members = [
     "install",
     "io-uring",
     "jito-protos",
+    "jito-scheduler",
+    "jito-scheduler-bindings",
     "jito-tip-router-snapshot-service",
     "keygen",
     "lattice-hash",
@@ -273,6 +275,8 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
     "stats",
 ] }
 jito-protos = { path = "jito-protos", version = "=4.4.0-alpha.2" }
+jito-scheduler = { path = "jito-scheduler", version = "=4.4.0-alpha.2" }
+jito-scheduler-bindings = { path = "jito-scheduler-bindings", version = "=4.4.0-alpha.2" }
 jito-tip-router-snapshot-service = { path = "jito-tip-router-snapshot-service", version = "=4.4.0-alpha.2" }
 json5 = "1.3.1"
 jsonrpc-core = "18.0.0"

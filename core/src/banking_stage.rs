@@ -364,6 +364,7 @@ pub struct BankingStage {
     bundle_account_locker: BundleAccountLocker,
     tip_processing_dependencies: Option<TipProcessingDependencies>,
     bam_dependencies: Option<BamDependencies>,
+    jito_dependencies: Option<crate::jito_scheduler::JitoBindingsDependencies>,
 }
 
 impl BankingStage {
@@ -389,6 +390,55 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         tip_processing_dependencies: Option<TipProcessingDependencies>,
         bam_dependencies: Option<BamDependencies>,
+    ) -> BankingStageHandle {
+        Self::new_num_threads_with_jito(
+            block_production_method,
+            poh_recorder,
+            transaction_recorder,
+            non_vote_receiver,
+            tpu_vote_receiver,
+            gossip_vote_receiver,
+            banking_control_receiver,
+            num_workers,
+            scheduler_config,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            bank_forks,
+            alpenglow_slot_clock,
+            prioritization_fee_cache,
+            filter_keys,
+            priority_floor,
+            bundle_account_locker,
+            tip_processing_dependencies,
+            bam_dependencies,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_num_threads_with_jito(
+        block_production_method: BlockProductionMethod,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
+        non_vote_receiver: BankingPacketReceiver,
+        tpu_vote_receiver: BankingPacketReceiver,
+        gossip_vote_receiver: BankingPacketReceiver,
+        banking_control_receiver: mpsc::Receiver<BankingControlMsg>,
+        num_workers: NonZeroUsize,
+        scheduler_config: SchedulerConfig,
+        transaction_status_sender: Option<TransactionStatusSender>,
+        replay_vote_sender: ReplayVoteSender,
+        log_messages_bytes_limit: Option<usize>,
+        bank_forks: Arc<RwLock<BankForks>>,
+        alpenglow_slot_clock: SharedAlpenglowSlotClock,
+        prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
+        filter_keys: Arc<HashSet<Pubkey>>,
+        priority_floor: Arc<SchedulerPriorityFloor>,
+        bundle_account_locker: BundleAccountLocker,
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
+        bam_dependencies: Option<BamDependencies>,
+        jito_dependencies: Option<crate::jito_scheduler::JitoBindingsDependencies>,
     ) -> BankingStageHandle {
         let committer = Committer::new(
             transaction_status_sender,
@@ -417,6 +467,7 @@ impl BankingStage {
             bundle_account_locker,
             tip_processing_dependencies,
             bam_dependencies,
+            jito_dependencies,
         };
 
         // Spawn the manager thread.
@@ -480,6 +531,20 @@ impl BankingStage {
             match res.unwrap() {
                 Ok(()) => info!("Banking worker exited cleanly; name={name}"),
                 Err(err) => error!("Banking worker exited with error; name={name}; err={err:?}"),
+            }
+        }
+
+        // No old consumer can execute after this ownership release.
+        if let Some(dependencies) = &self.jito_dependencies {
+            if dependencies.control.active.swap(false, Ordering::AcqRel) {
+                self.bam_dependencies.as_ref().unwrap().bam_enabled.store(
+                    crate::bam_dependencies::BamConnectionState::Disconnected as u8,
+                    Ordering::Release,
+                );
+                dependencies
+                    .control
+                    .reconnect_bam
+                    .store(true, Ordering::Release);
             }
         }
 
@@ -834,8 +899,38 @@ mod external {
                 progress_tracker,
                 check_workers,
                 workers,
+                jito,
             }: AgaveSession,
         ) -> Result<Vec<JoinHandle<()>>, ()> {
+            if self.jito_dependencies.is_some() != jito.is_some() {
+                error!("Jito scheduler session does not match validator mode");
+                return Err(());
+            }
+            if let Some(dependencies) = &self.jito_dependencies {
+                dependencies.control.active.store(true, Ordering::Release);
+                self.bam_dependencies.as_ref().unwrap().bam_enabled.store(
+                    crate::bam_dependencies::BamConnectionState::Disconnected as u8,
+                    Ordering::Release,
+                );
+                dependencies
+                    .control
+                    .reconnect_bam
+                    .store(true, Ordering::Release);
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !dependencies
+                    .control
+                    .bundle_stage_paused
+                    .load(Ordering::Acquire)
+                {
+                    if std::time::Instant::now() >= deadline
+                        || self.banking_shutdown_signal.is_cancelled()
+                    {
+                        // Centralized cycle_threads cleanup resets the BAM stream mode.
+                        return Err(());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
             let bundle_account_locker = self.bundle_account_locker.clone();
             let filter_keys = Arc::new(self.filter_keys.iter().copied().collect::<AHashSet<_>>());
             info!("Spawning external scheduler");
@@ -855,6 +950,7 @@ mod external {
                     allocator,
                     pack_to_worker,
                     worker_to_pack,
+                    jito,
                 },
             ) in workers.into_iter().enumerate()
             {
@@ -872,7 +968,14 @@ mod external {
                     self.poh_recorder.read().unwrap().shared_leader_state(),
                     bundle_account_locker.clone(),
                     filter_keys.clone(),
-                );
+                )
+                .with_jito_worker(jito)
+                .with_jito_control(
+                    self.jito_dependencies
+                        .as_ref()
+                        .map(|dependencies| dependencies.control.clone()),
+                )
+                .with_tip_processing_deps(self.tip_processing_dependencies.clone());
 
                 worker_metrics.push(consume_worker.metrics_handle());
                 threads.push(
@@ -939,6 +1042,35 @@ mod external {
                 (poh.shared_leader_state(), poh.ticks_per_slot())
             };
             let migration_status = self.bank_forks.read().unwrap().migration_status();
+            let jito_progress = jito.map(|session| {
+                let dependencies = self.jito_dependencies.clone().unwrap();
+                let bam = self.bam_dependencies.clone().unwrap();
+                let agave_scheduling_utils::handshake::JitoAgaveSession {
+                    allocator,
+                    ingress,
+                    completion,
+                    progress,
+                } = session;
+                let bam_state = bam.bam_enabled.clone();
+                let jito_control = dependencies.control.clone();
+                threads.push(crate::jito_scheduler::bridge::spawn(
+                    self.worker_exit_signal.clone(),
+                    dependencies,
+                    bam,
+                    allocator,
+                    ingress,
+                    completion,
+                    shared_leader_state.clone(),
+                    Consumer::new(
+                        self.committer.clone(),
+                        self.transaction_recorder.clone(),
+                        self.log_messages_bytes_limit,
+                    ),
+                    self.tip_processing_dependencies.clone(),
+                    filter_keys.clone(),
+                ));
+                (progress, bam_state, jito_control)
+            });
             threads.push(progress_tracker::spawn(
                 self.worker_exit_signal.clone(),
                 progress_tracker,
@@ -947,6 +1079,7 @@ mod external {
                 ticks_per_slot,
                 migration_status,
                 self.alpenglow_slot_clock.clone(),
+                jito_progress,
             ));
 
             Ok(threads)

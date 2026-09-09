@@ -1,7 +1,8 @@
 use {
     crate::handshake::{
-        ClientHandshakeError, ClientLogon, ClientSession, ClientWorkerSession,
-        shared::{LOGON_FAILURE, MAX_WORKERS, VERSION},
+        ClientHandshakeError, ClientLogon, ClientSession, ClientWorkerSession, JitoClientSession,
+        JitoClientWorkerSession, logon_flags,
+        shared::{LOGON_FAILURE, LOGON_SUCCESS, MAX_WORKERS, VERSION},
     },
     agave_scheduler_bindings::{CheckWorkerToPackMessage, PackToCheckWorkerMessage},
     libc::CMSG_LEN,
@@ -27,7 +28,7 @@ const GLOBAL_SHMEM: usize = 5;
 ///
 /// Each FD is 4 bytes so we simply multiply the number of shmem objects by 4 to get the control
 /// message buffer size.
-const CMSG_MAX_SIZE: usize = (GLOBAL_SHMEM + MAX_WORKERS * 2) * 4;
+const CMSG_MAX_SIZE: usize = (GLOBAL_SHMEM + 3 + MAX_WORKERS * 4) * 4;
 
 /// Connects to the scheduler server on the given IPC path.
 ///
@@ -105,28 +106,44 @@ fn recv_response(stream: &mut UnixStream) -> Result<Vec<File>, ClientHandshakeEr
         MsgFlags::empty(),
     )?;
 
-    // Check for failure.
-    let buf = msg.iovs().next().unwrap();
-    if buf[0] == LOGON_FAILURE {
-        let reason_len = usize::from(buf[1]);
-        #[allow(clippy::arithmetic_side_effects)]
-        let reason = std::str::from_utf8(&buf[2..2 + reason_len]).unwrap();
-
-        return Err(ClientHandshakeError::Rejected(reason.to_string()));
+    let truncated = msg.flags.contains(MsgFlags::MSG_CTRUNC);
+    // Own every received descriptor immediately, including malformed responses.
+    // This ensures that errors close descriptors rather than leaking them.
+    let mut files = Vec::new();
+    for cmsg in msg.cmsgs()? {
+        if let ControlMessageOwned::ScmRights(fds) = cmsg {
+            files.extend(fds.into_iter().map(|fd| {
+                // SAFETY: the descriptor was just received from SCM_RIGHTS.
+                unsafe { File::from_raw_fd(fd) }
+            }));
+        }
     }
-
-    // Extract FDs and immediately wrap in `File` for RAII ownership.
-    let mut cmsgs = msg.cmsgs().unwrap();
-    let fds = match cmsgs.next() {
-        Some(ControlMessageOwned::ScmRights(fds)) => fds,
-        Some(msg) => panic!("Unexpected; msg={msg:?}"),
-        None => panic!(),
-    };
-    // SAFETY: FDs were just received via `ScmRights` and are valid.
-    let files = fds
-        .into_iter()
-        .map(|fd| unsafe { File::from_raw_fd(fd) })
-        .collect();
+    let bytes_read = msg.bytes;
+    let buf = msg
+        .iovs()
+        .next()
+        .ok_or(ClientHandshakeError::ProtocolViolation)?;
+    if truncated || bytes_read == 0 {
+        return Err(ClientHandshakeError::ProtocolViolation);
+    }
+    match buf[0] {
+        LOGON_FAILURE => {
+            if bytes_read < 2 {
+                return Err(ClientHandshakeError::ProtocolViolation);
+            }
+            let end = 2usize
+                .checked_add(usize::from(buf[1]))
+                .ok_or(ClientHandshakeError::ProtocolViolation)?;
+            if end > bytes_read {
+                return Err(ClientHandshakeError::ProtocolViolation);
+            }
+            let reason = std::str::from_utf8(&buf[2..end])
+                .map_err(|_| ClientHandshakeError::ProtocolViolation)?;
+            return Err(ClientHandshakeError::Rejected(reason.to_string()));
+        }
+        LOGON_SUCCESS if !files.is_empty() => {}
+        _ => return Err(ClientHandshakeError::ProtocolViolation),
+    }
 
     Ok(files)
 }
@@ -135,10 +152,24 @@ pub fn setup_session(
     logon: &ClientLogon,
     files: Vec<File>,
 ) -> Result<ClientSession, ClientHandshakeError> {
-    if files.len() < GLOBAL_SHMEM {
+    if logon.flags != 0 && logon.flags != logon_flags::JITO {
         return Err(ClientHandshakeError::ProtocolViolation);
     }
-    let (global_files, worker_files) = files.split_at(GLOBAL_SHMEM);
+    let jito_enabled = logon.flags == logon_flags::JITO;
+    let worker_file_count = if jito_enabled { 4usize } else { 2 };
+    let worker_end = logon
+        .worker_count
+        .checked_mul(worker_file_count)
+        .and_then(|count| GLOBAL_SHMEM.checked_add(count))
+        .ok_or(ClientHandshakeError::ProtocolViolation)?;
+    let expected_files = worker_end
+        .checked_add(if jito_enabled { 3 } else { 0 })
+        .ok_or(ClientHandshakeError::ProtocolViolation)?;
+    if logon.worker_count == 0 || files.len() != expected_files {
+        return Err(ClientHandshakeError::ProtocolViolation);
+    }
+    let (global_files, rest) = files.split_at(GLOBAL_SHMEM);
+    let (worker_files, jito_files) = rest.split_at(worker_end.checked_sub(GLOBAL_SHMEM).unwrap());
     let [
         allocator_file,
         tpu_to_pack_file,
@@ -155,17 +186,27 @@ pub fn setup_session(
         .map(|_| Allocator::join(allocator_file))
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Ensure worker file count matches expectations.
-    if worker_files.is_empty()
-        || !worker_files.len().is_multiple_of(2)
-        || worker_files.len() / 2 != logon.worker_count
-    {
-        return Err(ClientHandshakeError::ProtocolViolation);
-    }
+    let jito = if jito_enabled {
+        let [ingress, completion, progress] = jito_files else {
+            return Err(ClientHandshakeError::ProtocolViolation);
+        };
+        // SAFETY: the addon version and exact descriptor count were validated;
+        // the trusted server creates these queues in this order with these types.
+        Some(unsafe {
+            JitoClientSession {
+                ingress: shaq::spsc::Consumer::join(ingress)?,
+                completion: shaq::spsc::Producer::join(completion)?,
+                progress: shaq::spsc::Consumer::join(progress)?,
+            }
+        })
+    } else {
+        None
+    };
 
     // NB: After creating & mapping the queues we are fine to drop the files as mmap will keep the
     // underlying object alive until process exit or munmap.
     let session = ClientSession {
+        jito,
         allocators,
         tpu_to_pack: unsafe { shaq::spsc::Consumer::join(tpu_to_pack_file)? },
         progress_tracker: unsafe { shaq::spsc::Consumer::join(progress_tracker_file)? },
@@ -178,15 +219,24 @@ pub fn setup_session(
             shaq::mpmc::Consumer::<CheckWorkerToPackMessage>::join(check_worker_to_pack_file)?
         },
         workers: worker_files
-            .chunks(2)
+            .chunks_exact(worker_file_count)
             .map(|window| {
-                let [pack_to_worker, worker_to_pack] = window else {
-                    panic!();
+                let jito = if jito_enabled {
+                    // SAFETY: descriptor order and addon version match the server.
+                    Some(unsafe {
+                        JitoClientWorkerSession {
+                            request: shaq::spsc::Producer::join(&window[2])?,
+                            response: shaq::spsc::Consumer::join(&window[3])?,
+                        }
+                    })
+                } else {
+                    None
                 };
-
                 Ok(ClientWorkerSession {
-                    pack_to_worker: unsafe { shaq::spsc::Producer::join(pack_to_worker)? },
-                    worker_to_pack: unsafe { shaq::spsc::Consumer::join(worker_to_pack)? },
+                    jito,
+                    // SAFETY: unchanged upstream descriptor order and message types.
+                    pack_to_worker: unsafe { shaq::spsc::Producer::join(&window[0])? },
+                    worker_to_pack: unsafe { shaq::spsc::Consumer::join(&window[1])? },
                 })
             })
             .collect::<Result<_, ClientHandshakeError>>()?,

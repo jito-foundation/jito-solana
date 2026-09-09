@@ -24,6 +24,7 @@ agave-feature-set = { workspace = true }
 agave-scheduler-bindings = { workspace = true }
 agave-transaction-view = { workspace = true }
 ahash = { workspace = true }
+jito-scheduler-bindings = { path = "../jito-scheduler-bindings" }
 rts-alloc = { workspace = true }
 shaq = { workspace = true }
 slotmap = { workspace = true }

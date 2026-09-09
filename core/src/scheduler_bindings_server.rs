@@ -3,10 +3,17 @@ use {
     tokio::sync::mpsc,
 };
 
-pub(crate) fn spawn(path: &Path, session_sender: mpsc::Sender<BankingControlMsg>) {
+pub(crate) fn spawn(
+    path: &Path,
+    session_sender: mpsc::Sender<BankingControlMsg>,
+    require_jito: bool,
+) {
     // NB: Panic on start if we can't bind.
     let _ = std::fs::remove_file(path);
     let mut listener = handshake::server::Server::new(path).unwrap();
+    if require_jito {
+        listener.require_jito();
+    }
 
     std::thread::Builder::new()
         .name("solBindingSrv".to_string())

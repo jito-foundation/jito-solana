@@ -146,6 +146,155 @@ fn test_local_cluster_start_and_exit() {
     assert_eq!(cluster.validators.len(), num_nodes);
 }
 
+/// A validator must keep producing confirmed transfers through the external scheduler,
+/// restore its internal scheduler after client loss, and accept a fresh external session.
+#[test]
+#[serial]
+fn test_jito_scheduler_bindings_transfer_fallback_and_reconnect() {
+    use {
+        agave_scheduling_utils::handshake::client,
+        jito_scheduler::{SchedulerError, SchedulerStats},
+        solana_rpc_client_api::config::RpcSendTransactionConfig,
+    };
+
+    struct RunningScheduler {
+        exit: Arc<AtomicBool>,
+        thread: Option<JoinHandle<Result<SchedulerStats, SchedulerError>>>,
+    }
+    impl RunningScheduler {
+        fn attach(path: &Path) -> Self {
+            let mut logon = jito_scheduler::client_logon(2, 2);
+            logon.allocator_size = 64 * 1024 * 1024;
+            let mut session = client::connect(path, logon, Duration::from_secs(10)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            // Progress is published only after the validator has installed this session's
+            // workers and paused its internal scheduler. Wait for a real leader bank.
+            loop {
+                if session
+                    .jito
+                    .as_mut()
+                    .unwrap()
+                    .progress
+                    .try_read()
+                    .is_some_and(|message| {
+                        message.progress.leader_state == agave_scheduler_bindings::LEADER_READY
+                            && message.bank_id != u64::MAX
+                    })
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "external session did not acquire a leader bank"
+                );
+                sleep(Duration::from_millis(10));
+            }
+            let exit = Arc::new(AtomicBool::new(false));
+            let client_exit = exit.clone();
+            let thread = std::thread::spawn(move || {
+                jito_scheduler::run(session, client_exit, Default::default())
+            });
+            Self {
+                exit,
+                thread: Some(thread),
+            }
+        }
+
+        fn stop(&mut self) -> SchedulerStats {
+            self.exit.store(true, Ordering::Release);
+            self.thread.take().unwrap().join().unwrap().unwrap()
+        }
+    }
+    impl Drop for RunningScheduler {
+        fn drop(&mut self) {
+            self.exit.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    agave_logger::setup_with_default(RUST_LOG_FILTER);
+    let validator_config = ValidatorConfig {
+        jito_scheduler_bindings: true,
+        ..ValidatorConfig::default_for_test()
+    };
+    let cluster = LocalCluster::new(
+        &mut ClusterConfig {
+            node_stakes: vec![DEFAULT_NODE_STAKE],
+            mint_lamports: DEFAULT_MINT_LAMPORTS,
+            validator_configs: make_identical_validator_configs(&validator_config, 1),
+            ticks_per_slot: 16,
+            ..ClusterConfig::default()
+        },
+        SocketAddrSpace::Unspecified,
+    );
+    let identity = *cluster.entry_point_info.pubkey();
+    let ipc_path = cluster.validators[&identity]
+        .info
+        .ledger_path
+        .join("scheduler_bindings.ipc");
+    let rpc = cluster
+        .build_rpc_client_with_commitment(&identity, CommitmentConfig::confirmed())
+        .unwrap();
+    let transfer_and_confirm = || {
+        let recipient = Pubkey::new_unique();
+        let blockhash = rpc.get_latest_blockhash().unwrap();
+        let transaction = system_transaction::transfer(
+            &cluster.funding_keypair,
+            &recipient,
+            1_000_000,
+            blockhash,
+        );
+        let signature = transaction.signatures[0];
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let mut last_send = Instant::now() - Duration::from_secs(1);
+        loop {
+            if last_send.elapsed() >= Duration::from_millis(250) {
+                rpc.send_transaction_with_config(
+                    &transaction,
+                    RpcSendTransactionConfig {
+                        skip_preflight: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                last_send = Instant::now();
+            }
+            if let Some(result) = rpc
+                .get_signature_status_with_commitment(&signature, CommitmentConfig::confirmed())
+                .unwrap()
+            {
+                result.unwrap();
+                assert_eq!(
+                    rpc.get_balance_with_commitment(&recipient, CommitmentConfig::confirmed())
+                        .unwrap()
+                        .value,
+                    1_000_000
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "transfer {signature} was not confirmed"
+            );
+            sleep(Duration::from_millis(50));
+        }
+    };
+
+    let mut external = RunningScheduler::attach(&ipc_path);
+    transfer_and_confirm();
+    let first = external.stop();
+    assert!(first.received_transactions > 0 && first.completed_batches > 0);
+    // No external client remains to execute this transaction. Confirmation requires the
+    // validator's heartbeat timeout to stop the old workers and restore internal scheduling.
+    transfer_and_confirm();
+    let mut reconnected = RunningScheduler::attach(&ipc_path);
+    transfer_and_confirm();
+    let second = reconnected.stop();
+    assert!(second.received_transactions > 0 && second.completed_batches > 0);
+}
+
 /// Baseline multi-node transaction propagation and confirmation across every validator.
 /// Later spend tests are narrower; this is the broad cluster-sanity reference point.
 #[test]
