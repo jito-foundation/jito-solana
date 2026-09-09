@@ -21,7 +21,9 @@ use {
         },
         cost_update_service::CostUpdate,
         repair::{
-            ancestor_hashes_service::AncestorHashesReplayUpdateSender,
+            ancestor_hashes_service::{
+                AncestorHashesReplayUpdate, AncestorHashesReplayUpdateSender,
+            },
             cluster_slot_state_verifier::*,
             duplicate_repair_status::AncestorDuplicateSlotToRepair,
             repair_service::{
@@ -2225,6 +2227,7 @@ impl ReplayStage {
     ) {
         let root = bank_forks.read().unwrap().root();
         for AncestorDuplicateSlotToRepair {
+            requested_slot,
             slot_to_repair: (epoch_slots_frozen_slot, epoch_slots_frozen_hash),
             request_type,
         } in ancestor_duplicate_slots_receiver.try_iter()
@@ -2267,6 +2270,19 @@ impl ReplayStage {
                 purge_repair_slot_counter,
                 SlotStateUpdate::EpochSlotsFrozen(epoch_slots_frozen_state),
             );
+            if requested_slot != epoch_slots_frozen_slot
+                && requested_slot > root
+                && progress.is_dead(requested_slot).unwrap_or(false)
+            {
+                // The sampled ancestor may be on a different local fork, or may
+                // have been repaired while this request was outstanding. Its
+                // repair need not replay the still-dead child. Request another
+                // sample because a new dead notification could have been ignored
+                // while the previous request was active.
+                let _ = ancestor_hashes_replay_update_sender.send(
+                    AncestorHashesReplayUpdate::DeadDuplicateConfirmed(requested_slot),
+                );
+            }
         }
     }
 

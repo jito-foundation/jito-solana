@@ -8,6 +8,12 @@ use {
             tower_storage::{FileTowerStorage, NullTowerStorage},
             tree_diff::TreeDiff,
         },
+        repair::{
+            ancestor_hashes_service::AncestorHashesReplayUpdate,
+            duplicate_repair_status::{
+                AncestorRequestDecision, AncestorRequestStatus, AncestorRequestType,
+            },
+        },
         replay_stage::ReplayStage,
         vote_simulator::{self, VoteSimulator},
     },
@@ -3175,6 +3181,680 @@ fn test_purge_unconfirmed_duplicate_slots_and_reattach() {
         &mut replay_timing,
     );
     assert_eq!(bank_forks.read().unwrap().active_bank_slots(), vec![7]);
+}
+
+#[test_case(true, false, false; "wrong_parent_correct_child")]
+#[test_case(false, false, false; "correct_parent_wrong_child")]
+#[test_case(true, true, false; "parent_repaired_before_ancestor_reply")]
+#[test_case(false, false, true; "pruned_request_child_now_dead")]
+#[test_case(true, true, true; "pruned_parent_reply_child_now_dead")]
+fn test_dead_duplicate_repair_waits_for_ancestor_sample(
+    wrong_parent: bool,
+    stale_parent_sample: bool,
+    pruned_request: bool,
+) {
+    let leader = Keypair::new();
+    let mut genesis = create_genesis_config_with_leader(10_000, &leader.pubkey(), 1_000);
+    genesis.genesis_config.ticks_per_slot = 4;
+    genesis.genesis_config.poh_config.hashes_per_tick = None;
+    let new_forks = || {
+        let bank = Bank::new_for_tests(&genesis.genesis_config);
+        bank.freeze();
+        BankForks::new_rw_arc(bank)
+    };
+    let reference_forks = new_forks();
+    let bank_forks = new_forks();
+    let root_bank = bank_forks.read().unwrap().root_bank();
+    let root_hash = root_bank.hash();
+    assert_eq!(
+        reference_forks.read().unwrap().root_bank().hash(),
+        root_hash
+    );
+    let leader_schedule_cache = LeaderScheduleCache::new_from_bank(&root_bank);
+    let reference_path = get_tmp_ledger_path_auto_delete!();
+    let reference = Blockstore::open(reference_path.path()).unwrap();
+    let ledger_path = get_tmp_ledger_path_auto_delete!();
+    let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+    reference.insert_bank_hash(0, root_hash, true);
+    blockstore.insert_bank_hash(0, root_hash, true);
+    let verification_pool = ReplayVerificationWorkerPool::new(1);
+
+    let make_shreds = |slot, entries: &[Entry], parent_root| {
+        Shredder::new(slot, slot - 1, 0, 0)
+            .unwrap()
+            .make_merkle_shreds_from_entries(
+                &leader,
+                entries,
+                true,
+                parent_root,
+                0,
+                0,
+                &ReedSolomonCache::default(),
+                &mut ProcessShredsStats::default(),
+            )
+            .into_iter()
+            .filter(Shred::is_data)
+            .collect::<Vec<_>>()
+    };
+    let insert_bank = |forks: &RwLock<BankForks>, slot| {
+        let parent = forks.read().unwrap().get(slot - 1).unwrap();
+        let slot_leader = leader_schedule_cache
+            .slot_leader_at(slot, Some(&parent))
+            .unwrap();
+        let bank = Bank::new_from_parent(parent, slot_leader, slot);
+        forks.write().unwrap().insert(bank);
+    };
+    let replay_bank = |ledger: &Blockstore, forks: &RwLock<BankForks>, slot| {
+        let bank = forks.read().unwrap().get_with_scheduler(slot).unwrap();
+        assert!(matches!(
+            check_chained_block_id(ledger, &bank, &MigrationStatus::default()),
+            ChainedBlockIdCheck::Pass
+        ));
+        confirm_full_slot(
+            ledger,
+            &bank,
+            0,
+            &verification_pool,
+            &ProcessOptions {
+                run_verification: true,
+                ..ProcessOptions::default()
+            },
+            &mut ConfirmationProgress::new(bank.parent().unwrap().last_blockhash()),
+            None,
+            None,
+            &mut ExecuteTimings::default(),
+            &MigrationStatus::default(),
+        )
+        .unwrap();
+        bank.set_block_id(ledger.get_last_shred_merkle_root(slot).unwrap());
+        bank.freeze();
+        ledger.insert_bank_hash(slot, bank.hash(), false);
+        bank.hash()
+    };
+
+    // Both parent variants are valid blocks, with different PoH and bank hashes.
+    let parent_ticks = 2 * root_bank.ticks_per_slot() - root_bank.tick_height();
+    let parent_entries = entry::create_ticks(parent_ticks, 1, root_bank.last_blockhash());
+    let bad_parent_entries = entry::create_ticks(parent_ticks, 2, root_bank.last_blockhash());
+    let parent_shreds = make_shreds(1, &parent_entries, Hash::default());
+    let bad_parent_shreds = make_shreds(1, &bad_parent_entries, Hash::default());
+    reference
+        .insert_shreds(parent_shreds.clone(), false)
+        .unwrap();
+    insert_bank(&reference_forks, 1);
+    let parent_hash = replay_bank(&reference, &reference_forks, 1);
+    let parent_root = reference.get_last_shred_merkle_root(1).unwrap().unwrap();
+    let child_entries = entry::create_ticks(
+        root_bank.ticks_per_slot(),
+        1,
+        parent_entries.last().unwrap().hash,
+    );
+    let child_shreds = make_shreds(2, &child_entries, parent_root);
+    reference
+        .insert_shreds(child_shreds.clone(), false)
+        .unwrap();
+    insert_bank(&reference_forks, 2);
+    let child_hash = replay_bank(&reference, &reference_forks, 2);
+    blockstore
+        .insert_shreds(
+            if wrong_parent {
+                bad_parent_shreds
+            } else {
+                parent_shreds.clone()
+            },
+            false,
+        )
+        .unwrap();
+    insert_bank(&bank_forks, 1);
+    let local_parent_hash = replay_bank(&blockstore, &bank_forks, 1);
+    assert_eq!(local_parent_hash == parent_hash, !wrong_parent);
+    let failing_child_shreds = if wrong_parent && !stale_parent_sample {
+        child_shreds.clone()
+    } else {
+        make_shreds(2, &child_entries, Hash::new_unique())
+    };
+
+    let mut progress = ProgressMap::default();
+    for slot in 0..=1 {
+        let bank = bank_forks.read().unwrap().get(slot).unwrap();
+        let mut p = ForkProgress::new(bank.last_blockhash(), None, None, 0, 0, None);
+        p.fork_stats.bank_hash = Some(bank.hash());
+        progress.insert(slot, p);
+    }
+    let mut fork_choice = HeaviestSubtreeForkChoice::new_from_bank_forks(bank_forks.clone());
+    let mut duplicate_slots_tracker = DuplicateSlotsTracker::default();
+    let mut duplicate_confirmed_slots = DuplicateConfirmedSlots::from([(2, child_hash)]);
+    if stale_parent_sample {
+        duplicate_confirmed_slots.insert(1, parent_hash);
+    }
+    let mut epoch_slots_frozen_slots = EpochSlotsFrozenSlots::default();
+    let mut duplicate_slots_to_repair = DuplicateSlotsToRepair::default();
+    let mut repair_counter = PurgeRepairSlotCounter::default();
+    let (ancestor_sender, ancestor_receiver) = bounded(1024);
+    let (dumped_sender, dumped_receiver) = bounded(1024);
+    let (sample_sender, sample_receiver) = bounded(1024);
+    let my_pubkey = Pubkey::new_unique();
+
+    let install_dead_child = |progress: &mut ProgressMap| {
+        blockstore
+            .insert_shreds(failing_child_shreds.clone(), false)
+            .unwrap();
+        insert_bank(&bank_forks, 2);
+        let bank = bank_forks.read().unwrap().get(2).unwrap();
+        assert!(matches!(
+            check_chained_block_id(&blockstore, &bank, &MigrationStatus::default()),
+            ChainedBlockIdCheck::Mismatch
+        ));
+        blockstore.set_dead_slot(2).unwrap();
+        let mut p = ForkProgress::new(bank.last_blockhash(), None, None, 0, 0, None);
+        p.mark_dead(DeadSlotReason::Hard);
+        progress.insert(2, p);
+    };
+    install_dead_child(&mut progress);
+    let check_state = |slot,
+                       state,
+                       fork_choice: &mut HeaviestSubtreeForkChoice,
+                       repairs: &mut DuplicateSlotsToRepair,
+                       epochs: &mut EpochSlotsFrozenSlots,
+                       tracker: &mut DuplicateSlotsTracker,
+                       counter: &mut PurgeRepairSlotCounter| {
+        check_slot_agrees_with_cluster(
+            slot,
+            0,
+            &blockstore,
+            tracker,
+            epochs,
+            fork_choice,
+            repairs,
+            &ancestor_sender,
+            counter,
+            state,
+        );
+    };
+    let dump = |repairs: &mut DuplicateSlotsToRepair,
+                progress: &mut ProgressMap,
+                counter: &mut PurgeRepairSlotCounter| {
+        let mut ancestors = bank_forks.read().unwrap().ancestors();
+        let mut descendants = bank_forks.read().unwrap().descendants();
+        ReplayStage::dump_then_repair_correct_slots(
+            repairs,
+            &mut ancestors,
+            &mut descendants,
+            progress,
+            &bank_forks,
+            &blockstore,
+            None,
+            counter,
+            &dumped_sender,
+            &my_pubkey,
+            &leader_schedule_cache,
+        );
+    };
+
+    // Preserve the first immediate attempt, then return the same failing shreds.
+    check_state(
+        2,
+        SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState::new_from_state(
+            child_hash,
+            || true,
+            || None,
+        )),
+        &mut fork_choice,
+        &mut duplicate_slots_to_repair,
+        &mut epoch_slots_frozen_slots,
+        &mut duplicate_slots_tracker,
+        &mut repair_counter,
+    );
+    dump(
+        &mut duplicate_slots_to_repair,
+        &mut progress,
+        &mut repair_counter,
+    );
+    assert_eq!(dumped_receiver.try_recv().unwrap(), vec![(2, child_hash)]);
+    assert_eq!(repair_counter.get(&2), Some(&1));
+    install_dead_child(&mut progress);
+    for _ in 0..=MAX_REPAIR_RETRY_LOOP_ATTEMPTS {
+        let dead_state = DeadState::new_from_state(
+            2,
+            &duplicate_slots_tracker,
+            &duplicate_confirmed_slots,
+            &fork_choice,
+            &epoch_slots_frozen_slots,
+        );
+        for state in [
+            SlotStateUpdate::Dead(dead_state),
+            SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState::new_from_state(
+                child_hash,
+                || true,
+                || None,
+            )),
+        ] {
+            check_state(
+                2,
+                state,
+                &mut fork_choice,
+                &mut duplicate_slots_to_repair,
+                &mut epoch_slots_frozen_slots,
+                &mut duplicate_slots_tracker,
+                &mut repair_counter,
+            );
+            if !duplicate_slots_to_repair.is_empty() {
+                // Before ancestry coordination, each notification immediately
+                // dumps this same child again and exhausts the repair budget.
+                dump(
+                    &mut duplicate_slots_to_repair,
+                    &mut progress,
+                    &mut repair_counter,
+                );
+                assert_eq!(dumped_receiver.try_recv().unwrap(), vec![(2, child_hash)]);
+                install_dead_child(&mut progress);
+            }
+        }
+    }
+    assert_eq!(repair_counter.get(&2), Some(&1));
+    let ancestor_updates: Vec<_> = ancestor_receiver.try_iter().collect();
+    assert!(!ancestor_updates.is_empty());
+    assert!(
+        ancestor_updates
+            .into_iter()
+            .all(|update| { update == AncestorHashesReplayUpdate::DeadDuplicateConfirmed(2) })
+    );
+
+    // Actual sampled bank hashes select the parent only when its frozen hash differs.
+    let sample = |sampled_child_hash| {
+        let request_type = if pruned_request {
+            AncestorRequestType::PopularPruned
+        } else {
+            AncestorRequestType::DeadDuplicateConfirmed
+        };
+        let peers = [
+            "127.0.0.1:10001".parse().unwrap(),
+            "127.0.0.1:10002".parse().unwrap(),
+        ];
+        let mut status = AncestorRequestStatus::new(peers.into_iter(), 2, request_type);
+        let hashes = vec![(2, sampled_child_hash), (1, parent_hash), (0, root_hash)];
+        assert!(
+            status
+                .add_response(&peers[0], hashes.clone(), &blockstore)
+                .is_none()
+        );
+        let decision = status.add_response(&peers[1], hashes, &blockstore).unwrap();
+        AncestorRequestDecision {
+            slot: 2,
+            request_type,
+            decision,
+        }
+        .slot_to_repair()
+        .unwrap()
+    };
+    let mut first_sample = sample(child_hash);
+    assert_eq!(
+        first_sample.slot_to_repair,
+        if wrong_parent {
+            (1, parent_hash)
+        } else {
+            (2, child_hash)
+        }
+    );
+    let apply_sample = |sample,
+                        progress: &ProgressMap,
+                        fork_choice: &mut HeaviestSubtreeForkChoice,
+                        repairs: &mut DuplicateSlotsToRepair,
+                        epochs: &mut EpochSlotsFrozenSlots,
+                        tracker: &mut DuplicateSlotsTracker,
+                        counter: &mut PurgeRepairSlotCounter| {
+        sample_sender.send(sample).unwrap();
+        ReplayStage::process_ancestor_hashes_duplicate_slots(
+            &my_pubkey,
+            &blockstore,
+            &sample_receiver,
+            tracker,
+            &duplicate_confirmed_slots,
+            epochs,
+            progress,
+            fork_choice,
+            &bank_forks,
+            repairs,
+            &ancestor_sender,
+            counter,
+        );
+    };
+    if stale_parent_sample {
+        // Hold the ancestor reply while an independent duplicate confirmation
+        // repairs its selected parent. The child can still be a bad variant.
+        check_state(
+            1,
+            SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState::new_from_state(
+                parent_hash,
+                || false,
+                || Some(local_parent_hash),
+            )),
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+        dump(
+            &mut duplicate_slots_to_repair,
+            &mut progress,
+            &mut repair_counter,
+        );
+        assert_eq!(dumped_receiver.try_recv().unwrap(), vec![(1, parent_hash)]);
+        blockstore
+            .insert_shreds(parent_shreds.clone(), false)
+            .unwrap();
+        insert_bank(&bank_forks, 1);
+        assert_eq!(replay_bank(&blockstore, &bank_forks, 1), parent_hash);
+        fork_choice.add_new_leaf_slot((1, parent_hash), Some((0, root_hash)));
+        let parent = bank_forks.read().unwrap().get(1).unwrap();
+        let mut p = ForkProgress::new(parent.last_blockhash(), None, None, 0, 0, None);
+        p.fork_stats.bank_hash = Some(parent_hash);
+        progress.insert(1, p);
+        let state = BankFrozenState::new_from_state(
+            1,
+            parent_hash,
+            &duplicate_slots_tracker,
+            &duplicate_confirmed_slots,
+            &fork_choice,
+            &epoch_slots_frozen_slots,
+        );
+        check_state(
+            1,
+            SlotStateUpdate::BankFrozen(state),
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+        install_dead_child(&mut progress);
+        let state = DeadState::new_from_state(
+            2,
+            &duplicate_slots_tracker,
+            &duplicate_confirmed_slots,
+            &fork_choice,
+            &epoch_slots_frozen_slots,
+        );
+        check_state(
+            2,
+            SlotStateUpdate::Dead(state),
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+        assert!(duplicate_slots_to_repair.is_empty());
+        // The manager ignores this request while the original query is active.
+        assert_eq!(
+            ancestor_receiver.try_recv().unwrap(),
+            AncestorHashesReplayUpdate::DeadDuplicateConfirmed(2)
+        );
+        apply_sample(
+            first_sample,
+            &progress,
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+        assert!(duplicate_slots_to_repair.is_empty());
+        assert_eq!(
+            ancestor_receiver.try_recv().unwrap(),
+            AncestorHashesReplayUpdate::DeadDuplicateConfirmed(2)
+        );
+        first_sample = sample(child_hash);
+        assert_eq!(first_sample.slot_to_repair, (2, child_hash));
+    }
+    if !wrong_parent {
+        let conflicting_hash = Hash::new_unique();
+        apply_sample(
+            sample(conflicting_hash),
+            &progress,
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+        assert!(duplicate_slots_to_repair.is_empty());
+        assert_eq!(duplicate_confirmed_slots.get(&2), Some(&child_hash));
+        assert_eq!(
+            ancestor_receiver.try_recv().unwrap(),
+            AncestorHashesReplayUpdate::DeadDuplicateConfirmed(2)
+        );
+    }
+    apply_sample(
+        first_sample,
+        &progress,
+        &mut fork_choice,
+        &mut duplicate_slots_to_repair,
+        &mut epoch_slots_frozen_slots,
+        &mut duplicate_slots_tracker,
+        &mut repair_counter,
+    );
+    dump(
+        &mut duplicate_slots_to_repair,
+        &mut progress,
+        &mut repair_counter,
+    );
+    let repair_parent = wrong_parent && !stale_parent_sample;
+    let repair_target = if repair_parent {
+        (1, parent_hash)
+    } else {
+        (2, child_hash)
+    };
+    assert_eq!(dumped_receiver.try_recv().unwrap(), vec![repair_target]);
+    assert!(bank_forks.read().unwrap().get(2).is_none());
+    assert!(!blockstore.is_dead(2));
+    assert_eq!(blockstore.is_full(2), repair_parent);
+
+    if !repair_parent {
+        // Another bad child repair must accept a fresh identical ancestor sample.
+        install_dead_child(&mut progress);
+        apply_sample(
+            sample(child_hash),
+            &progress,
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+        assert_eq!(duplicate_slots_to_repair.get(&2), Some(&child_hash));
+        dump(
+            &mut duplicate_slots_to_repair,
+            &mut progress,
+            &mut repair_counter,
+        );
+        assert_eq!(dumped_receiver.try_recv().unwrap(), vec![(2, child_hash)]);
+    }
+
+    // Repair the selected slot, reattach retained descendants, and verify exact hashes.
+    if repair_parent {
+        assert!(!blockstore.is_full(1));
+        blockstore.insert_shreds(parent_shreds, false).unwrap();
+    } else {
+        blockstore.insert_shreds(child_shreds, false).unwrap();
+    }
+    for slot in if repair_parent { 1..=2 } else { 2..=2 } {
+        ReplayStage::generate_new_bank_forks(
+            NewBankForksContext {
+                blockstore: &blockstore,
+                bank_forks: &bank_forks,
+                leader_schedule_cache: &leader_schedule_cache,
+                rpc_subscriptions: None,
+                slot_status_notifier: &None,
+                migration_status: &MigrationStatus::default(),
+                my_pubkey: &my_pubkey,
+            },
+            &mut progress,
+            &mut ReplayLoopTiming::default(),
+        );
+        assert!(bank_forks.read().unwrap().get(slot).is_some());
+        let hash = replay_bank(&blockstore, &bank_forks, slot);
+        assert_eq!(hash, if slot == 1 { parent_hash } else { child_hash });
+        let bank = bank_forks.read().unwrap().get(slot).unwrap();
+        let mut p = ForkProgress::new(bank.last_blockhash(), None, None, 0, 0, None);
+        p.fork_stats.bank_hash = Some(hash);
+        progress.insert(slot, p);
+        fork_choice.add_new_leaf_slot((slot, hash), Some((bank.parent_slot(), bank.parent_hash())));
+        let state = BankFrozenState::new_from_state(
+            slot,
+            hash,
+            &duplicate_slots_tracker,
+            &duplicate_confirmed_slots,
+            &fork_choice,
+            &epoch_slots_frozen_slots,
+        );
+        check_state(
+            slot,
+            SlotStateUpdate::BankFrozen(state),
+            &mut fork_choice,
+            &mut duplicate_slots_to_repair,
+            &mut epoch_slots_frozen_slots,
+            &mut duplicate_slots_tracker,
+            &mut repair_counter,
+        );
+    }
+    assert_eq!(
+        bank_forks.read().unwrap().get(2).unwrap().parent_hash(),
+        parent_hash
+    );
+    assert_eq!(fork_choice.best_overall_slot(), (2, child_hash));
+    assert!(blockstore.is_duplicate_confirmed(1));
+    assert!(blockstore.is_duplicate_confirmed(2));
+    assert!(duplicate_slots_to_repair.is_empty());
+    assert!(!repair_counter.contains_key(&2));
+}
+
+#[test_case(false, false; "dead_request_epoch_confirmation")]
+#[test_case(false, true; "dead_request_direct_confirmation")]
+#[test_case(true, false; "pruned_request_epoch_confirmation")]
+#[test_case(true, true; "pruned_request_direct_confirmation")]
+fn test_ancestor_repair_target_on_another_local_fork(
+    pruned_request: bool,
+    strong_confirmation: bool,
+) {
+    let mut simulator = VoteSimulator::new(1);
+    simulator.fill_bank_forks(tr(0) / tr(1) / tr(2), &HashMap::new(), true);
+    simulator.fill_bank_forks(tr(2) / tr(3), &HashMap::new(), false);
+    let VoteSimulator {
+        bank_forks,
+        mut progress,
+        ..
+    } = simulator;
+    let ledger_path = get_tmp_ledger_path_auto_delete!();
+    let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+    let root_bank = bank_forks.read().unwrap().root_bank();
+    for slot in 0..=2 {
+        blockstore.insert_bank_hash(
+            slot,
+            bank_forks.read().unwrap().get(slot).unwrap().hash(),
+            false,
+        );
+    }
+    blockstore.set_dead_slot(3).unwrap();
+    progress
+        .get_mut(&3)
+        .unwrap()
+        .mark_dead(DeadSlotReason::Hard);
+    let parent_hash = Hash::new_unique();
+    let child_hash = Hash::new_unique();
+    let request_type = if pruned_request {
+        AncestorRequestType::PopularPruned
+    } else {
+        AncestorRequestType::DeadDuplicateConfirmed
+    };
+    let peers = [
+        "127.0.0.1:10001".parse().unwrap(),
+        "127.0.0.1:10002".parse().unwrap(),
+    ];
+    let mut status = AncestorRequestStatus::new(peers.into_iter(), 3, request_type);
+    // The cluster's fork is 0 -> 1 -> 3; our dead bank instead descends from 2.
+    let hashes = vec![(3, child_hash), (1, parent_hash), (0, root_bank.hash())];
+    assert!(
+        status
+            .add_response(&peers[0], hashes.clone(), &blockstore)
+            .is_none()
+    );
+    let decision = status.add_response(&peers[1], hashes, &blockstore).unwrap();
+    let sample = AncestorRequestDecision {
+        slot: 3,
+        request_type,
+        decision,
+    }
+    .slot_to_repair()
+    .unwrap();
+    assert_eq!(sample.slot_to_repair, (1, parent_hash));
+    assert!(
+        !bank_forks
+            .read()
+            .unwrap()
+            .get(3)
+            .unwrap()
+            .ancestors
+            .contains_key(&1)
+    );
+
+    let mut fork_choice = HeaviestSubtreeForkChoice::new_from_bank_forks(bank_forks.clone());
+    let mut tracker = DuplicateSlotsTracker::default();
+    let mut epochs = EpochSlotsFrozenSlots::default();
+    let confirmed = if strong_confirmation {
+        DuplicateConfirmedSlots::from([(3, child_hash)])
+    } else {
+        DuplicateConfirmedSlots::default()
+    };
+    let mut repairs = DuplicateSlotsToRepair::default();
+    let mut counter = PurgeRepairSlotCounter::from([(3, 1)]);
+    let (ancestor_sender, ancestor_receiver) = bounded(1024);
+    let (sample_sender, sample_receiver) = bounded(1024);
+    sample_sender.send(sample).unwrap();
+    let my_pubkey = Pubkey::new_unique();
+    ReplayStage::process_ancestor_hashes_duplicate_slots(
+        &my_pubkey,
+        &blockstore,
+        &sample_receiver,
+        &mut tracker,
+        &confirmed,
+        &mut epochs,
+        &progress,
+        &mut fork_choice,
+        &bank_forks,
+        &mut repairs,
+        &ancestor_sender,
+        &mut counter,
+    );
+    assert_eq!(repairs.get(&1), Some(&parent_hash));
+    assert_eq!(
+        ancestor_receiver.try_recv().unwrap(),
+        AncestorHashesReplayUpdate::DeadDuplicateConfirmed(3)
+    );
+
+    // Repairing this selected target does not purge or replay the original child.
+    let mut ancestors = bank_forks.read().unwrap().ancestors();
+    let mut descendants = bank_forks.read().unwrap().descendants();
+    let (dumped_sender, dumped_receiver) = bounded(1024);
+    ReplayStage::dump_then_repair_correct_slots(
+        &mut repairs,
+        &mut ancestors,
+        &mut descendants,
+        &mut progress,
+        &bank_forks,
+        &blockstore,
+        None,
+        &mut counter,
+        &dumped_sender,
+        &my_pubkey,
+        &LeaderScheduleCache::new_from_bank(&root_bank),
+    );
+    assert_eq!(dumped_receiver.try_recv().unwrap(), vec![(1, parent_hash)]);
+    assert!(bank_forks.read().unwrap().get(3).is_some());
+    assert!(progress.is_dead(3).unwrap());
+    assert!(blockstore.is_dead(3));
+    assert_eq!(counter.get(&3), Some(&1));
 }
 
 #[test]
