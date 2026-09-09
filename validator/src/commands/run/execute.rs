@@ -804,6 +804,7 @@ pub fn execute(
     let bam_url = Arc::new(ArcSwap::from_pointee(
         crate::commands::bam::extract_bam_url(matches)?,
     ));
+    let bam_registry_url = crate::commands::bam::extract_bam_registry_url(matches)?;
 
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms =
@@ -987,6 +988,7 @@ pub fn execute(
         multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
         tip_manager_config,
         bam_url,
+        bam_registry_url,
         disable_multicast_shred_check: matches.is_present("disable_multicast_shred_check"),
     };
     validator_config

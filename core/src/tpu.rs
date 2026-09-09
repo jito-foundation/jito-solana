@@ -5,6 +5,7 @@ use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         bam_dependencies::{BamConnectionState, BamDependencies},
+        bam_discovery::BamDiscovery,
         bam_manager::BamManager,
         banking_stage::{
             BankingControlMsg, BankingStage, BankingStageHandle,
@@ -133,6 +134,7 @@ pub struct Tpu {
     bundle_stage: BundleStage,
     bundle_sigverify_stage: BundleSigverifyStage,
     bam_manager: Option<BamManager>,
+    bam_discovery: Option<BamDiscovery>,
 }
 
 impl Tpu {
@@ -194,6 +196,7 @@ impl Tpu {
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
+        bam_registry_url: Option<String>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -433,6 +436,28 @@ impl Tpu {
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
+        // Discovery only makes sense where BamManager will actually run, so it
+        // reuses the same exclusion above.
+        let bam_discovery = match (&bam_dependencies, &bam_registry_url) {
+            (Some(_), Some(registry_url)) => {
+                // An explicit --bam-url wins outright, since the operator has
+                // already named the node to use. Say so rather than leaving
+                // them to wonder why discovery never ran.
+                if bam_url.load().is_some() {
+                    warn!("BAM node discovery disabled: --bam-url overrides --bam-registry-url");
+                    None
+                } else {
+                    Some(BamDiscovery::new(
+                        exit.clone(),
+                        bam_url.clone(),
+                        bam_enabled.clone(),
+                        registry_url.clone(),
+                    ))
+                }
+            }
+            _ => None,
+        };
+
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
             poh_recorder.clone(),
@@ -567,6 +592,7 @@ impl Tpu {
             bundle_stage,
             bundle_sigverify_stage,
             bam_manager,
+            bam_discovery,
         }
     }
 
@@ -587,6 +613,7 @@ impl Tpu {
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
             self.bam_manager.map_or(Ok(()), BamManager::join),
+            self.bam_discovery.map_or(Ok(()), BamDiscovery::join),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
