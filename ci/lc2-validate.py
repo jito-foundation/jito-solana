@@ -27,6 +27,10 @@ COUNT = 100
 OVERALL_SECONDS = 240 * 60
 LOG_FILTER = ('error,solana_core::replay_stage=warn,'
               'solana_local_cluster=info,local_cluster=info,lc2_diagnostic=info')
+NEXTEST_TERMINAL_STATUS = re.compile(
+    r'^\s*(PASS|FAIL|TIMEOUT|LEAK|EXECFAIL|SIG[A-Z0-9]+)\s+\[[^\]]+\]\s+'
+    r'\[\s*(\d+)/(\d+)\]\s+\(\s*1/1\)\s+'
+    rf'solana-local-cluster::local_cluster {re.escape(TEST)}\s*$')
 
 
 def save(path, data):
@@ -163,6 +167,32 @@ def process_sample(parent, binary):
                 'a specific runtime or stage.'}
 
 
+def report_nextest_progress(stream, seen, counts, finished=False):
+    """Observe complete native status lines; JUnit remains the acceptance source."""
+    while True:
+        offset = stream.tell()
+        line = stream.readline()
+        if not line:
+            return
+        if not finished and not line.endswith(b'\n'):
+            stream.seek(offset)
+            return
+        native_line = line.decode(errors='replace').strip()
+        match = NEXTEST_TERMINAL_STATUS.fullmatch(native_line)
+        if match is None:
+            continue
+        status, iteration, total = match.groups()
+        iteration, total = int(iteration), int(total)
+        if total != COUNT or not 1 <= iteration <= total or iteration in seen:
+            continue
+        seen.add(iteration)
+        counts[status] += 1
+        print(json.dumps({'event': 'nextest_status', 'iteration': iteration,
+                          'observed_completed': len(seen), 'total': total,
+                          'observed_status_counts': dict(counts),
+                          'native_status_line': native_line}), flush=True)
+
+
 def execute(argv, repo, out, label, env, deadline, timeout, binary=None, check=True):
     argv = [str(arg) for arg in argv]
     log = out / (label + '.log')
@@ -174,11 +204,15 @@ def execute(argv, repo, out, label, env, deadline, timeout, binary=None, check=T
         raise TimeoutError('Overall validation deadline reached')
     print(json.dumps({'event': 'start', 'label': label, **record}), flush=True)
     samples = (out / 'processes.jsonl').open('a') if binary else None
+    progress_stream = None
+    seen, counts = set(), Counter()
     try:
         with log.open('wb') as stream:
             process = subprocess.Popen(argv, cwd=repo, env=env, stdout=stream,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             try:
+                if label == 'stress':
+                    progress_stream = log.open('rb')
                 next_sample, next_progress = start, start + 60
                 while process.poll() is None:
                     now = time.monotonic()
@@ -194,6 +228,8 @@ def execute(argv, repo, out, label, env, deadline, timeout, binary=None, check=T
                         print(json.dumps({'event': 'running', 'label': label,
                                           'elapsed_s': now - start}), flush=True)
                         next_progress = now + 60
+                    if progress_stream:
+                        report_nextest_progress(progress_stream, seen, counts)
                     try:
                         process.wait(timeout=max(0, min(1, end - time.monotonic())))
                     except subprocess.TimeoutExpired:
@@ -203,11 +239,15 @@ def execute(argv, repo, out, label, env, deadline, timeout, binary=None, check=T
                 stop(process)
                 raise
             finally:
+                if progress_stream:
+                    report_nextest_progress(progress_stream, seen, counts, finished=True)
                 record['elapsed_s'] = time.monotonic() - start
                 record['process_exit_code'] = process.returncode
                 record['exit_code'] = 124 if record.get('timed_out') else process.returncode
                 save(out / (label + '.json'), record)
     finally:
+        if progress_stream:
+            progress_stream.close()
         if samples:
             samples.close()
     print(json.dumps({'event': 'end', 'label': label, **record}), flush=True)
