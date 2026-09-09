@@ -369,7 +369,12 @@ where
                     // is never called so `pull_into_prio_graph` never drains the
                     // priority queue. Drain leftover batch entries here to avoid
                     // stale batches accumulating until the next slot change.
-                    if self.bam_controller {
+                    if self.bam_controller
+                        && matches!(
+                            BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire)),
+                            BamConnectionState::Disconnected | BamConnectionState::Connecting
+                        )
+                    {
                         while let Some(id) = self.container.pop() {
                             self.container.remove_by_id(id.id);
                         }
@@ -1234,14 +1239,22 @@ mod tests {
     }
 
     #[test]
-    fn test_bam_controller_process_transactions_no_panic() {
+    fn test_bam_controller_handoff() {
         use crate::banking_stage::transaction_scheduler::{
-            bam_receive_and_buffer::BamReceiveAndBuffer, bam_scheduler::BamScheduler,
+            bam_receive_and_buffer::{
+                BamReceiveAndBuffer,
+                tests::{set_leader_bank, transfer_batch},
+            },
+            bam_scheduler::BamScheduler,
         };
 
         let GenesisConfigInfo {
             mut genesis_config,
+<<<<<<< HEAD
             mint_keypair: _,
+=======
+            mint_keypair,
+>>>>>>> 24b2393c61 (Preserve BAM work across same-slot sad handover (#1608))
             ..
         } = create_slow_genesis_config(u64::MAX);
         genesis_config.fee_rate_governor = FeeRateGovernor::new(5000, 0);
@@ -1253,8 +1266,8 @@ mod tests {
         let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Connected as u8));
         let exit = Arc::new(AtomicBool::new(false));
 
-        let (_bundle_sender, bundle_receiver) = unbounded();
-        let (response_sender, _response_receiver) = tokio::sync::mpsc::channel(100);
+        let (bundle_sender, bundle_receiver) = unbounded();
+        let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel(100);
 
         let receive_and_buffer = BamReceiveAndBuffer::new(
             exit.clone(),
@@ -1266,7 +1279,7 @@ mod tests {
             HashSet::default(),
         );
 
-        let (consume_work_sender, _consume_work_receiver) = unbounded();
+        let (consume_work_sender, consume_work_receiver) = unbounded();
         let (_finished_work_sender, finished_work_receiver) = unbounded();
 
         let scheduler = BamScheduler::new(
@@ -1277,7 +1290,7 @@ mod tests {
             shared_leader_state.clone(),
         );
 
-        let mut scheduler_controller = SchedulerController::new(
+        let mut controller = SchedulerController::new(
             exit.clone(),
             SchedulerConfig::default(),
             decision_maker,
@@ -1287,28 +1300,63 @@ mod tests {
             vec![],
             Arc::new(SchedulerPriorityFloor::default()),
             true, // bam_controller
-            bam_enabled,
+            bam_enabled.clone(),
         );
 
         // Set leader state so DecisionMaker returns Consume
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(bank.clone()),
-            bank.tick_height(),
-            None,
-            None,
-        )));
+        set_leader_bank(&mut shared_leader_state, Some(bank.clone()));
 
-        let decision = scheduler_controller
-            .decision_maker
-            .make_consume_or_forward_decision();
+        let decision = controller.decision_maker.make_consume_or_forward_decision();
         assert!(matches!(decision, BufferedPacketsDecision::Consume(_)));
 
-        // This would have panicked before the fix: cost_pacer is None for
-        // bam_controller, but process_transactions now uses u64::MAX budget.
+        // BAM scheduling must also work without a cost pacer.
+        controller.receive_completed(&decision).unwrap();
         let now = Instant::now();
-        let result = scheduler_controller.process_transactions(&decision, None, &now);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
+
+        for (seq_id, state) in [
+            BamConnectionState::DrainingBlockEngine,
+            BamConnectionState::BlockEngineDrained,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bam_enabled.store(state as u8, Ordering::Release);
+            bundle_sender
+                .send(jito_protos::proto::bam_types::MultipleAtomicTxnBatch {
+                    batches: vec![transfer_batch(&mint_keypair, &bank, seq_id as u32)],
+                })
+                .unwrap();
+            controller.receive_and_buffer.wait_for_parsed_batches(1);
+            controller.receive_and_buffer_packets(&decision).unwrap();
+            assert_eq!(
+                controller
+                    .process_transactions(&decision, None, &now)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(controller.container.queue_size(), seq_id + 1);
+            assert!(consume_work_receiver.is_empty());
+            assert!(response_receiver.try_recv().is_err());
+        }
+        let ids = (0..2)
+            .map(|seq_id| {
+                let id = controller.container.pop().unwrap();
+                assert_eq!(controller.container.get_batch(id.id).unwrap().3, seq_id);
+                id
+            })
+            .collect::<Vec<_>>();
+        controller.container.push_ids_into_queue(ids.into_iter());
+        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Release);
+        assert_eq!(
+            controller
+                .process_transactions(&decision, None, &now)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            consume_work_receiver.try_recv().unwrap().transactions.len(),
+            1
+        );
 
         exit.store(true, Ordering::Relaxed);
     }
