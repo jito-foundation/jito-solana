@@ -1,0 +1,218 @@
+diff --git a/core/src/repair/ancestor_hashes_service.rs b/core/src/repair/ancestor_hashes_service.rs
+index 31854b6772..ce6d125142 100644
+--- a/core/src/repair/ancestor_hashes_service.rs
++++ b/core/src/repair/ancestor_hashes_service.rs
+@@ -434,6 +434,15 @@ impl AncestorHashesService {
+                         // In which case we wouldn't want to delete the newly inserted entry here.
+                         ancestor_hashes_status_ref.remove();
+                     }
++                    if let Some(ref decision) = decision {
++                        info!(
++                            target: "lc2_diagnostic",
++                            "lc2-ancestor-decision validator={} ledger={:?} \
++                             request_slot={request_slot} request_type={request_type:?} \
++                             decision={decision:?}",
++                            keypair.pubkey(), blockstore.ledger_path(),
++                        );
++                    }
+                     decision.map(|decision| AncestorRequestDecision {
+                         slot: request_slot,
+                         decision,
+@@ -860,7 +869,14 @@ impl AncestorHashesService {
+             ) else {
+                 continue;
+             };
+-            let _ = ancestor_hashes_request_socket.send_to(&request_bytes, socket_addr);
++            let send_result = ancestor_hashes_request_socket.send_to(&request_bytes, socket_addr);
++            info!(
++                target: "lc2_diagnostic",
++                "lc2-ancestor-send validator={} slot={duplicate_slot} \
++                 request_type={request_type:?} peer={pubkey} address={socket_addr} \
++                 nonce={nonce} send_result={send_result:?}",
++                identity_keypair.pubkey(),
++            );
+         }
+
+         let ancestor_request_status = AncestorRequestStatus::new(
+diff --git a/core/src/repair/cluster_slot_state_verifier.rs b/core/src/repair/cluster_slot_state_verifier.rs
+index 63f8ebcd75..65d70a0e1f 100644
+--- a/core/src/repair/cluster_slot_state_verifier.rs
++++ b/core/src/repair/cluster_slot_state_verifier.rs
+@@ -816,6 +816,14 @@ fn apply_state_changes(
+                 duplicate_slots_to_repair.insert(slot, duplicate_confirmed_hash);
+             }
+             ResultingStateChange::DuplicateConfirmedSlotMatchesCluster(bank_frozen_hash) => {
++                if let Some(attempts) = purge_repair_slot_counter.get(&slot) {
++                    info!(
++                        target: "lc2_diagnostic",
++                        "lc2-recovered ledger={:?} slot={slot} hash={bank_frozen_hash} \
++                         attempts={attempts}",
++                        blockstore.ledger_path(),
++                    );
++                }
+                 not_duplicate_confirmed_frozen_hash = None;
+                 // When we detect that our frozen slot matches the cluster version (note this
+                 // will catch both bank frozen first -> confirmation, or confirmation first ->
+@@ -831,6 +839,12 @@ fn apply_state_changes(
+                 purge_repair_slot_counter.remove(&slot);
+             }
+             ResultingStateChange::SendAncestorHashesReplayUpdate(ancestor_hashes_replay_update) => {
++                info!(
++                    target: "lc2_diagnostic",
++                    "lc2-ancestor-queued ledger={:?} slot={slot} \
++                     update={ancestor_hashes_replay_update:?}",
++                    blockstore.ledger_path(),
++                );
+                 let _ = ancestor_hashes_replay_update_sender.send(ancestor_hashes_replay_update);
+             }
+         }
+@@ -863,6 +877,20 @@ pub(crate) fn check_slot_agrees_with_cluster(
+         return;
+     }
+
++    if matches!(
++        &slot_state_update,
++        SlotStateUpdate::Dead(_)
++            | SlotStateUpdate::DuplicateConfirmed(_)
++            | SlotStateUpdate::EpochSlotsFrozen(_)
++    ) {
++        info!(
++            target: "lc2_diagnostic",
++            "lc2-state ledger={:?} slot={slot} root={root} \
++             attempts={:?} update={slot_state_update:?}",
++            blockstore.ledger_path(), purge_repair_slot_counter.get(&slot),
++        );
++    }
++
+     // Needs to happen before the bank_frozen_hash.is_none() check below to account for duplicate
+     // signals arriving before the bank is constructed in replay.
+     if let SlotStateUpdate::Duplicate(ref state) = slot_state_update {
+diff --git a/core/src/replay_stage.rs b/core/src/replay_stage.rs
+index e49c71fac3..cb98bb099b 100644
+--- a/core/src/replay_stage.rs
++++ b/core/src/replay_stage.rs
+@@ -2155,6 +2155,13 @@ impl ReplayStage {
+                         .entry(*duplicate_slot)
+                         .and_modify(|x| *x += 1)
+                         .or_insert(1);
++                    info!(
++                        target: "lc2_diagnostic",
++                        "lc2-purge validator={my_pubkey} ledger={:?} slot={duplicate_slot} \
++                         attempt={attempt_no} expected={correct_hash} actual={frozen_hash:?} \
++                         meta={:?}",
++                        blockstore.ledger_path(), blockstore.meta(*duplicate_slot),
++                    );
+                     if *attempt_no > MAX_REPAIR_RETRY_LOOP_ATTEMPTS {
+                         panic!(
+                             "We have tried to repair duplicate slot: {duplicate_slot} more than \
+@@ -2233,6 +2240,13 @@ impl ReplayStage {
+                 },
+                 (epoch_slots_frozen_slot, epoch_slots_frozen_hash),
+             );
++            info!(
++                target: "lc2_diagnostic",
++                "lc2-sample-replay validator={pubkey} ledger={:?} \
++                 target={epoch_slots_frozen_slot} hash={epoch_slots_frozen_hash} \
++                 request_type={request_type:?}",
++                blockstore.ledger_path(),
++            );
+             let epoch_slots_frozen_state = EpochSlotsFrozenState::new_from_state(
+                 epoch_slots_frozen_slot,
+                 epoch_slots_frozen_hash,
+diff --git a/core/src/replay_stage/dead_slots.rs b/core/src/replay_stage/dead_slots.rs
+index e95be75a68..91bbe88660 100644
+--- a/core/src/replay_stage/dead_slots.rs
++++ b/core/src/replay_stage/dead_slots.rs
+@@ -364,6 +364,12 @@ pub(super) fn mark_replay_dead_slot(
+     progress: &mut ProgressMap,
+     dead_slot_context: &mut DeadSlotContext<'_>,
+ ) {
++    info!(
++        target: "lc2_diagnostic",
++        "lc2-dead ledger={:?} slot={} parent={} error={err:?}",
++        dead_slot_context.notifications.blockstore.ledger_path(),
++        bank.slot(), bank.parent_slot(),
++    );
+     bank.clear_accounts_lt_hash_async_progress_is_at_end();
+     if let Some(reason) = soft_dead_reason(
+         dead_slot_context.notifications.blockstore.as_ref(),
+diff --git a/ledger/src/blockstore_processor.rs b/ledger/src/blockstore_processor.rs
+index cb5f4ede91..3440df1272 100644
+--- a/ledger/src/blockstore_processor.rs
++++ b/ledger/src/blockstore_processor.rs
+@@ -2307,6 +2307,13 @@ pub fn check_chained_block_id(
+     {
+         Some(parent_block_id) => {
+             if expected_parent_block_id != parent_block_id {
++                info!(
++                    target: "lc2_diagnostic",
++                    "lc2-chain-mismatch ledger={:?} slot={slot} parent={parent_slot} \
++                     expected_parent_root={expected_parent_block_id} \
++                     actual_parent_root={parent_block_id}",
++                    blockstore.ledger_path(),
++                );
+                 warn!(
+                     "Chained merkle root mismatch for slot {slot} (parent {parent_slot}): child \
+                      chains to {expected_parent_block_id}, but parent block ID is \
+diff --git a/turbine/src/broadcast_stage/broadcast_duplicates_run.rs b/turbine/src/broadcast_stage/broadcast_duplicates_run.rs
+index 99870bfb55..8587a769e4 100644
+--- a/turbine/src/broadcast_stage/broadcast_duplicates_run.rs
++++ b/turbine/src/broadcast_stage/broadcast_duplicates_run.rs
+@@ -159,6 +159,14 @@ impl BroadcastRun for BroadcastDuplicatesRun {
+                     };
+
+                 if let Some(prev_entry_hash) = prev_entry_hash {
++                    info!(
++                        target: "lc2_diagnostic",
++                        "duplicate-batch leader={} ledger={:?} slot={} parent={} entries={} \
++                         tick_height={} max_tick_height={} next_data_index={} prefix_root={}",
++                        keypair.pubkey(), blockstore.ledger_path(), bank.slot(),
++                        bank.parent_slot(), entry_batch_len, last_tick_height,
++                        bank.max_tick_height(), self.next_shred_index, self.chained_merkle_root,
++                    );
+                     let original_last_entry = entries.pop().unwrap();
+
+                     // Last entry has to be a tick
+@@ -204,6 +212,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
+         )
+         .expect("Expected to create a new shredder");
+
++        let prefix_entry_count = entries.len();
+         let (data_shreds, coding_shreds) = shredder.component_to_merkle_shreds_for_tests(
+             keypair,
+             &receive_results.component,
+@@ -214,6 +223,17 @@ impl BroadcastRun for BroadcastDuplicatesRun {
+             &self.reed_solomon_cache,
+             &mut stats,
+         );
++        if last_entries.is_some() {
++            info!(
++                target: "lc2_diagnostic",
++                "lc2-prefix-emitted leader={} ledger={:?} slot={} entries={} \
++                 data_shreds={} first_index={:?} first_root={:?}",
++                keypair.pubkey(), blockstore.ledger_path(), bank.slot(),
++                prefix_entry_count, data_shreds.len(),
++                data_shreds.first().map(Shred::index),
++                data_shreds.first().map(Shred::merkle_root),
++            );
++        }
+         if let Some(shred) = data_shreds.iter().max_by_key(|shred| shred.index()) {
+             self.chained_merkle_root = shred.merkle_root().unwrap();
+         }
+@@ -260,6 +280,16 @@ impl BroadcastRun for BroadcastDuplicatesRun {
+                     original_last_data_shred.len(),
+                     partition_last_data_shred.len()
+                 );
++                info!(
++                    target: "lc2_diagnostic",
++                    "duplicate-variants leader={} ledger={:?} slot={} original_root={:?} \
++                     partition_root={:?} first_data_index={:?} final_data_index={:?}",
++                    keypair.pubkey(), blockstore.ledger_path(), bank.slot(),
++                    original_last_data_shred.first().map(Shred::merkle_root),
++                    partition_last_data_shred.first().map(Shred::merkle_root),
++                    original_last_data_shred.first().map(Shred::index),
++                    original_last_data_shred.last().map(Shred::index),
++                );
+                 self.next_shred_index += u32::try_from(original_last_data_shred.len()).unwrap();
+                 // Update chained_merkle_root to the merkle root of the original last FEC set
+                 if let Some(shred) = original_last_data_shred
