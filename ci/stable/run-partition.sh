@@ -33,7 +33,6 @@ ARGS=(
   --verbose
   --exclude solana-local-cluster
   --no-tests=warn
-  --no-fail-fast
 )
 
 _ cargo nextest run "${ARGS[@]}"
