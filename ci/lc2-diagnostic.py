@@ -144,6 +144,10 @@ def run():
 
 
 def host():
+    import fcntl
+    # Serialize our diagnostics if both jobs land on the same physical host.
+    lock = open("/tmp/jito-lc2-diagnostic.lock", "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
     facts("host")
     result = subprocess.run(["ci/docker-run-default-image.sh", "python3",
                              "ci/lc2-diagnostic.py", "run"], check=False)
@@ -154,10 +158,10 @@ def host():
 
 def pipeline():
     steps = []
-    for agent in ("slc-buildkite-ci-1-1", "ci-1-1"):
-        steps.append({"label": "lc2-diagnostic " + agent,
+    for index in range(2):
+        steps.append({"label": "lc2-diagnostic baseline-" + str(index + 1),
                       "command": "python3 ci/lc2-diagnostic.py host",
-                      "agents": {"queue": "default", "name": agent},
+                      "agents": {"queue": "default"},
                       "timeout_in_minutes": 65,
                       "retry": {"automatic": False}})
     print(json.dumps({"steps": steps}))
