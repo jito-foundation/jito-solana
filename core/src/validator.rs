@@ -800,6 +800,7 @@ impl Validator {
             tpu_config,
             admin_rpc_service_post_init,
             xdp_transmit_setup,
+            Vec::new(),
             exit,
         )
     }
@@ -819,6 +820,7 @@ impl Validator {
         tpu_config: ValidatorTpuConfig,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
         xdp_transmit_setup: Option<XdpTransmitSetup>,
+        extra_bank_notification_senders: Vec<BankNotificationSender>,
         exit: Arc<AtomicBool>,
     ) -> Result<Self> {
         if config.enable_scheduler_bindings && config.bam_url.load().is_some() {
@@ -867,7 +869,7 @@ impl Validator {
             })?;
         }
 
-        let mut bank_notification_senders = Vec::new();
+        let mut slot_notification_senders = Vec::new();
 
         let geyser_plugin_config_files = config
             .on_start_geyser_plugin_config_files
@@ -881,7 +883,7 @@ impl Validator {
         let geyser_plugin_service =
             if let Some(geyser_plugin_config_files) = geyser_plugin_config_files {
                 let (confirmed_bank_sender, confirmed_bank_receiver) = unbounded();
-                bank_notification_senders.push(confirmed_bank_sender);
+                slot_notification_senders.push(confirmed_bank_sender);
                 let rpc_to_plugin_manager_receiver_and_exit =
                     rpc_to_plugin_manager_receiver.map(|receiver| (receiver, exit.clone()));
                 Some(
@@ -1304,6 +1306,10 @@ impl Validator {
                 .unwrap()
         });
 
+        let should_send_parents =
+            geyser_plugin_service.is_some() || !extra_bank_notification_senders.is_empty();
+        let mut bank_notification_channel_senders = extra_bank_notification_senders;
+
         let rpc_override_health_check =
             Arc::new(AtomicBool::new(config.rpc_config.disable_health_check));
         let (
@@ -1313,7 +1319,7 @@ impl Validator {
             rpc_completed_slots_service,
             sample_performance_service,
             optimistically_confirmed_bank_tracker,
-            bank_notification_sender,
+            dependency_tracker,
         ) = if let Some((rpc_addr, rpc_pubsub_addr)) = config.rpc_addrs {
             assert_eq!(
                 node.info.rpc().map(|addr| socket_addr_space.check(&addr)),
@@ -1321,10 +1327,10 @@ impl Validator {
                     .rpc_pubsub()
                     .map(|addr| socket_addr_space.check(&addr))
             );
-            let (bank_notification_sender, bank_notification_receiver) =
+            let (rpc_bank_notification_sender, rpc_bank_notification_receiver) =
                 BankNotificationSender::channel("optimistically-confirmed-bank-tracker");
-            let confirmed_bank_subscribers = if !bank_notification_senders.is_empty() {
-                Some(Arc::new(RwLock::new(bank_notification_senders)))
+            let slot_notification_subscribers = if !slot_notification_senders.is_empty() {
+                Some(Arc::new(RwLock::new(slot_notification_senders)))
             } else {
                 None
             };
@@ -1425,20 +1431,17 @@ impl Validator {
                 .then_some(dependency_tracker);
             let optimistically_confirmed_bank_tracker =
                 Some(OptimisticallyConfirmedBankTracker::new(
-                    bank_notification_receiver,
+                    rpc_bank_notification_receiver,
                     exit.clone(),
                     bank_forks.clone(),
                     optimistically_confirmed_bank,
                     rpc_subscriptions.clone(),
-                    confirmed_bank_subscribers,
+                    slot_notification_subscribers,
                     prioritization_fee_cache.clone(),
                     dependency_tracker.clone(),
                 ));
-            let bank_notification_sender_config = Some(BankNotificationSenderConfig {
-                sender: BankNotificationBroadcaster::new(vec![bank_notification_sender]),
-                should_send_parents: geyser_plugin_service.is_some(),
-                dependency_tracker,
-            });
+            // Keep the RPC subscriber first to preserve upstream notification ordering.
+            bank_notification_channel_senders.insert(0, rpc_bank_notification_sender);
             (
                 Some(json_rpc_service),
                 Some(rpc_subscriptions),
@@ -1446,11 +1449,17 @@ impl Validator {
                 rpc_completed_slots_service,
                 sample_performance_service,
                 optimistically_confirmed_bank_tracker,
-                bank_notification_sender_config,
+                dependency_tracker,
             )
         } else {
             (None, None, None, None, None, None, None)
         };
+        let bank_notification_sender_config =
+            (!bank_notification_channel_senders.is_empty()).then(|| BankNotificationSenderConfig {
+                sender: BankNotificationBroadcaster::new(bank_notification_channel_senders),
+                should_send_parents,
+                dependency_tracker,
+            });
 
         // CompletedDataSetsService feeds two independent sinks: RPC signatureSubscribe
         // notifications (which need rpc_subscriptions) and the geyser deshred-transaction notifier
@@ -1748,7 +1757,7 @@ impl Validator {
             verified_vote_receiver,
             replay_vote_sender.clone(),
             completed_data_sets_sender,
-            bank_notification_sender.clone(),
+            bank_notification_sender_config.clone(),
             duplicate_confirmed_slots_receiver,
             TvuConfig {
                 blockstore_cleanup_strategy: config.blockstore_cleanup_strategy,
@@ -1844,7 +1853,7 @@ impl Validator {
             gossip_verified_vote_hash_sender,
             replay_vote_receiver,
             replay_vote_sender,
-            bank_notification_sender,
+            bank_notification_sender_config,
             duplicate_confirmed_slot_sender,
             tpu_forwarding_client_config,
             &identity_keypair,
@@ -1940,7 +1949,6 @@ impl Validator {
                 root_addr,
             )
         });
-
         Ok(Self {
             log_config: config.log_config.clone(),
             exit,

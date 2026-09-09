@@ -30,6 +30,7 @@
 # Examples:
 #   ./f                                          # local: v<version>_<sha>
 #                                                # [-dirty]
+#   ./f --tip-router                             # include tip-router support
 #   ./f --profile debug
 #   ./f --profile release-with-lto --tag v3.0.1
 #   ./f --output ./out
@@ -111,6 +112,7 @@ Options:
   --no-val-bins           drop validator/operator binaries from the tarball
                           (defaults to including them, since they are the point
                           of a Jito release artifact)
+  --tip-router            compile agave-validator with tip-router support
   --output DIR            host directory to receive artifacts (default: ./dist)
   --no-cache              pass --no-cache to docker buildx build
   --pull-cache REF        --cache-from=type=registry,ref=REF (repeatable)
@@ -142,6 +144,7 @@ checkout=""
 platform=""
 basename=jito-solana-release
 include_val_bins=1
+include_tip_router=0
 output_dir=./dist
 no_cache=0
 progress=plain
@@ -177,6 +180,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-val-bins)     include_val_bins=0;  shift ;;
     --include-val-bins) include_val_bins=1; shift ;;  # back-compat: keep old flag
+    --tip-router)      include_tip_router=1; shift ;;
     --output)
       require_arg "$1" "${2:-}"
       output_dir="$2"
@@ -324,6 +328,7 @@ declare -a buildx_args=(
   --build-arg "TARBALL_BASENAME=$artifact_basename"
   --build-arg "BUILD_PROFILE=$profile"
   --build-arg "INCLUDE_VAL_BINS=$include_val_bins"
+  --build-arg "INCLUDE_TIP_ROUTER=$include_tip_router"
   --build-arg "CI_COMMIT=$ci_commit"
   --progress "$progress"
 )
@@ -354,6 +359,7 @@ echo "    build context  : $build_context"
 echo "    output dir     : $output_dir"
 echo "    basename       : $artifact_basename"
 echo "    include val ops: $include_val_bins"
+echo "    tip-router feat: $include_tip_router"
 
 DOCKER_BUILDKIT=1 docker buildx build "${buildx_args[@]}" "$build_context"
 

@@ -85,6 +85,9 @@ git fetch --tags origin
 # Debug build
 ./f --profile debug
 
+# Include tip-router support in agave-validator
+./f --tip-router
+
 # x86_64 artifact from a non-x86 host (emulation or remote builder)
 ./f --platform linux/amd64 --tag v4.0.3-jito
 ```

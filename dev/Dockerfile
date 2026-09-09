@@ -70,6 +70,7 @@ ARG TARBALL_BASENAME=jito-solana-release
 # release | release-with-debug | release-with-lto | debug
 ARG BUILD_PROFILE=release
 ARG INCLUDE_VAL_BINS=0
+ARG INCLUDE_TIP_ROUTER=0
 ARG CI_COMMIT=
 # Automatic BuildKit arg (amd64 / arm64); reflects the platform this stage
 # actually executes as (native, --platform, or a remote builder node). Used
@@ -82,6 +83,7 @@ ENV CHANNEL_OR_TAG=${CHANNEL_OR_TAG} \
     TARBALL_BASENAME=${TARBALL_BASENAME} \
     BUILD_PROFILE=${BUILD_PROFILE} \
     INCLUDE_VAL_BINS=${INCLUDE_VAL_BINS} \
+    INCLUDE_TIP_ROUTER=${INCLUDE_TIP_ROUTER} \
     CI_COMMIT=${CI_COMMIT}
 
 # Cache mounts are keyed by arch+profile so concurrent/sequential builds
@@ -157,13 +159,20 @@ LISTS
 #    never feeds it to cargo as --exclude, despite its own inline comment
 #    (see :193-196) saying that's required to keep dev-context-only-utils out
 #    of the production unit graph. Without the fix, the check_dcou sanity
-#    check trips before the real build starts.
+#    check trips before the real build starts. The same patch adds the
+#    workspace-qualified tip-router feature when requested by `./f` so the
+#    graph check and production build use identical Cargo arguments.
 source scripts/agave-build-lists.sh
 dcou_exclude_args=""
 for pkg in "${DCOU_TAINTED_PACKAGES[@]}"; do
   dcou_exclude_args+=" --exclude $pkg"
 done
-sed -i "s#\"\${binArgs\[@\]}\" --workspace#\"\${binArgs[@]}\" --workspace${dcou_exclude_args}#g" \
+
+tip_router_feature_arg=""
+if [ "$INCLUDE_TIP_ROUTER" = "1" ]; then
+  tip_router_feature_arg=" --features agave-validator/tip-router"
+fi
+sed -i "s#\"\${binArgs\[@\]}\" --workspace#\"\${binArgs[@]}\" --workspace${dcou_exclude_args}${tip_router_feature_arg}#g" \
   scripts/cargo-install-all.sh
 
 # 3. Patch scripts/create-release-tarball.sh to:

@@ -1336,6 +1336,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
     .args(&send_transaction_config::args())
     .args(&rpc_bootstrap_config::args())
     .args(&blockstore_options::args())
+    .args(&super::tip_router::args())
 }
 
 fn validators_set(
