@@ -18,20 +18,28 @@ The tool automatically handles:
 
 ## Quick Start
 
+The cluster tool belongs to the `dev-bins` workspace so its development
+features do not propagate into production validator builds. Run these
+commands from the repository root.
+
 1. **Build the binaries**:
+
    ```bash
    # Build agave-validator
-   cargo build --release --bin agave-validator
-   
-   # Build bam-local-cluster
-   cargo build --release --bin bam-local-cluster
+   cargo build --release -p agave-validator
+
+   # Build the development tools separately
+   cargo build --release --manifest-path dev-bins/Cargo.toml \
+     --bin bam-local-cluster --bin agave-ledger-tool
    ```
 
 2. **Create a configuration file** (see `examples/example_config.toml`)
 
 3. **Run the cluster**:
+
    ```bash
-   RUST_LOG=info ./target/release/bam-local-cluster --config bam-local-cluster/examples/example_config.toml
+   RUST_LOG=info ./dev-bins/target/release/bam-local-cluster \
+     --config bam-local-cluster/examples/example_config.toml
    ```
 
 ## Configuration
@@ -48,7 +56,8 @@ Key configuration options:
 - `enable_tx_v1`: Optional transaction v1 genesis feature activation for BAM conformance tests
 - `ledger_base_directory`: Base directory for validator ledgers
 - `validator_build_path`: Build output directory (e.g., "target/debug" or "target/release") - required
-- `ledger_tool_build_path`: Builder output for ledger tool (e.g., "target/debug" or "target/release") - required
+- `ledger_tool_build_path`: Ledger tool output directory, such as
+  "dev-bins/target/debug" or "dev-bins/target/release" - required
 - `bind_address`: Optional validator listen address override passed through as `--bind-address`
 - `gossip_host`: Optional validator gossip advertisement override passed through as `--gossip-host`
 - `validators`: Array of validator configurations (first is bootstrap node)
@@ -93,7 +102,8 @@ still fall back to advertising `127.0.0.1`, which is not reachable by remote pee
 Common issues:
 
 - **Port conflicts**: Bootstrap node uses gossip port 8001 and RPC port 8899
-- **Binary not found**: Ensure `agave-validator` and `agave-ledger-tool` are built in your target directory
+- **Binary not found**: Check `validator_build_path` and
+  `ledger_tool_build_path` against the separate build output directories
 - **Permission errors**: Make sure the ledger base directory is writable
 
 Validator output is streamed to the console for debugging.
@@ -108,4 +118,4 @@ To modify the cluster behavior:
 
 ## License
 
-This project is part of the Jito Solana JDS repository and follows the same license terms. 
+This project is part of the Jito Solana JDS repository and follows the same license terms.
