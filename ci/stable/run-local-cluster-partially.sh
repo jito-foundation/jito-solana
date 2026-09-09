@@ -27,4 +27,5 @@ _ cargo nextest run \
   --test local_cluster \
   --partition hash:"$CURRENT/$TOTAL" \
   --test-threads=1 \
+  --no-fail-fast \
   --no-tests=warn
