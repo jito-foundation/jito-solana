@@ -52,18 +52,11 @@ fn endpoint_from_url_with_tls_config_and_error<E>(
 mod tests {
     use {
         super::*,
-        jito_protos::proto::{
-            auth::{
-                GenerateAuthChallengeRequest, GenerateAuthChallengeResponse,
-                GenerateAuthTokensRequest, GenerateAuthTokensResponse, RefreshAccessTokenRequest,
-                RefreshAccessTokenResponse,
-                auth_service_client::AuthServiceClient,
-                auth_service_server::{AuthService, AuthServiceServer},
-            },
-            block_engine::{
-                GetBlockEngineEndpointRequest,
-                block_engine_validator_client::BlockEngineValidatorClient,
-            },
+        jito_protos::proto::auth::{
+            GenerateAuthChallengeRequest, GenerateAuthChallengeResponse, GenerateAuthTokensRequest,
+            GenerateAuthTokensResponse, RefreshAccessTokenRequest, RefreshAccessTokenResponse,
+            auth_service_client::AuthServiceClient,
+            auth_service_server::{AuthService, AuthServiceServer},
         },
         rcgen::{CertifiedKey, generate_simple_self_signed},
         tokio::time::{Duration, timeout},
@@ -164,34 +157,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_handshakes_with_testnet_block_engine() {
-        const TESTNET_BLOCK_ENGINE_URL: &str = "https://testnet.block-engine.jito.wtf";
-        const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+    async fn endpoint_builders_load_default_tls_roots() {
+        const CHILD_ENV: &str = "SOLANA_TLS_ROOTS_TEST_CHILD";
 
-        let endpoint = endpoint_from_url_with_error(
-            TESTNET_BLOCK_ENGINE_URL,
-            || format!("invalid block engine url value: {TESTNET_BLOCK_ENGINE_URL}"),
-            || format!("failed to set tls_config for block engine: {TESTNET_BLOCK_ENGINE_URL}"),
-        )
-        .unwrap();
-        let channel = timeout(CONNECT_TIMEOUT, endpoint.connect())
-            .await
-            .expect("timed out connecting to testnet block engine")
-            .expect("TLS handshake to testnet block engine failed");
+        // Isolate the native root-store environment from other tests.
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let cert_file = tempfile::NamedTempFile::new().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tonic_endpoint::tests::endpoint_builders_load_default_tls_roots",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("SSL_CERT_FILE", cert_file.path())
+                .env_remove("SSL_CERT_DIR")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "TLS root-store subprocess failed: {status}"
+            );
+            return;
+        }
 
-        let mut client = BlockEngineValidatorClient::new(channel);
-        let response = timeout(
-            CONNECT_TIMEOUT,
-            client.get_block_engine_endpoints(GetBlockEngineEndpointRequest {}),
-        )
-        .await
-        .expect("timed out on get_block_engine_endpoints request")
-        .expect("get_block_engine_endpoints request to testnet block engine failed")
-        .into_inner();
+        let (cert_pem, key_pem) = localhost_cert();
+        std::fs::write(std::env::var_os("SSL_CERT_FILE").unwrap(), &cert_pem).unwrap();
+        let url = start_tls_probe_server(cert_pem, key_pem).await;
 
-        assert!(
-            response.global_endpoint.is_some(),
-            "expected global block engine endpoint from testnet block engine"
-        );
+        for endpoint in [
+            endpoint_from_url(&url).unwrap(),
+            endpoint_from_url_with_error(&url, || "invalid URL", || "invalid TLS config").unwrap(),
+        ] {
+            timeout(Duration::from_secs(5), endpoint.connect())
+                .await
+                .expect("timed out connecting to local TLS server")
+                .expect("production endpoint failed to load TLS roots");
+        }
     }
 }
