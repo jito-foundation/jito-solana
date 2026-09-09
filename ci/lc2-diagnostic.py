@@ -177,6 +177,19 @@ def host(phase="baseline"):
             import shutil
             shutil.copyfileobj(source, archive)
     # Buildkite's artifact_paths collects evidence after either success or failure.
+    # A completed baseline comparison can contain expected failures. Its dependent
+    # validation may start only after all twenty source trials were recorded.
+    if phase == "matrix-48" and result.returncode in (0, 1):
+        summaries = sorted(Path("target/lc2-matrix").glob("*/summary.json"),
+                           key=lambda path: path.stat().st_mtime)
+        if summaries:
+            summary = json.loads(summaries[-1].read_text())
+            if summary.get("complete") and len(summary.get("trials", [])) == 20:
+                print(json.dumps({"event": "baseline_comparison_complete",
+                                  "trial_failures": summary.get("failures"),
+                                  "driver_exit_code": result.returncode,
+                                  "summary": str(summaries[-1])}), flush=True)
+                return 0
     return result.returncode
 
 
@@ -205,12 +218,11 @@ def pipeline(phase="baseline"):
                 "concurrency_group": "jito-solana/lc2-controlled-experiments",
                 "retry": {"automatic": False}}
         if phase == "validation":
-            # Only placement failures can retry; compilation and test failures stop.
-            # Seven retries means at most eight scheduling attempts, each retained.
-            step["retry"] = {"automatic": [{"exit_status": 78, "limit": 7}]}
+            # Root may manually reschedule an exit-78 placement failure after
+            # runner availability changes, at most eight scheduling attempts.
+            # Automatic retries strongly prefer the same Jito agent.
             if current == "validate-48":
                 step["depends_on"] = "lc2-matrix-48-1"
-                step["allow_dependency_failure"] = True
         steps.append(step)
     print(json.dumps({"steps": steps}))
     return 0
