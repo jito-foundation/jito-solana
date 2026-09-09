@@ -171,6 +171,7 @@ def host(phase="baseline"):
                    "--expected-sha", sha]
     else:
         command = ["python3", "ci/lc2-diagnostic.py", "run"]
+    command_started = time.time()
     result = subprocess.run(["ci/docker-run-default-image.sh", *command], check=False)
     for path in Path("target/lc2-matrix").glob("*/*.log"):
         with path.open("rb") as source, gzip.open(str(path) + ".gz", "wb") as archive:
@@ -184,7 +185,10 @@ def host(phase="baseline"):
                            key=lambda path: path.stat().st_mtime)
         if summaries:
             summary = json.loads(summaries[-1].read_text())
-            if summary.get("complete") and len(summary.get("trials", [])) == 20:
+            if (summaries[-1].stat().st_mtime >= command_started
+                    and summary.get("expected_cpus") == expected
+                    and summary.get("complete")
+                    and len(summary.get("trials", [])) == 20):
                 print(json.dumps({"event": "baseline_comparison_complete",
                                   "trial_failures": summary.get("failures"),
                                   "driver_exit_code": result.returncode,
