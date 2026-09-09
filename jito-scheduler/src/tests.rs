@@ -56,8 +56,8 @@ impl Frame {
                     current_slot_progress: 1,
                     epoch: 0,
                     current_slot: slot,
-                    next_leader_slot: slot + 1,
-                    leader_range_end: slot + 3,
+                    next_leader_slot: slot.saturating_add(1),
+                    leader_range_end: slot.saturating_add(3),
                     remaining_cost_units: 60_000_000,
                     remaining_allocated_accounts_data_size: 100_000_000,
                     latest_blockhash: [0; 32],
@@ -577,7 +577,7 @@ fn completion_backpressure_retains_ownership_and_sends_once() {
         processed_code: processed_codes::PROCESSED,
         execution_slot: 10,
         bank_id: 20,
-        responses: Default::default(),
+        responses: JitoResponseRegion::default(),
     };
     let mut filled = 0;
     while frame

@@ -22,6 +22,7 @@ AGAVE_BINS_END_USER=(
 )
 
 AGAVE_BINS_VAL_OP=(
+  jito-scheduler
   agave-validator
   agave-watchtower
   solana-gossip

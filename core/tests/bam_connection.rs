@@ -179,7 +179,10 @@ impl BamNodeApi for MockBamNode {
                     && let Some(Msg::AuthProof(_)) = v0.msg
                 {
                     authenticated = true;
-                    stream_id = auth_proofs_received.fetch_add(1, Ordering::Relaxed) + 1;
+                    stream_id = auth_proofs_received
+                        .fetch_add(1, Ordering::Relaxed)
+                        .checked_add(1)
+                        .expect("mock stream counter overflow");
                     break;
                 }
             }

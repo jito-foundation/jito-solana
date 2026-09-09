@@ -22,7 +22,9 @@ pub(crate) fn spawn(
                 match listener.accept() {
                     Ok(session) => {
                         if session_sender
-                            .blocking_send(BankingControlMsg::External { session })
+                            .blocking_send(BankingControlMsg::External {
+                                session: Box::new(session),
+                            })
                             .is_err()
                         {
                             break;

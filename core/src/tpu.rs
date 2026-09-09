@@ -441,8 +441,8 @@ impl Tpu {
                     bundles: verified_bundle_receiver.clone(),
                     control: control.clone(),
                 });
-        // Scheduler bindings are immutable for the lifetime of the TPU. Exclude the BAM runtime
-        // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
+        // Standard clients have no BAM contract. Only the explicitly negotiated
+        // Jito mode retains its runtime and permits BAM URL changes.
         let bam_dependencies =
             (scheduler_bindings.is_none() || jito_mode).then_some(bam_dependencies);
 

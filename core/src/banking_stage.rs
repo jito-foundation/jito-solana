@@ -535,17 +535,17 @@ impl BankingStage {
         }
 
         // No old consumer can execute after this ownership release.
-        if let Some(dependencies) = &self.jito_dependencies {
-            if dependencies.control.active.swap(false, Ordering::AcqRel) {
-                self.bam_dependencies.as_ref().unwrap().bam_enabled.store(
-                    crate::bam_dependencies::BamConnectionState::Disconnected as u8,
-                    Ordering::Release,
-                );
-                dependencies
-                    .control
-                    .reconnect_bam
-                    .store(true, Ordering::Release);
-            }
+        if let Some(dependencies) = &self.jito_dependencies
+            && dependencies.control.active.swap(false, Ordering::AcqRel)
+        {
+            self.bam_dependencies.as_ref().unwrap().bam_enabled.store(
+                crate::bam_dependencies::BamConnectionState::Disconnected as u8,
+                Ordering::Release,
+            );
+            dependencies
+                .control
+                .reconnect_bam
+                .store(true, Ordering::Release);
         }
 
         // Revert the exit signal.
@@ -579,7 +579,7 @@ impl BankingStage {
                 }
             },
             #[cfg(unix)]
-            BankingControlMsg::External { session } => self.spawn_external(session),
+            BankingControlMsg::External { session } => self.spawn_external(*session),
         })?;
 
         self.threads.extend(threads.into_iter().map(|handle| {
@@ -1107,7 +1107,7 @@ pub enum BankingControlMsg {
     },
     #[cfg(unix)]
     External {
-        session: agave_scheduling_utils::handshake::AgaveSession,
+        session: Box<agave_scheduling_utils::handshake::AgaveSession>,
     },
 }
 

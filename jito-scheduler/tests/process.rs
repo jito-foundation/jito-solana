@@ -30,7 +30,7 @@ impl Drop for ChildGuard {
 }
 
 fn wait<T>(mut poll: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
     loop {
         if let Some(value) = poll() {
             return value;

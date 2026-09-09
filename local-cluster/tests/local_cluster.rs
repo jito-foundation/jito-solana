@@ -192,7 +192,11 @@ fn test_jito_scheduler_bindings_transfer_fallback_and_reconnect() {
             let exit = Arc::new(AtomicBool::new(false));
             let client_exit = exit.clone();
             let thread = std::thread::spawn(move || {
-                jito_scheduler::run(session, client_exit, Default::default())
+                jito_scheduler::run(
+                    session,
+                    client_exit,
+                    jito_scheduler::SchedulerConfig::default(),
+                )
             });
             Self {
                 exit,
@@ -234,6 +238,10 @@ fn test_jito_scheduler_bindings_transfer_fallback_and_reconnect() {
         .info
         .ledger_path
         .join("scheduler_bindings.ipc");
+    assert!(
+        ipc_path.as_os_str().as_encoded_bytes().len() < 104,
+        "IPC fixture path exceeds the macOS Unix socket pathname limit: {ipc_path:?}"
+    );
     let rpc = cluster
         .build_rpc_client_with_commitment(&identity, CommitmentConfig::confirmed())
         .unwrap();

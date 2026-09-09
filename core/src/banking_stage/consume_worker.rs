@@ -479,6 +479,7 @@ pub(crate) mod external {
         },
         agave_transaction_view::{
             resolved_transaction_view::ResolvedTransactionView, sanitize::SanitizeConfig,
+            transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
         },
         ahash::HashSet,
         arrayvec::ArrayVec,
@@ -490,6 +491,7 @@ pub(crate) mod external {
         solana_runtime::bank::Bank,
         solana_runtime_transaction::{
             runtime_transaction::RuntimeTransaction, sanitize_config::sanitize_config,
+            transaction_meta::TransactionMeta,
         },
         solana_svm_transaction::svm_message::SVMMessage,
         solana_transaction_error::TransactionError,
@@ -875,7 +877,8 @@ pub(crate) mod external {
             if atomic && transactions.len() != translation_results.len() {
                 let results = translation_results
                     .iter()
-                    .map(|result| match result {
+                    .zip(batch.iter())
+                    .map(|(result, (transaction_ptr, _))| match result {
                         Ok(()) => (
                             JitoTransactionResult {
                                 not_included_reason:
@@ -889,7 +892,10 @@ pub(crate) mod external {
                                 not_included_reason: Self::reason_from_packet_handling_error(err),
                                 ..JitoTransactionResult::default()
                             },
-                            Self::encode_jito_error(&Self::jito_translation_error(err)),
+                            Self::encode_jito_error(&Self::jito_translation_error(
+                                transaction_ptr,
+                                bank,
+                            )),
                         ),
                     })
                     .collect::<Vec<_>>();
@@ -979,7 +985,8 @@ pub(crate) mod external {
             let mut commits = commit_results.iter();
             let results = translation_results
                 .iter()
-                .map(|translation| match translation {
+                .zip(batch.iter())
+                .map(|(translation, (transaction_ptr, _))| match translation {
                     Ok(()) => Self::jito_result_from_commit_details(
                         commits
                             .next()
@@ -991,7 +998,10 @@ pub(crate) mod external {
                             not_included_reason: Self::reason_from_packet_handling_error(err),
                             ..JitoTransactionResult::default()
                         },
-                        Self::encode_jito_error(&Self::jito_translation_error(err)),
+                        Self::encode_jito_error(&Self::jito_translation_error(
+                            transaction_ptr,
+                            bank,
+                        )),
                     ),
                 })
                 .collect();
@@ -1002,11 +1012,50 @@ pub(crate) mod external {
             bincode::serialize(error).expect("TransactionError serialization is infallible")
         }
 
-        fn jito_translation_error(error: &PacketHandlingError) -> TransactionError {
-            match error {
-                PacketHandlingError::ALTResolution => TransactionError::AddressLookupTableNotFound,
-                _ => TransactionError::SanitizeFailure,
-            }
+        fn jito_translation_error(
+            transaction_ptr: TransactionPtr,
+            bank: &Bank,
+        ) -> TransactionError {
+            // The upstream translator intentionally keeps only an error category. Recover
+            // the exact runtime error on this cold path for BAM's typed response contract.
+            let check = || -> Result<(), TransactionError> {
+                let view = SanitizedTransactionView::try_new_sanitized(
+                    transaction_ptr,
+                    &sanitize_config(),
+                )
+                .map_err(|_| TransactionError::SanitizeFailure)?;
+                let view = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
+                    view,
+                    solana_transaction::sanitized::MessageHash::Compute,
+                    None,
+                )?;
+                if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+                    return Err(TransactionError::SanitizeFailure);
+                }
+                let limit = bank.get_transaction_account_lock_limit();
+                if usize::from(view.total_num_accounts()) > limit {
+                    return Err(TransactionError::TooManyAccountLocks);
+                }
+                let loaded_addresses = match view.version() {
+                    TransactionVersion::Legacy | TransactionVersion::V1 => None,
+                    TransactionVersion::V0 => Some(
+                        bank.load_addresses_from_ref(view.address_table_lookup_iter())
+                            .map_err(TransactionError::from)?
+                            .0,
+                    ),
+                };
+                let view = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
+                    view,
+                    loaded_addresses,
+                    bank.get_reserved_account_keys(),
+                )
+                .map_err(|_| TransactionError::SanitizeFailure)?;
+                solana_accounts_db::account_locks::validate_account_locks(
+                    view.account_keys(),
+                    limit,
+                )
+            };
+            check().err().unwrap_or(TransactionError::SanitizeFailure)
         }
 
         fn jito_result_from_commit_details(
@@ -1835,7 +1884,11 @@ pub(crate) mod external {
                 .unwrap();
             let client_exit = exit.clone();
             let handle = std::thread::spawn(move || {
-                jito_scheduler::run(client, client_exit, Default::default())
+                jito_scheduler::run(
+                    client,
+                    client_exit,
+                    jito_scheduler::SchedulerConfig::default(),
+                )
             });
             let deadline = Instant::now() + Duration::from_secs(30);
             let response = loop {
@@ -1862,10 +1915,10 @@ pub(crate) mod external {
                     .ok();
                 checker.iterate(Duration::from_millis(1)).unwrap();
                 worker.iterate(&mut receiver, &mut false).unwrap();
-                if let Some(response) = addon.completion.try_read() {
-                    if response.id != jito_scheduler_bindings::HEARTBEAT_ID {
-                        break response;
-                    }
+                if let Some(response) = addon.completion.try_read()
+                    && response.id != jito_scheduler_bindings::HEARTBEAT_ID
+                {
+                    break response;
                 }
                 if Instant::now() >= deadline {
                     exit.store(true, Ordering::Relaxed);
@@ -1957,6 +2010,50 @@ pub(crate) mod external {
             assert_eq!(frame.bank.get_balance(&recipient), 1);
             let record = frame.record_receiver.drain().next().unwrap();
             assert!(!record.reschedule_on_sad_handover);
+            frame.free_batch(batch);
+        }
+
+        #[test_case(0)]
+        #[test_case(3)]
+        fn test_jito_preserves_lookup_table_owner_error(flags: u8) {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.enable_execution();
+            let table = Pubkey::new_unique();
+            let recipient = Pubkey::new_unique();
+            frame.bank.store_account(
+                &table,
+                &solana_account::AccountSharedData::new(1, 0, &Pubkey::new_unique()),
+            );
+            let message = solana_message::v0::Message::try_compile(
+                &frame.mint_keypair.pubkey(),
+                &[solana_system_interface::instruction::transfer(
+                    &frame.mint_keypair.pubkey(),
+                    &recipient,
+                    1,
+                )],
+                &[solana_message::AddressLookupTableAccount {
+                    key: table,
+                    addresses: vec![recipient],
+                }],
+                frame.bank.confirmed_last_blockhash(),
+            )
+            .unwrap();
+            let transaction = solana_transaction::versioned::VersionedTransaction::try_new(
+                solana_message::VersionedMessage::V0(message),
+                &[&frame.mint_keypair],
+            )
+            .unwrap();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transaction).unwrap()]);
+            frame.send_jito(frame.jito_request(&batch, flags));
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_ne!(results[0].0.not_included_reason, not_included_reasons::NONE);
+            assert_eq!(
+                bincode::deserialize::<TransactionError>(&results[0].1).unwrap(),
+                TransactionError::InvalidAddressLookupTableOwner
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
             frame.free_batch(batch);
         }
 
@@ -3543,12 +3640,39 @@ mod tests {
         TestFrame,
         ConsumeWorker<RuntimeTransaction<SanitizedTransaction>>,
     ) {
+        setup_test_frame_with_tip_identity(default_rent, false)
+    }
+
+    fn setup_test_frame_with_tip_identity(
+        default_rent: bool,
+        matching_tip_identity: bool,
+    ) -> (
+        TestFrame,
+        ConsumeWorker<RuntimeTransaction<SanitizedTransaction>>,
+    ) {
         let GenesisConfigInfo {
             mut genesis_config,
             mint_keypair,
             voting_keypair,
             ..
         } = create_slow_genesis_config(10_000_000_000);
+        if matching_tip_identity {
+            use solana_vote_interface::state::{VoteStateV4, VoteStateVersions};
+            // Production signs upkeep with the validator identity registered in its vote
+            // account. The generic consume fixture otherwise signs with an unrelated mint.
+            let vote_account = genesis_config
+                .accounts
+                .get_mut(&voting_keypair.pubkey())
+                .unwrap();
+            let mut vote_state =
+                VoteStateV4::deserialize(&vote_account.data, &voting_keypair.pubkey()).unwrap();
+            vote_state.node_pubkey = mint_keypair.pubkey();
+            VoteStateV4::serialize(
+                &VoteStateVersions::V4(Box::new(vote_state)),
+                &mut vote_account.data,
+            )
+            .unwrap();
+        }
         if default_rent {
             // this is needed when you need to access accountsdb (0 lamports accounts don't get written to accountsdb)
             // if you don't have this, have fun debugging for a few hours :angry:
@@ -4195,7 +4319,7 @@ mod tests {
     #[test]
     fn test_required_tip_upkeep_is_once_per_exact_bank() {
         agave_logger::setup();
-        let (mut frame, worker) = setup_test_frame(true);
+        let (mut frame, worker) = setup_test_frame_with_tip_identity(true, true);
         frame.record_receiver.restart(frame.bank.bank_id());
         let dependencies = worker.tip_processing_dependencies.as_ref().unwrap();
         assert!(run_tip_programs(
@@ -4220,8 +4344,20 @@ mod tests {
         ));
         assert_eq!(frame.record_receiver.drain().count(), 0);
 
+        // Account storage is indexed by slot; two live siblings sharing an AccountsDb
+        // would see the first bank's writes. Use the same genesis with independent
+        // storage to represent a replacement after the abandoned slot is purged.
+        let (replacement_parent, _replacement_forks) =
+            Bank::new_with_bank_forks_for_tests(&frame.genesis_config);
+        // Bank IDs belong to a bank tree. Advance this fresh tree past the original
+        // bank's ID to model the validator's monotonically assigned replacement ID.
+        let _prior_bank = Bank::new_from_parent(
+            replacement_parent.clone(),
+            SlotLeader::new_unique(),
+            frame.bank.slot() - 1,
+        );
         let replacement = Arc::new(Bank::new_from_parent(
-            frame.bank.parent().unwrap(),
+            replacement_parent,
             SlotLeader::new_unique(),
             frame.bank.slot(),
         ));
@@ -4241,6 +4377,61 @@ mod tests {
             *dependencies.last_tip_updated_bank.lock().unwrap(),
             Some((replacement.slot(), replacement.bank_id()))
         );
+    }
+
+    #[test]
+    fn test_required_tip_upkeep_rejects_mismatched_vote_identity() {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.record_receiver.restart(frame.bank.bank_id());
+        let dependencies = worker.tip_processing_dependencies.as_ref().unwrap();
+        assert!(!run_tip_programs(
+            &worker.consumer,
+            dependencies,
+            &frame.bank,
+            true
+        ));
+        assert!(
+            frame
+                .bank
+                .get_account(&dependencies.tip_manager.tip_payment_config_pubkey())
+                .is_some()
+        );
+        assert!(
+            frame
+                .bank
+                .get_account(
+                    &dependencies
+                        .tip_manager
+                        .get_my_tip_distribution_pda(frame.bank.epoch())
+                )
+                .is_none()
+        );
+        assert_eq!(*dependencies.last_tip_updated_bank.lock().unwrap(), None);
+        let crank = dependencies
+            .tip_manager
+            .get_tip_programs_crank_bundle(
+                &frame.bank,
+                &dependencies.cluster_info.keypair(),
+                &dependencies.block_builder_fee_info.load(),
+            )
+            .unwrap();
+        let output = worker.consumer.process_and_record_transactions_with_policy(
+            &frame.bank,
+            &crank,
+            Some(&dependencies.bundle_account_locker),
+            true,
+        );
+        let results = output
+            .execute_and_commit_transactions_output
+            .commit_transactions_result
+            .unwrap();
+        assert!(matches!(
+            &results[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::InstructionError(
+                0,
+                solana_transaction::InstructionError::Custom(6014)
+            ))
+        ));
     }
 
     #[test]

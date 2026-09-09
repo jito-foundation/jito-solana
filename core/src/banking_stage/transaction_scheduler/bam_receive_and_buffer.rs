@@ -1458,7 +1458,9 @@ mod tests {
             (
                 batch(packet(&duplicate_budget)),
                 HashSet::new(),
-                txn_error(1, TransactionError::DuplicateInstruction(1)),
+                // Duplicate compute-budget instructions fail view sanitization,
+                // before the runtime configuration error conversion is reached.
+                sanitize_error.clone(),
             ),
             (batch(lookup_packet), HashSet::new(), sanitize_error.clone()),
             (batch(bad_signature), HashSet::new(), sanitize_error),

@@ -318,6 +318,7 @@ dependencies = [
  "agave-scheduler-bindings",
  "agave-transaction-view",
  "ahash 0.8.12",
+ "jito-scheduler-bindings",
  "libc",
  "nix",
  "rts-alloc",
@@ -3348,6 +3349,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-scheduler-bindings"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-scheduler-bindings",
+ "rts-alloc",
+]
+
+[[package]]
 name = "jni"
 version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6346,6 +6355,7 @@ dependencies = [
  "histogram",
  "itertools 0.15.0",
  "jito-protos",
+ "jito-scheduler-bindings",
  "lazy-lru",
  "libc",
  "log",

@@ -82,14 +82,14 @@ impl Dispatch {
                 },
             )
             .ok()?;
-        self.outstanding[worker] += 1;
+        self.outstanding[worker] = self.outstanding[worker].checked_add(1).unwrap();
         Some(worker)
     }
 
     pub fn release(&mut self, access: &Access, worker: usize) {
         self.locks
             .unlock_accounts(access.writes.iter(), access.reads.iter(), worker);
-        self.outstanding[worker] -= 1;
+        self.outstanding[worker] = self.outstanding[worker].checked_sub(1).unwrap();
     }
 }
 

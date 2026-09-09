@@ -869,10 +869,10 @@ mod tests {
         ) -> JitoProgressMessage {
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                if let Some(message) = consumer.try_read() {
-                    if predicate(&message) {
-                        return message;
-                    }
+                if let Some(message) = consumer.try_read()
+                    && predicate(&message)
+                {
+                    return message;
                 }
                 assert!(
                     Instant::now() < deadline,

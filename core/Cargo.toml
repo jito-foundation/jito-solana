@@ -202,11 +202,11 @@ jemalloc-ctl = { workspace = true }
 sysctl = { workspace = true }
 
 [dev-dependencies]
-jito-scheduler = { workspace = true }
 agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["agave-unstable-api"] }
 bencher = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
+jito-scheduler = { workspace = true }
 rcgen = { workspace = true }
 serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["bincode", "wincode"] }

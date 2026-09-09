@@ -28,8 +28,8 @@ use {
     agave_transaction_view::transaction_view::UnsanitizedTransactionView,
     jito_scheduler_bindings::{
         JitoExecutionRequest, JitoExecutionResponse, JitoIngressMessage, JitoProgressMessage,
-        JitoTransactionResult, SOURCE_BAM, SOURCE_LEGACY_BUNDLE, SOURCE_TPU, SOURCE_VOTE,
-        SharedBytes, allocate_results, free_results, read_results,
+        JitoResponseRegion, JitoTransactionResult, SOURCE_BAM, SOURCE_LEGACY_BUNDLE, SOURCE_TPU,
+        SOURCE_VOTE, SharedBytes, allocate_results, free_results, read_results,
     },
     policy::{Access, Dispatch},
     rts_alloc::Allocator,
@@ -265,7 +265,7 @@ impl Scheduler {
                     .progress
                     .as_ref()
                     .map_or(0, |progress| progress.bank_id),
-                responses: Default::default(),
+                responses: JitoResponseRegion::default(),
             };
             if self
                 .session
@@ -346,7 +346,7 @@ impl Scheduler {
                     )
                     .free(self.allocator());
                 }
-                self.stats.dropped_transactions += 1;
+                self.stats.dropped_transactions = self.stats.dropped_transactions.saturating_add(1);
             } else {
                 let Some(batch) = allocate_batch(self.allocator(), &[message.transaction]) else {
                     unsafe {
@@ -356,7 +356,8 @@ impl Scheduler {
                         )
                         .free(self.allocator());
                     }
-                    self.stats.dropped_transactions += 1;
+                    self.stats.dropped_transactions =
+                        self.stats.dropped_transactions.saturating_add(1);
                     continue;
                 };
                 let ingress = JitoIngressMessage {
@@ -404,9 +405,12 @@ impl Scheduler {
                 transaction.data().len()
             })
             .sum::<usize>();
-        self.transactions += count;
-        self.bytes += bytes;
-        self.stats.received_transactions += count as u64;
+        self.transactions = self.transactions.checked_add(count).unwrap();
+        self.bytes = self.bytes.checked_add(bytes).unwrap();
+        self.stats.received_transactions = self
+            .stats
+            .received_transactions
+            .saturating_add(count as u64);
         self.jobs.insert(
             key,
             Job {
@@ -470,7 +474,7 @@ impl Scheduler {
                 .progress
                 .as_ref()
                 .map_or(0, |progress| progress.bank_id);
-            self.stats.check_requests += 1;
+            self.stats.check_requests = self.stats.check_requests.saturating_add(1);
             worked = true;
         }
         worked
@@ -543,7 +547,8 @@ impl Scheduler {
                         let loaded = resolved.as_ref().map_or(&[][..], PubkeysPtr::as_slice);
                         let writes = usize::from(view.total_writable_lookup_accounts());
                         if loaded.len()
-                            != writes + usize::from(view.total_readonly_lookup_accounts())
+                            != writes
+                                .saturating_add(usize::from(view.total_readonly_lookup_accounts()))
                         {
                             rejected = reason::ADDRESS_LOOKUP_TABLE_NOT_FOUND;
                         } else {
@@ -590,7 +595,10 @@ impl Scheduler {
         job.access = Access::from_keys(accesses);
         job.estimated_cost = cost;
         job.estimated_allocation = allocation;
-        job.priority = u128::from(reward) * 1_000_000 / u128::from(cost.max(1));
+        job.priority = u128::from(reward)
+            .saturating_mul(1_000_000)
+            .checked_div(u128::from(cost.max(1)))
+            .unwrap();
         job.alt_expiry = alt_expiry;
         job.state = if self
             .progress
@@ -613,7 +621,10 @@ impl Scheduler {
         let job = &self.jobs[&key];
         if !job.return_to_validator {
             self.remove_and_free(key);
-            self.stats.dropped_transactions += errors.len() as u64;
+            self.stats.dropped_transactions = self
+                .stats
+                .dropped_transactions
+                .saturating_add(errors.len() as u64);
             return Ok(());
         }
         let result_values: Vec<_> = errors
@@ -731,9 +742,9 @@ impl Scheduler {
         // Rotate the starting lane so continuous votes, bundles, or ordinary ingress cannot starve peers.
         for _ in 0..128 {
             let lane = self.lane % 3;
-            self.lane += 1;
+            self.lane = self.lane.wrapping_add(1);
             while let Some((key, _, _)) = lanes[lane].get(cursors[lane]).copied() {
-                cursors[lane] += 1;
+                cursors[lane] = cursors[lane].saturating_add(1);
                 let job = &self.jobs[&key];
                 if matches!(job.state, State::Executing(_) | State::Completing) {
                     continue;
@@ -801,7 +812,7 @@ impl Scheduler {
                 budget = budget.saturating_sub(job.estimated_cost);
                 allocation_budget = allocation_budget.saturating_sub(job.estimated_allocation);
                 self.jobs.get_mut(&key).unwrap().state = State::Executing(worker);
-                self.stats.submitted_batches += 1;
+                self.stats.submitted_batches = self.stats.submitted_batches.saturating_add(1);
                 worked = true;
                 break;
             }
@@ -825,7 +836,7 @@ impl Scheduler {
             return Err(SchedulerError::Protocol("mismatched execution response"));
         }
         self.dispatch.release(&job.access, worker);
-        self.stats.completed_batches += 1;
+        self.stats.completed_batches = self.stats.completed_batches.saturating_add(1);
         if job.return_to_validator {
             if job.ingress.source == SOURCE_LEGACY_BUNDLE
                 && job.atomic()
@@ -845,7 +856,9 @@ impl Scheduler {
                     job.state = State::PendingCheck;
                     // Tip readiness and locks can recover within the same BankId. Recheck
                     // against the current bank without busy-looping or replaying any commit.
-                    job.check_after = Instant::now() + Duration::from_millis(1);
+                    job.check_after = Instant::now()
+                        .checked_add(Duration::from_millis(1))
+                        .unwrap();
                     return Ok(());
                 }
             }
@@ -908,8 +921,11 @@ impl Scheduler {
 
     fn remove(&mut self, key: usize) -> Job {
         let job = self.jobs.remove(&key).unwrap();
-        self.transactions -= usize::from(job.ingress.batch.num_transactions);
-        self.bytes -= job.bytes;
+        self.transactions = self
+            .transactions
+            .checked_sub(usize::from(job.ingress.batch.num_transactions))
+            .unwrap();
+        self.bytes = self.bytes.checked_sub(job.bytes).unwrap();
         job
     }
 

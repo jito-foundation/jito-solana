@@ -4,6 +4,9 @@ This experimental scheduler runs block-production policy in a separate process.
 The validator provides shared-memory ingress, bank checks, transaction execution,
 and recording. It retains BAM authentication, networking, and tip signing.
 
+Validator builds include the jito-scheduler binary. To build it separately, run
+cargo build --release -p jito-scheduler from the repository root.
+
 Start the validator with --jito-scheduler-bindings, then start the scheduler
 against the same ledger:
 

@@ -78,7 +78,7 @@ fn start() -> Result<(), Box<dyn std::error::Error>> {
         match jito_scheduler::run(
             session,
             Arc::new(AtomicBool::new(false)),
-            Default::default(),
+            jito_scheduler::SchedulerConfig::default(),
         ) {
             Err(jito_scheduler::SchedulerError::SessionTimeout) => {
                 eprintln!(

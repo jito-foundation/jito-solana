@@ -234,6 +234,7 @@ dependencies = [
  "agave-scheduler-bindings",
  "agave-transaction-view",
  "ahash 0.8.12",
+ "jito-scheduler-bindings",
  "libc",
  "nix",
  "rts-alloc",
@@ -3313,6 +3314,14 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "jito-scheduler-bindings"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-scheduler-bindings",
+ "rts-alloc",
 ]
 
 [[package]]
@@ -6432,6 +6441,7 @@ dependencies = [
  "histogram",
  "itertools 0.15.0",
  "jito-protos",
+ "jito-scheduler-bindings",
  "lazy-lru",
  "libc",
  "log",
