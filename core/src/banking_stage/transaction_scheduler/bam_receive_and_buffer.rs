@@ -210,7 +210,7 @@ impl BamReceiveAndBuffer {
                 }
             }
 
-            let working_bank = loop {
+            let (working_bank, bank_checks_enabled) = loop {
                 if exit.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
                     return;
                 }
@@ -281,6 +281,7 @@ impl BamReceiveAndBuffer {
                                 max_schedule_slot,
                                 (&root_bank, &working_bank),
                                 &blacklisted_accounts,
+                                bank_checks_enabled,
                                 &mut metrics,
                             ));
                         stats.accumulate(parse_stats);
@@ -320,17 +321,17 @@ impl BamReceiveAndBuffer {
     fn select_parsing_bank(
         bank_forks: &RwLock<BankForks>,
         shared_leader_state: Option<&SharedLeaderState>,
-    ) -> Option<Arc<Bank>> {
+    ) -> Option<(Arc<Bank>, bool)> {
         if let Some(shared_leader_state) = shared_leader_state {
             let leader_state = shared_leader_state.load();
             if let Some(working_bank) = leader_state.working_bank() {
-                return Some(working_bank.clone());
+                return Some((working_bank.clone(), leader_state.atomic_batches_enabled()));
             }
             if leader_state.bank_slot().is_some() {
                 return None;
             }
         }
-        Some(bank_forks.read().unwrap().working_bank())
+        Some((bank_forks.read().unwrap().working_bank(), true))
     }
 
     fn send_no_leader_slot_txn_batch_result(&self, seq_id: u32) {
@@ -380,6 +381,7 @@ impl BamReceiveAndBuffer {
         max_schedule_slot: u64,
         (root_bank, working_bank): (&Bank, &Bank),
         blacklisted_accounts: &HashSet<Pubkey>,
+        bank_checks_enabled: bool,
         metrics: &mut BamReceiveAndBufferMetrics,
     ) -> (Result<ParsedBatch, Reason>, ReceivingStats) {
         let mut stats = ReceivingStats::default();
@@ -527,33 +529,37 @@ impl BamReceiveAndBuffer {
                 );
             }
 
-            // Check 4: Ensure valid blockhash and blockhash is not too old
-            let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
-            let (check_results, duration_us) = measure_us!(working_bank.check_transactions(
-                std::slice::from_ref(&view),
-                &lock_results,
-                MAX_PROCESSING_AGE,
-                true,
-                &mut TransactionErrorMetrics::default(),
-            ));
-            metrics.increment_check_transactions_us(duration_us);
-            if let Some(Err(err)) = check_results.first() {
-                let reason = convert_txn_error_to_proto(err.clone());
-                stats.num_dropped_on_age += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+            // Fork-dependent checks wait for resolution. The scheduler and worker validate
+            // held batches against the resolved bank before execution.
+            if bank_checks_enabled {
+                // Check 4: Ensure valid blockhash and blockhash is not too old
+                let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
+                let (check_results, duration_us) = measure_us!(working_bank.check_transactions(
+                    std::slice::from_ref(&view),
+                    &lock_results,
+                    MAX_PROCESSING_AGE,
+                    true,
+                    &mut TransactionErrorMetrics::default(),
+                ));
+                metrics.increment_check_transactions_us(duration_us);
+                if let Some(Err(err)) = check_results.first() {
+                    let reason = convert_txn_error_to_proto(err.clone());
+                    stats.num_dropped_on_age += 1;
+                    return (
+                        Err(Reason::TransactionError(
+                            jito_protos::proto::bam_types::TransactionError {
+                                index: index as u32,
+                                reason: reason as i32,
+                            },
+                        )),
+                        stats,
+                    );
+                }
             }
 
             // Check 5: Ensure the seed fee payer has enough to pay for transaction fees.
             // Downstream fee payers may be funded by earlier transactions in the same bundle.
-            if index == 0 {
+            if bank_checks_enabled && index == 0 {
                 let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
                     working_bank,
                     &view,
@@ -1563,7 +1569,10 @@ pub(super) mod tests {
         assert_ne!(old_bank.bank_id(), bank.bank_id());
         let mut shared = SharedLeaderState::new(0, None, None);
         let parsing_state = shared.clone();
-        let select = || BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&parsing_state));
+        let select = || {
+            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&parsing_state))
+                .map(|(bank, _)| bank)
+        };
         let (_exit, mut receiver, mut container, mut responses) = setup_bam_receive_and_buffer(
             receiver,
             bank_forks.clone(),
@@ -1826,12 +1835,75 @@ pub(super) mod tests {
                 max_schedule_slot,
                 (&bank_forks.root_bank(), &bank_forks.working_bank()),
                 &HashSet::new(),
+                true,
                 &mut stats,
             );
 
             assert!(result.is_err());
             assert_eq!(stats.num_dropped_on_fee_payer, 1);
             assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
+        }
+    }
+
+    #[test]
+    fn test_unresolved_bank_defers_fork_checks() {
+        let (bank_forks, mint) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let processed = transfer(&mint, &Pubkey::new_unique(), 1, bank.last_blockhash());
+        bank.process_transaction(&processed).unwrap();
+        let transactions = [
+            processed,
+            transfer(&mint, &Pubkey::new_unique(), 1, Hash::new_unique()),
+            transfer(
+                &Keypair::new(),
+                &Pubkey::new_unique(),
+                1,
+                bank.last_blockhash(),
+            ),
+        ];
+        let mut shared = SharedLeaderState::new(0, None, None);
+        shared.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(bank.clone()),
+            0,
+            None,
+            None,
+            false,
+        )));
+        let (selected_bank, bank_checks_enabled) =
+            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&shared)).unwrap();
+        assert!(Arc::ptr_eq(&selected_bank, &bank));
+        assert!(!bank_checks_enabled);
+        shared.load().enable_atomic_batches();
+        // Resolution after selection cannot change the policy captured for this bank.
+        assert!(!bank_checks_enabled);
+        assert!(
+            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&shared))
+                .unwrap()
+                .1
+        );
+
+        for bank_checks_enabled in [false, true] {
+            for revert_on_error in [false, true] {
+                for transaction in &transactions {
+                    let batch =
+                        batch_with_transaction(&VersionedTransaction::from(transaction.clone()));
+                    let mut metrics = BamReceiveAndBufferMetrics::default();
+                    let (verified, _) = run_batch_verify(vec![batch], bank.slot(), &mut metrics);
+                    let (mut packets, _, seq_id, max_schedule_slot) =
+                        verified.into_iter().next().unwrap().unwrap();
+                    let (result, _) = BamReceiveAndBuffer::parse_batch(
+                        &mut packets,
+                        seq_id,
+                        revert_on_error,
+                        max_schedule_slot,
+                        (&bank_forks.read().unwrap().root_bank(), &selected_bank),
+                        &HashSet::new(),
+                        bank_checks_enabled,
+                        &mut metrics,
+                    );
+                    assert_eq!(result.is_err(), bank_checks_enabled);
+                }
+            }
         }
     }
 
@@ -1885,6 +1957,7 @@ pub(super) mod tests {
                 max_schedule_slot,
                 (&bank_forks.root_bank(), &bank_forks.working_bank()),
                 &HashSet::new(),
+                true,
                 &mut stats,
             );
 
@@ -1983,6 +2056,7 @@ pub(super) mod tests {
                 max_schedule_slot,
                 (&bank_forks.root_bank(), &bank_forks.working_bank()),
                 &blacklisted_accounts,
+                true,
                 &mut stats,
             );
 
@@ -2042,6 +2116,7 @@ pub(super) mod tests {
                 max_schedule_slot,
                 (&bank_forks.root_bank(), &bank_forks.working_bank()),
                 &HashSet::new(),
+                true,
                 &mut stats,
             );
 
