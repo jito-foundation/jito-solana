@@ -8,6 +8,7 @@ use {
     solana_packet::PACKET_DATA_SIZE,
     solana_perf::packet::bytes::Bytes,
     solana_pubkey::Pubkey,
+    solana_runtime_transaction::sanitize_config::sanitize_config,
     solana_vote_program::vote_instruction::VoteInstruction,
     thiserror::Error,
 };
@@ -25,6 +26,10 @@ pub struct LatestValidatorVote {
     vote_pubkey: Pubkey,
     authorized_voter_pubkey: Pubkey,
     vote: Option<SanitizedTransactionView<Bytes>>,
+    /// Successfully landed vote retained for a same-slot bank replacement.
+    pub(super) retained_vote: Option<(Bytes, VoteSource, (Slot, Hash))>,
+    /// Retained vote is a validated, one-shot fallback for the current bank.
+    pub(super) restore_retained_on_failure: bool,
     slot: Slot,
     hash: Hash,
     timestamp: Option<UnixTimestamp>,
@@ -84,6 +89,8 @@ impl LatestValidatorVote {
 
                 Ok(Self {
                     vote: Some(vote),
+                    retained_vote: None,
+                    restore_retained_on_failure: false,
                     slot,
                     hash,
                     vote_pubkey,
@@ -146,6 +153,50 @@ impl LatestValidatorVote {
 
     pub fn take_vote(&mut self) -> Option<SanitizedTransactionView<Bytes>> {
         self.vote.take()
+    }
+
+    pub fn restore_for_bank(
+        &mut self,
+        is_valid_for_fork: impl Fn((Slot, Hash)) -> bool,
+        deprecate_legacy_vote_ixs: bool,
+    ) -> Option<usize> {
+        let current_vote_is_valid =
+            self.vote.is_some() && is_valid_for_fork((self.slot, self.hash));
+        let retained_vote_is_valid = self
+            .retained_vote
+            .as_ref()
+            .is_some_and(|(_, _, slot_hash)| is_valid_for_fork(*slot_hash));
+        self.restore_retained_on_failure = current_vote_is_valid && retained_vote_is_valid;
+
+        if current_vote_is_valid || !retained_vote_is_valid {
+            return None;
+        }
+
+        let newly_unprocessed = usize::from(self.is_vote_taken());
+        self.restore_retained_vote(deprecate_legacy_vote_ixs)?;
+        Some(newly_unprocessed)
+    }
+
+    pub(super) fn take_deferred_retained_vote(
+        &mut self,
+        deprecate_legacy_vote_ixs: bool,
+    ) -> Option<SanitizedTransactionView<Bytes>> {
+        if !std::mem::take(&mut self.restore_retained_on_failure) {
+            return None;
+        }
+
+        self.restore_retained_vote(deprecate_legacy_vote_ixs)?;
+        self.take_vote()
+    }
+
+    fn restore_retained_vote(&mut self, deprecate_legacy_vote_ixs: bool) -> Option<()> {
+        let (bytes, source, _) = self.retained_vote.as_ref()?;
+        let vote =
+            SanitizedTransactionView::try_new_sanitized(bytes.clone(), &sanitize_config()).ok()?;
+        let mut restored = Self::new_from_view(vote, *source, deprecate_legacy_vote_ixs).ok()?;
+        restored.retained_vote = self.retained_vote.take();
+        *self = restored;
+        Some(())
     }
 }
 
