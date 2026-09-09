@@ -25,11 +25,8 @@ TEST = 'test_duplicate_shreds_broadcast_leader'
 FILTER = f'package(=solana-local-cluster) & test(={TEST})'
 COUNT = 100
 OVERALL_SECONDS = 240 * 60
-LOG_FILTER = ('error,solana_turbine::broadcast_stage::broadcast_duplicates_run=info,'
-              'solana_core::replay_stage=info,solana_core::repair=info,'
-              'solana_core::repair::cluster_slot_state_verifier=info,'
-              'solana_local_cluster=info,solana_ledger::blockstore=info,'
-              'solana_ledger::blockstore_processor=info')
+LOG_FILTER = ('error,solana_core::replay_stage=warn,'
+              'solana_local_cluster=info,local_cluster=info,lc2_diagnostic=info')
 
 
 def save(path, data):

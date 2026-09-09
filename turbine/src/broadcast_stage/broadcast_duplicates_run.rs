@@ -160,6 +160,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
 
                 if let Some(prev_entry_hash) = prev_entry_hash {
                     info!(
+                        target: "lc2_diagnostic",
                         "duplicate-batch leader={} slot={} parent={} entries={} tick_height={} \
                          max_tick_height={} next_data_index={} next_code_index={} prefix_root={}",
                         keypair.pubkey(),
@@ -280,6 +281,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                     partition_last_data_shred.len()
                 );
                 info!(
+                    target: "lc2_diagnostic",
                     "duplicate-variants leader={} slot={} original_root={} partition_root={} \
                      first_data_index={} final_data_index={}",
                     keypair.pubkey(),

@@ -831,6 +831,7 @@ fn apply_state_changes(
             ResultingStateChange::DuplicateConfirmedSlotMatchesCluster(bank_frozen_hash) => {
                 if let Some(attempts) = purge_repair_slot_counter.get(&slot) {
                     info!(
+                        target: "lc2_diagnostic",
                         "lc2-recovered ledger={:?} slot={slot} hash={bank_frozen_hash} attempts={attempts}",
                         blockstore.ledger_path()
                     );

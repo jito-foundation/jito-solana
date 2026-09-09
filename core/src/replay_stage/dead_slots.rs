@@ -365,6 +365,7 @@ pub(super) fn mark_replay_dead_slot(
     dead_slot_context: &mut DeadSlotContext<'_>,
 ) {
     info!(
+        target: "lc2_diagnostic",
         "lc2-dead ledger={:?} slot={} parent={} error={err:?}",
         dead_slot_context.notifications.blockstore.ledger_path(),
         bank.slot(),
