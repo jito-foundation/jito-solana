@@ -54,7 +54,6 @@ pub struct ConsumeWork<Tx> {
     pub max_ages: Vec<MaxAge>,
     pub revert_on_error: bool,
     pub respond_with_extra_info: bool,
-    pub max_schedule_slot: Option<Slot>,
     /// Admission bank and cost results, taken when settled or returned for release.
     pub admission: Option<CostAdmission>,
 }

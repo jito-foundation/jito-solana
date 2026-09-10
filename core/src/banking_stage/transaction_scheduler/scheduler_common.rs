@@ -217,7 +217,6 @@ impl<Tx> SchedulingCommon<Tx> {
             max_ages,
             revert_on_error: false,
             respond_with_extra_info: false,
-            max_schedule_slot: None,
             admission: None,
         };
         self.consume_work_senders[thread_index]

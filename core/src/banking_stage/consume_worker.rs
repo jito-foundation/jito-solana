@@ -119,12 +119,6 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return Ok(Some(work));
         }
 
-        if let Some(max_schedule_slot) = work.max_schedule_slot
-            && max_schedule_slot < bank.slot()
-        {
-            return self.retry(work).map(|()| None);
-        }
-
         self.metrics
             .count_metrics
             .num_messages_processed
@@ -194,33 +188,25 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             ];
         };
 
-        let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
-        for commit_info in commit_transactions_result.iter() {
-            match commit_info {
+        commit_transactions_result
+            .iter()
+            .map(|commit_info| match commit_info {
                 CommitTransactionDetails::Committed {
                     compute_units,
                     loaded_accounts_data_size,
                     fee_payer_post_balance,
                     result,
-                } => {
-                    processed_results.push(TransactionResult::Committed(
-                        TransactionCommittedResult {
-                            cus_consumed: *compute_units as u32,
-                            feepayer_balance_lamports: *fee_payer_post_balance,
-                            loaded_accounts_data_size: *loaded_accounts_data_size,
-                            execution_success: result.is_ok(),
-                        },
-                    ));
-                }
+                } => TransactionResult::Committed(TransactionCommittedResult {
+                    cus_consumed: *compute_units as u32,
+                    feepayer_balance_lamports: *fee_payer_post_balance,
+                    loaded_accounts_data_size: *loaded_accounts_data_size,
+                    execution_success: result.is_ok(),
+                }),
                 CommitTransactionDetails::NotCommitted(err) => {
-                    processed_results.push(TransactionResult::NotCommitted(
-                        NotCommittedReason::Error(err.clone()),
-                    ));
+                    TransactionResult::NotCommitted(NotCommittedReason::Error(err.clone()))
                 }
-            }
-        }
-
-        processed_results
+            })
+            .collect()
     }
 
     /// Retry current batch and all outstanding batches.
@@ -2549,7 +2535,6 @@ mod tests {
             max_ages: vec![max_age],
             revert_on_error: false,
             respond_with_extra_info: complete_bank,
-            max_schedule_slot: None,
             admission,
         };
         consume_sender.send(work).unwrap();
@@ -2610,7 +2595,6 @@ mod tests {
                     }],
                     revert_on_error: false,
                     respond_with_extra_info: false,
-                    max_schedule_slot: None,
                     admission: None,
                 })
                 .unwrap();
@@ -2673,7 +2657,6 @@ mod tests {
                 }],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -2740,7 +2723,6 @@ mod tests {
             max_ages: vec![max_age],
             revert_on_error: false,
             respond_with_extra_info: false,
-            max_schedule_slot: None,
             admission: None,
         };
         consume_sender.send(work).unwrap();
@@ -2800,7 +2782,6 @@ mod tests {
                 max_ages: vec![max_age, max_age],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -2871,7 +2852,6 @@ mod tests {
                 max_ages: vec![max_age],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -2885,7 +2865,6 @@ mod tests {
                 max_ages: vec![max_age],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -3032,7 +3011,6 @@ mod tests {
                 ],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -3235,12 +3213,12 @@ mod tests {
         let records: Vec<_> = frame.record_receiver.drain().collect();
         assert_eq!(records.len(), 1);
         assert!(!records[0].reschedule_on_sad_handover);
-        assert_eq!(
-            records[0].transactions,
-            crank
+        assert_eq!(records[0].transactions.len(), crank.len());
+        assert!(
+            records[0]
+                .transactions
                 .iter()
-                .map(|tx| tx.to_versioned_transaction())
-                .collect::<Vec<_>>()
+                .all(|tx| tx.signatures[0] != signature)
         );
         let prepared_cost = block_costs(&bank).0 - estimate;
 
@@ -3438,14 +3416,14 @@ mod tests {
         }
         let prior = config();
         let expected = if reconnect { original } else { changed };
-        let publish = || {
+        let publish = |(block_builder, block_builder_commission)| {
             tips.block_builder_fee_info
                 .store(Arc::new(BlockBuilderFeeInfo {
-                    block_builder: expected.0,
-                    block_builder_commission: expected.1,
+                    block_builder,
+                    block_builder_commission,
                 }));
         };
-        publish();
+        publish(expected);
         // This tip is independent of the outstanding ordinary transfer.
         let signature = enqueue(
             &mut container,
@@ -3514,11 +3492,33 @@ mod tests {
         assert_eq!(block_costs(&bank).1, 0);
 
         // Publishing an equal snapshot must not record another crank transaction or charge.
-        publish();
+        publish(expected);
         let settled = block_costs(&bank);
         assert_eq!(schedule(&mut scheduler, &mut container), 0);
         assert_eq!(block_costs(&bank), settled);
         assert!(frame.record_receiver.try_recv().is_err());
+
+        // Cycling back with the same blockhash must produce a fresh crank, not AlreadyProcessed.
+        let blockhash = bank.last_blockhash();
+        for (seq_id, expected) in [prior, expected].into_iter().enumerate() {
+            publish(expected);
+            enqueue(
+                &mut container,
+                &frame.mint_keypair,
+                Pubkey::new_unique(),
+                seq_id as u32 + 2,
+            );
+            assert_eq!(schedule(&mut scheduler, &mut container), 1);
+            assert_eq!(config(), expected);
+            assert_eq!(bank.last_blockhash(), blockhash);
+            let work = worker.consume_receiver.try_recv().unwrap();
+            assert!(worker.consume(work).unwrap().is_none());
+            scheduler
+                .receive_completed(&mut container, &decision)
+                .unwrap();
+            assert_eq!(block_costs(&bank).1, 0);
+            assert_eq!(frame.record_receiver.drain().count(), 2);
+        }
     }
 
     #[test_case("builder")]

@@ -333,16 +333,15 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     revert_on_error: false,
                     respond_with_extra_info: true,
                     target_slot: 0,
-                    max_schedule_slot: None,
                     admission: None,
                 });
             work.ids.extend(batch_ids);
             // The entries were checked above and the container is exclusively borrowed.
-            for (transaction, max_age) in work.ids.iter().filter_map(|txn_id| {
-                container
+            for txn_id in &work.ids {
+                let (transaction, max_age) = container
                     .get_mut_transaction_state(*txn_id)
-                    .map(|state| state.take_transaction_for_scheduling())
-            }) {
+                    .unwrap()
+                    .take_transaction_for_scheduling();
                 work.transactions.push(transaction);
                 work.max_ages.push(max_age);
             }
@@ -385,7 +384,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             work.batch_id = batch_id;
             work.revert_on_error = revert_on_error;
             work.target_slot = slot;
-            work.max_schedule_slot = Some(slot);
             work.admission = Some((Arc::clone(admission_bank), results));
             num_scheduled += work.ids.len();
             if let Err(err) = self.consume_work_sender.send(work) {
@@ -1375,7 +1373,6 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: true,
                 target_slot: bank.slot(),
-                max_schedule_slot: Some(bank.slot()),
                 admission: None,
             });
         }

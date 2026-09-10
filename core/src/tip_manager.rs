@@ -440,6 +440,9 @@ impl TipManager {
                 AccountMeta::new(self.tip_payment_program_info.tip_pda_6.0, false),
                 AccountMeta::new(self.tip_payment_program_info.tip_pda_7.0, false),
                 AccountMeta::new(keypair.pubkey(), true),
+                // Metadata can cycle back within one blockhash. An unused read-only account
+                // makes each required crank distinct without adding an instruction or signer.
+                AccountMeta::new_readonly(Pubkey::new_from_array(rand::random()), false),
             ],
         };
         let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
