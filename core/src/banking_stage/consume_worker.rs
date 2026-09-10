@@ -8,7 +8,7 @@ use {
             TransactionResult,
         },
     },
-    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex},
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
@@ -55,8 +55,6 @@ pub(crate) struct ConsumeWorker<Tx> {
 
     shared_leader_state: SharedLeaderState,
     metrics: Arc<ConsumeWorkerMetrics>,
-
-    tip_processing_dependencies: Option<TipProcessingDependencies>,
 }
 
 impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
@@ -75,27 +73,6 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             consumed_sender,
             shared_leader_state,
             metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
-            tip_processing_dependencies: None,
-        }
-    }
-
-    pub fn new_with_tip_processing_deps(
-        id: u32,
-        exit: Arc<AtomicBool>,
-        consume_receiver: Receiver<ConsumeWork<Tx>>,
-        consumer: Consumer,
-        consumed_sender: Sender<FinishedConsumeWork<Tx>>,
-        shared_leader_state: SharedLeaderState,
-        tip_processing_dependencies: Option<TipProcessingDependencies>,
-    ) -> Self {
-        Self {
-            exit,
-            consume_receiver,
-            consumer,
-            consumed_sender,
-            shared_leader_state,
-            metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
-            tip_processing_dependencies,
         }
     }
 
@@ -176,12 +153,6 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return self.retry(work);
         }
         let admission_results = work.admission.take().map(|(_, results)| results);
-        if admission_results.is_none()
-            && let Some(tips) = &self.tip_processing_dependencies
-            && !tips.process_tip_programs(&self.consumer, bank)
-        {
-            return self.retry(work);
-        }
         let output = self
             .consumer
             .process_and_record_aged_transactions_with_policy(
@@ -2353,6 +2324,7 @@ mod tests {
         crate::{
             banking_stage::{
                 committer::Committer,
+                consumer::TipProcessingDependencies,
                 decision_maker::BufferedPacketsDecision,
                 qos_service::QosService,
                 scheduler_messages::{MaxAge, TransactionBatchId},
@@ -2406,7 +2378,7 @@ mod tests {
         solana_transaction_error::TransactionError,
         std::{
             collections::HashSet,
-            sync::{Mutex, RwLock, atomic::AtomicBool},
+            sync::{RwLock, atomic::AtomicBool},
         },
         test_case::test_case,
     };
@@ -2414,6 +2386,7 @@ mod tests {
     // Helper struct to create tests that hold channels, files, etc.
     // such that our tests can be more easily set up and run.
     struct TestFrame {
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
         mint_keypair: Keypair,
         genesis_config: GenesisConfig,
         bank: Arc<Bank>,
@@ -2482,39 +2455,38 @@ mod tests {
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();
-        let worker = ConsumeWorker::new_with_tip_processing_deps(
+        let worker = ConsumeWorker::new(
             0,
             Arc::new(AtomicBool::new(false)),
             consume_receiver,
             consumer,
             consumed_sender,
             shared_leader_state.clone(),
-            default_rent.then(|| TipProcessingDependencies {
-                tip_manager: TipManager::new(TipManagerConfig {
-                    tip_payment_program_id: Pubkey::new_from_array(
-                        *jito_tip_payment::id().as_array(),
-                    ),
-                    tip_distribution_program_id: Pubkey::new_from_array(
-                        *jito_tip_distribution::id().as_array(),
-                    ),
-                    tip_distribution_account_config: TipDistributionAccountConfig {
-                        merkle_root_upload_authority: mint_keypair.pubkey(),
-                        vote_account: voting_keypair.pubkey(),
-                        commission_bps: 0,
-                    },
-                }),
-                tip_programs_lock: Arc::new(Mutex::new(())),
-                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-                    block_builder: mint_keypair.pubkey(),
-                    block_builder_commission: 0,
-                })),
-                cluster_info,
-                bundle_account_locker: BundleAccountLocker::default(),
-            }),
         );
 
         (
             TestFrame {
+                tip_processing_dependencies: default_rent.then(|| TipProcessingDependencies {
+                    tip_manager: TipManager::new(TipManagerConfig {
+                        tip_payment_program_id: Pubkey::new_from_array(
+                            *jito_tip_payment::id().as_array(),
+                        ),
+                        tip_distribution_program_id: Pubkey::new_from_array(
+                            *jito_tip_distribution::id().as_array(),
+                        ),
+                        tip_distribution_account_config: TipDistributionAccountConfig {
+                            merkle_root_upload_authority: mint_keypair.pubkey(),
+                            vote_account: voting_keypair.pubkey(),
+                            commission_bps: 0,
+                        },
+                    }),
+                    block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                        block_builder: mint_keypair.pubkey(),
+                        block_builder_commission: 0,
+                    })),
+                    cluster_info,
+                    bundle_account_locker: BundleAccountLocker::default(),
+                }),
                 mint_keypair,
                 genesis_config,
                 bank,
@@ -3149,7 +3121,7 @@ mod tests {
     ) {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
-        let tips = worker.tip_processing_dependencies.as_ref().unwrap();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
         assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
         frame.record_receiver.drain().for_each(drop);
         let parent = frame.bank.clone();
@@ -3392,7 +3364,7 @@ mod tests {
     fn test_tip_preparation_failure_is_retryable(failure: &str) {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
-        let tips = worker.tip_processing_dependencies.as_ref().unwrap();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
         assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
         frame.record_receiver.drain().for_each(drop);
         // Earlier success must not mask metadata or account changes on this same Bank.
@@ -3461,7 +3433,7 @@ mod tests {
         let (mut frame, worker) = setup_test_frame(true);
         frame.genesis_config.rent = Rent::free();
         let bank = Arc::new(Bank::new_for_tests(&frame.genesis_config));
-        let tips = worker.tip_processing_dependencies.as_ref().unwrap();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
         assert!(tips.process_tip_programs(&worker.consumer, &bank));
         assert_eq!(block_costs(&bank), (0, 0));
         assert!(frame.record_receiver.try_recv().is_err());

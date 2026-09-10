@@ -687,14 +687,13 @@ impl BankingStage {
             let mut worker_metrics = Vec::with_capacity(num_workers);
             for index in 0..num_workers {
                 let id = index + BAM_METRICS_ID_OFFSET as usize;
-                let consume_worker = ConsumeWorker::new_with_tip_processing_deps(
+                let consume_worker = ConsumeWorker::new(
                     id as u32,
                     exit.clone(),
                     work_receiver.clone(),
                     consumer.clone(),
                     finished_work_sender.clone(),
                     self.poh_recorder.read().unwrap().shared_leader_state(),
-                    tip_processing_dependencies.clone(),
                 );
 
                 worker_metrics.push(consume_worker.metrics_handle());

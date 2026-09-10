@@ -79,7 +79,7 @@ use {
         num::NonZeroUsize,
         path::PathBuf,
         sync::{
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
             atomic::{AtomicBool, AtomicU8},
         },
         thread::{self, JoinHandle},
@@ -454,7 +454,6 @@ impl Tpu {
             bundle_account_locker.clone(),
             Some(TipProcessingDependencies {
                 tip_manager: tip_manager.clone(),
-                tip_programs_lock: Arc::new(Mutex::new(())),
                 block_builder_fee_info: block_builder_fee_info.clone(),
                 cluster_info: cluster_info.clone(),
                 bundle_account_locker: bundle_account_locker.clone(),

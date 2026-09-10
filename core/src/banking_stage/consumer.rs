@@ -36,10 +36,7 @@ use {
     },
     solana_transaction_error::TransactionError,
     solana_vote::vote_parser,
-    std::{
-        num::Saturating,
-        sync::{Arc, Mutex},
-    },
+    std::{num::Saturating, sync::Arc},
 };
 
 /// Consumer will create chunks of transactions from buffer with up to this size.
@@ -118,18 +115,14 @@ pub struct LeaderProcessedTransactionCounts {
 #[derive(Clone)]
 pub struct TipProcessingDependencies {
     pub tip_manager: TipManager,
-    pub tip_programs_lock: Arc<Mutex<()>>,
     pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
     pub cluster_info: Arc<ClusterInfo>,
     pub bundle_account_locker: BundleAccountLocker,
 }
 
 impl TipProcessingDependencies {
-    /// Prepare this exact Bank before admitting BAM work, including worker handover fallback.
+    /// Prepare this exact Bank on the scheduler thread before admitting BAM work.
     pub(super) fn process_tip_programs(&self, consumer: &Consumer, bank: &Arc<Bank>) -> bool {
-        // Fallbacks can straddle a BAM reconnect on one Bank. Recheck its actual configuration
-        // each time; matching preadmitted workers already skip this path.
-        let _tip_programs_guard = self.tip_programs_lock.lock().unwrap();
         let bank_key = (bank.slot(), bank.bank_id());
         // Match BundleStage's local-cluster policy: free-rent PDAs are discarded by AccountsDb.
         if bank.rent_collector().rent.minimum_balance(0) == 0 {
