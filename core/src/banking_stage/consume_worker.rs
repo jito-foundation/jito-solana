@@ -1,15 +1,16 @@
 use {
     super::{
-        committer::CommitTransactionDetails,
         consumer::{Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         scheduler_messages::{
             ConsumeWork, FinishedConsumeWork, NotCommittedReason, TransactionResult,
         },
     },
-    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex},
+    crate::banking_stage::{
+        consumer::{ExecutionFlags, RetryableIndex},
+        transaction_scheduler::bam_utils::build_finished_consume_work_extra_info,
+    },
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
-    jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
     solana_pubkey::Pubkey,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -37,6 +38,12 @@ impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError {
     fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
         Self::Send
     }
+}
+
+enum ProcessingStatus<Tx> {
+    Processed,
+    /// Work could not be processed due to lack of bank.
+    CouldNotProcess(ConsumeWork<Tx>),
 }
 
 pub(crate) struct ConsumeWorker<Tx> {
@@ -81,8 +88,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             match self.consume_receiver.try_recv() {
                 Ok(work) => {
                     did_work = true;
-                    if let Some(work) = self.consume(work)? {
-                        self.retry_drain(work)?;
+                    match self.consume(work)? {
+                        ProcessingStatus::Processed => {}
+                        ProcessingStatus::CouldNotProcess(work) => {
+                            self.retry_drain(work)?;
+                        }
                     }
                 }
                 Err(TryRecvError::Empty) => {
@@ -104,17 +114,16 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(())
     }
 
-    /// Consume a batch, returning unprocessed work when no matching bank is active.
     fn consume(
         &self,
         mut work: ConsumeWork<Tx>,
-    ) -> Result<Option<ConsumeWork<Tx>>, ConsumeWorkerError> {
+    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError> {
         let leader_state = self.shared_leader_state.load();
         let Some(bank) = leader_state
             .working_bank()
             .filter(|bank| !bank.is_complete() && bank.slot() == work.target_slot)
         else {
-            return Ok(Some(work));
+            return Ok(ProcessingStatus::CouldNotProcess(work));
         };
 
         self.metrics
@@ -129,7 +138,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             && owner.bank_id() != bank.bank_id()
         {
             // A replacement Bank needs ordered admission again, through the scheduler.
-            return self.retry(work).map(|()| None);
+            return self.retry(work).map(|()| ProcessingStatus::Processed);
         }
         let admission_results = work.admission.take().map(|(_, results)| results);
         let output = self
@@ -151,7 +160,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 
         let extra_info = work
             .respond_with_extra_info
-            .then(|| Self::build_finished_consume_work_extra_info(&output, &work));
+            .then(|| build_finished_consume_work_extra_info(&output, work.transactions.len()));
 
         self.consumed_sender.send(FinishedConsumeWork {
             work,
@@ -160,51 +169,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 .retryable_transaction_indexes,
             extra_info,
         })?;
-        Ok(None)
-    }
-
-    /// Builds per-transaction results from consume output for BAM responses.
-    ///
-    /// If commit details are available, each `CommitTransactionDetails` is mapped into a
-    /// `TransactionResult` with commit metadata or a not-committed error. If commit details are
-    /// unavailable (e.g., a PoH recorder failure), it falls back to one `NotCommitted(PohTimeout)`
-    /// result per input transaction.
-    fn build_finished_consume_work_extra_info(
-        output: &ProcessTransactionBatchOutput,
-        work: &ConsumeWork<Tx>,
-    ) -> Vec<TransactionResult> {
-        let Ok(commit_transactions_result) = output
-            .execute_and_commit_transactions_output
-            .commit_transactions_result
-            .as_ref()
-        else {
-            return vec![
-                TransactionResult::NotCommitted(
-                    NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
-                );
-                work.transactions.len()
-            ];
-        };
-
-        commit_transactions_result
-            .iter()
-            .map(|commit_info| match commit_info {
-                CommitTransactionDetails::Committed {
-                    compute_units,
-                    loaded_accounts_data_size,
-                    fee_payer_post_balance,
-                    result,
-                } => TransactionResult::Committed(TransactionCommittedResult {
-                    cus_consumed: *compute_units as u32,
-                    feepayer_balance_lamports: *fee_payer_post_balance,
-                    loaded_accounts_data_size: *loaded_accounts_data_size,
-                    execution_success: result.is_ok(),
-                }),
-                CommitTransactionDetails::NotCommitted(err) => {
-                    TransactionResult::NotCommitted(NotCommittedReason::Error(err.clone()))
-                }
-            })
-            .collect()
+        Ok(ProcessingStatus::Processed)
     }
 
     /// Retry current batch and all outstanding batches.
@@ -2284,15 +2249,15 @@ mod tests {
     use {
         super::*,
         crate::{
+            bam_dependencies::TipProcessingDependencies,
             banking_stage::{
                 committer::Committer,
-                consumer::TipProcessingDependencies,
                 decision_maker::BufferedPacketsDecision,
                 qos_service::QosService,
                 scheduler_messages::{MaxAge, TransactionBatchId},
                 tests::{create_slow_genesis_config_with_leader, sanitize_transactions},
                 transaction_scheduler::{
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{BamScheduler, try_admit_transactions},
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -2512,14 +2477,9 @@ mod tests {
             alt_invalidation_slot: bank.slot(),
         };
         let (admission, expected_costs) = if complete_bank {
-            let (results, estimate) = QosService::try_admit_transactions(
-                bank,
-                &transactions,
-                std::iter::repeat(Ok(())),
-                0,
-                false,
-            )
-            .unwrap();
+            let (results, estimate) =
+                try_admit_transactions(bank, &transactions, std::iter::repeat(Ok(())), 0, false)
+                    .unwrap();
             bank.fill_bank_with_ticks_for_tests();
             (Some((bank.clone(), results)), (estimate, 1))
         } else {
@@ -3436,7 +3396,10 @@ mod tests {
             assert!(frame.record_receiver.try_recv().is_err());
             assert_eq!(block_costs(&bank), reserved);
             assert_eq!(config(), prior);
-            assert!(worker.consume(work).unwrap().is_none());
+            assert!(matches!(
+                worker.consume(work).unwrap(),
+                ProcessingStatus::Processed
+            ));
             scheduler
                 .receive_completed(&mut container, &decision)
                 .unwrap();
@@ -3476,7 +3439,10 @@ mod tests {
         );
         let work = worker.consume_receiver.try_recv().unwrap();
         assert_eq!(work.admission.as_ref().unwrap().1.as_slice(), &[Ok(())]);
-        assert!(worker.consume(work).unwrap().is_none());
+        assert!(matches!(
+            worker.consume(work).unwrap(),
+            ProcessingStatus::Processed
+        ));
         let finished = frame.consumed_receiver.try_recv().unwrap();
         assert!(matches!(&finished.extra_info.as_ref().unwrap()[0],
             TransactionResult::Committed(result) if result.execution_success));
@@ -3510,7 +3476,10 @@ mod tests {
             assert_eq!(config(), expected);
             assert_eq!(bank.last_blockhash(), blockhash);
             let work = worker.consume_receiver.try_recv().unwrap();
-            assert!(worker.consume(work).unwrap().is_none());
+            assert!(matches!(
+                worker.consume(work).unwrap(),
+                ProcessingStatus::Processed
+            ));
             scheduler
                 .receive_completed(&mut container, &decision)
                 .unwrap();

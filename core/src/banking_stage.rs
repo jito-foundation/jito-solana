@@ -7,7 +7,7 @@ use {
         vote_packet_receiver::VotePacketReceiver, vote_storage::VoteStorage,
     },
     crate::{
-        bam_dependencies::BamDependencies,
+        bam_dependencies::{BamDependencies, TipProcessingDependencies},
         banking_stage::{
             consume_worker::ConsumeWorker,
             transaction_scheduler::{
@@ -25,7 +25,6 @@ use {
     agave_banking_stage_ingress_types::{BankingPacketReceiver, SchedulerPriorityFloor},
     agave_votor::slot_clock::SharedAlpenglowSlotClock,
     ahash::HashSet as AHashSet,
-    consumer::TipProcessingDependencies,
     crossbeam_channel::{Receiver, Sender, bounded, unbounded},
     futures::{StreamExt, stream::FuturesUnordered},
     histogram::Histogram,

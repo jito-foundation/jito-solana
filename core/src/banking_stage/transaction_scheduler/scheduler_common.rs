@@ -246,6 +246,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
             Ok(FinishedConsumeWork {
                 work:
                     ConsumeWork {
+                        target_slot: _,
                         batch_id,
                         mut ids,
                         mut transactions,

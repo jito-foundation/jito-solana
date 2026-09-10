@@ -5,20 +5,14 @@ use {
         qos_service::QosService,
         scheduler_messages::MaxAge,
     },
-    crate::{
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
-        proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager,
-    },
-    arc_swap::ArcSwap,
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     smallvec::SmallVec,
     solana_accounts_db::accounts::TransactionAccountLocksIterator,
-    solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
     solana_poh::{
         poh_recorder::PohRecorderError,
         transaction_recorder::{RecordTransactionsTimings, TransactionRecorder},
     },
-    solana_pubkey::Pubkey,
     solana_runtime::{
         bank::{
             Bank, LoadAndExecuteTransactionsOutput, entry_bytes_budget::EntryBytesReserveError,
@@ -36,7 +30,7 @@ use {
     },
     solana_transaction_error::TransactionError,
     solana_vote::vote_parser,
-    std::{num::Saturating, sync::Arc},
+    std::num::Saturating,
 };
 
 /// Consumer will create chunks of transactions from buffer with up to this size.
@@ -110,69 +104,6 @@ pub struct LeaderProcessedTransactionCounts {
     // Total number of the processed transactions that returned success/not
     // an error.
     pub(crate) processed_with_successful_result_count: u64,
-}
-
-#[derive(Clone)]
-pub struct TipProcessingDependencies {
-    pub tip_manager: TipManager,
-    pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
-    pub cluster_info: Arc<ClusterInfo>,
-    pub bundle_account_locker: BundleAccountLocker,
-}
-
-impl TipProcessingDependencies {
-    /// Prepare this Bank on the scheduler thread using the metadata snapshot it caches.
-    pub(super) fn process_tip_programs(
-        &self,
-        consumer: &Consumer,
-        bank: &Arc<Bank>,
-        builder: &BlockBuilderFeeInfo,
-    ) -> bool {
-        let bank_key = (bank.slot(), bank.bank_id());
-        // Match BundleStage's local-cluster policy: free-rent PDAs are discarded by AccountsDb.
-        if bank.rent_collector().rent.minimum_balance(0) == 0 {
-            return true;
-        }
-        if builder.block_builder == Pubkey::default() {
-            return false;
-        }
-        let keypair = self.cluster_info.keypair();
-        let process = |bundle: crate::tip_manager::Result<SmallVec<[_; 2]>>| {
-            let Ok(bundle) = bundle else {
-                debug!("tip bundle construction failed for bank {bank_key:?}: {bundle:?}");
-                return false;
-            };
-            if bundle.is_empty() {
-                return true;
-            }
-            let results = consumer
-                .process_and_record_transactions_with_policy(
-                    bank,
-                    &bundle,
-                    Some(&self.bundle_account_locker),
-                    true,
-                )
-                .execute_and_commit_transactions_output
-                .commit_transactions_result;
-            debug!("tip bundle result for bank {bank_key:?}: {results:?}");
-            results.is_ok_and(|results| {
-                results.iter().all(|result| {
-                    matches!(
-                        result,
-                        CommitTransactionDetails::Committed { result: Ok(()), .. }
-                    )
-                })
-            })
-        };
-        // Crank construction reads the accounts created by initialization; keep it lazy.
-        process(
-            self.tip_manager
-                .get_initialize_tip_programs_bundle(bank, &keypair),
-        ) && process(
-            self.tip_manager
-                .get_tip_programs_crank_bundle(bank, &keypair, builder),
-        )
-    }
 }
 
 #[derive(Clone)]
@@ -761,7 +692,10 @@ impl Consumer {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::tests::{create_slow_genesis_config, sanitize_transactions},
+        crate::banking_stage::{
+            tests::{create_slow_genesis_config, sanitize_transactions},
+            transaction_scheduler::bam_scheduler::try_admit_transactions,
+        },
         agave_reserved_account_keys::ReservedAccountKeys,
         crossbeam_channel::{bounded, unbounded},
         solana_account::{AccountSharedData, state_traits::StateMutWincode as _},
@@ -1721,7 +1655,7 @@ mod tests {
                     max_age.alt_invalidation_slot,
                 )
             };
-            let (admission_results, _) = QosService::try_admit_transactions(
+            let (admission_results, _) = try_admit_transactions(
                 &bank,
                 transactions,
                 std::iter::once(resanitize()),
@@ -1809,7 +1743,7 @@ mod tests {
             system_transaction::transfer(&low_payer, &low_recipient, 1, bank.last_blockhash()),
         ]);
         // A scheduler rejection stays final even if the bank has room when the worker runs.
-        let (admission_results, _) = QosService::try_admit_transactions(
+        let (admission_results, _) = try_admit_transactions(
             &bank,
             &transactions,
             [Err(TransactionError::WouldExceedMaxBlockCostLimit), Ok(())].into_iter(),

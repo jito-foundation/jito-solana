@@ -1,5 +1,10 @@
 use {
-    jito_protos::proto::bam_types::TransactionErrorReason,
+    crate::banking_stage::{
+        committer::CommitTransactionDetails,
+        consumer::ProcessTransactionBatchOutput,
+        scheduler_messages::{NotCommittedReason, TransactionResult},
+    },
+    jito_protos::proto::bam_types::{TransactionCommittedResult, TransactionErrorReason},
     solana_transaction_error::TransactionError,
 };
 
@@ -81,4 +86,48 @@ pub fn convert_txn_error_to_proto(err: TransactionError) -> TransactionErrorReas
         }
         TransactionError::CommitCancelled => TransactionErrorReason::CommitCancelled,
     }
+}
+
+/// Builds per-transaction results from consume output for BAM responses.
+///
+/// If commit details are available, each `CommitTransactionDetails` is mapped into a
+/// `TransactionResult` with commit metadata or a not-committed error. If commit details are
+/// unavailable (e.g., a PoH recorder failure), it falls back to one `NotCommitted(PohTimeout)`
+/// result per input transaction.
+pub(in crate::banking_stage) fn build_finished_consume_work_extra_info(
+    output: &ProcessTransactionBatchOutput,
+    transaction_count: usize,
+) -> Vec<TransactionResult> {
+    let Ok(commit_transactions_result) = output
+        .execute_and_commit_transactions_output
+        .commit_transactions_result
+        .as_ref()
+    else {
+        return vec![
+            TransactionResult::NotCommitted(
+                NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
+            );
+            transaction_count
+        ];
+    };
+
+    commit_transactions_result
+        .iter()
+        .map(|commit_info| match commit_info {
+            CommitTransactionDetails::Committed {
+                compute_units,
+                loaded_accounts_data_size,
+                fee_payer_post_balance,
+                result,
+            } => TransactionResult::Committed(TransactionCommittedResult {
+                cus_consumed: *compute_units as u32,
+                feepayer_balance_lamports: *fee_payer_post_balance,
+                loaded_accounts_data_size: *loaded_accounts_data_size,
+                execution_success: result.is_ok(),
+            }),
+            CommitTransactionDetails::NotCommitted(err) => {
+                TransactionResult::NotCommitted(NotCommittedReason::Error(err.clone()))
+            }
+        })
+        .collect()
 }

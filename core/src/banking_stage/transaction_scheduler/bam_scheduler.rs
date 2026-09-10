@@ -10,9 +10,9 @@ use {
         transaction_state_container::StateContainer,
     },
     crate::{
-        bam_dependencies::BamOutboundMessage,
+        bam_dependencies::{BamOutboundMessage, TipProcessingDependencies},
         banking_stage::{
-            consumer::{Consumer, TipProcessingDependencies},
+            consumer::Consumer,
             decision_maker::BufferedPacketsDecision,
             qos_service::QosService,
             scheduler_messages::{
@@ -34,13 +34,14 @@ use {
     prio_graph::{AccessKind, GraphNode, PrioGraph},
     smallvec::SmallVec,
     solana_clock::{BankId, MAX_PROCESSING_AGE, Slot},
+    solana_cost_model::cost_tracker::CostTrackerError,
     solana_nohash_hasher::IntMap,
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-    solana_transaction_error::TransactionError,
+    solana_transaction_error::{TransactionError, TransactionResult as CostResult},
     std::{
         borrow::Borrow,
         collections::BTreeMap,
@@ -100,6 +101,70 @@ struct InflightBatchInfo {
     seq_id: u32,
     /// Estimate the scheduler reserved for this work, held until completion.
     reserved_cost: u64,
+}
+
+/// Reserves transaction costs in order and returns the decisions and reserved-cost sum.
+/// A block-limit shortfall covered by unsettled estimates rolls back this attempt and returns
+/// `None`. Atomic batches only defer if their known costs could fit after refunds;
+/// a final atomic rejection releases its reservations and cancels its accepted transactions.
+pub(in crate::banking_stage) fn try_admit_transactions(
+    bank: &Bank,
+    transactions: &[impl TransactionWithMeta],
+    pre_results: impl Iterator<Item = CostResult<()>>,
+    inflight_reserved_cost: u64,
+    revert_on_error: bool,
+) -> Option<(SmallVec<[CostResult<()>; 1]>, u64)> {
+    let transaction_costs =
+        QosService::compute_transaction_costs(&bank.feature_set, transactions.iter(), pre_results);
+
+    let mut results = SmallVec::with_capacity(transaction_costs.len());
+    let mut cost_tracker = bank.write_cost_tracker().unwrap();
+    let mut reserved_cost = 0;
+    for cost_result in &transaction_costs {
+        results.push(match cost_result {
+            Err(err) => Err(err.clone()),
+            Ok(cost) => match cost_tracker.try_add(cost) {
+                Ok(_) => {
+                    reserved_cost += cost.sum();
+                    Ok(())
+                }
+                Err(CostTrackerError::WouldExceedBlockMaxLimit)
+                    if cost_tracker.block_cost().saturating_add(cost.sum())
+                        - cost_tracker.block_cost_limit()
+                        <= inflight_reserved_cost
+                        && (!revert_on_error
+                            // Exclude this attempt's prefix and all earlier estimates.
+                            // Estimates can already be settled before their completion arrives.
+                            || transaction_costs.iter().flatten().fold(
+                                cost_tracker.block_cost()
+                                    .saturating_sub(reserved_cost)
+                                    .saturating_sub(inflight_reserved_cost),
+                                |total, cost| total.saturating_add(cost.sum()),
+                            ) <= cost_tracker.block_cost_limit()) =>
+                {
+                    for (result, cost) in results.iter().zip(&transaction_costs) {
+                        if let (Ok(()), Ok(cost)) = (result, cost) {
+                            cost_tracker.remove(cost);
+                        }
+                    }
+                    return None;
+                }
+                Err(err) => Err(TransactionError::from(err)),
+            },
+        });
+    }
+    if revert_on_error && results.iter().any(Result::is_err) {
+        // These transactions cannot commit; do not hold capacity until the worker responds.
+        for (result, cost) in results.iter_mut().zip(&transaction_costs) {
+            if let (Ok(()), Ok(cost)) = (&*result, cost) {
+                cost_tracker.remove(cost);
+                *result = Err(TransactionError::CommitCancelled);
+            }
+        }
+        reserved_cost = 0;
+    }
+    cost_tracker.add_transactions_in_flight(results.iter().flatten().count());
+    Some((results, reserved_cost))
 }
 
 impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
@@ -353,7 +418,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
             // Admit cost here, in pop order, so eight workers racing for the cost tracker cannot
             // reorder it.
-            let attempt = QosService::try_admit_transactions(
+            let attempt = try_admit_transactions(
                 admission_bank,
                 &work.transactions,
                 work.transactions

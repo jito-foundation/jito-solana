@@ -197,13 +197,15 @@ where
         bam_enabled: Arc<AtomicU8>,
     ) -> Self {
         priority_floor.clear();
+        let container_capacity = TOTAL_BUFFERED_PACKETS;
+        let saturation_state = SaturationState::new(priority_floor, container_capacity);
         Self {
             exit,
             config,
             decision_maker,
             receive_and_buffer,
             sharable_banks,
-            container: R::Container::with_capacity(TOTAL_BUFFERED_PACKETS),
+            container: R::Container::with_capacity(container_capacity),
             scheduler,
             count_metrics: SchedulerCountMetrics::new(metrics_id),
             timing_metrics: SchedulerTimingMetrics::new(metrics_id),
@@ -211,7 +213,7 @@ where
             scheduling_details: SchedulingDetails::new(metrics_id),
             recheck_cursor: None,
             recheck_chunk: Vec::with_capacity(CHECK_CHUNK),
-            saturation_state: SaturationState::new(priority_floor, TOTAL_BUFFERED_PACKETS),
+            saturation_state,
             bam_controller,
             bam_enabled,
         }
