@@ -1167,6 +1167,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "bam-local-cluster"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-feature-set",
+ "agave-logger",
+ "anyhow",
+ "clap 2.34.0",
+ "log",
+ "serde",
+ "serde_json",
+ "solana-account 4.6.0",
+ "solana-cluster-type",
+ "solana-commitment-config",
+ "solana-faucet",
+ "solana-feature-gate-interface",
+ "solana-fee-calculator",
+ "solana-genesis-config",
+ "solana-genesis-utils",
+ "solana-keypair",
+ "solana-ledger",
+ "solana-local-cluster",
+ "solana-native-token",
+ "solana-program-binaries",
+ "solana-pubkey 4.3.0",
+ "solana-rent",
+ "solana-rpc",
+ "solana-rpc-client",
+ "solana-runtime",
+ "solana-shred-version",
+ "solana-signer",
+ "solana-system-interface 3.3.0",
+ "solana-vote-program",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4610,7 +4647,7 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d6ea3c4595b96363c13943497db34af4460fb474a95c43f4446ad341b8c9785"
 dependencies = [
- "toml",
+ "toml 0.5.11",
 ]
 
 [[package]]
@@ -5548,6 +5585,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
 ]
 
 [[package]]
@@ -7380,6 +7426,80 @@ dependencies = [
  "solana-pubkey 3.0.0",
  "solana-sdk-ids",
  "solana-system-interface 2.0.0",
+]
+
+[[package]]
+name = "solana-local-cluster"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-feature-set",
+ "agave-logger",
+ "agave-snapshots",
+ "agave-votor",
+ "agave-votor-messages",
+ "agave-votor-transport",
+ "arc-swap",
+ "crossbeam-channel",
+ "itertools 0.15.0",
+ "log",
+ "rand 0.9.4",
+ "rayon",
+ "solana-account 4.6.0",
+ "solana-accounts-db",
+ "solana-bls-signatures",
+ "solana-client-traits",
+ "solana-clock",
+ "solana-cluster-type",
+ "solana-commitment-config",
+ "solana-core",
+ "solana-entry",
+ "solana-epoch-schedule",
+ "solana-feature-gate-interface",
+ "solana-fee-structure",
+ "solana-genesis-config",
+ "solana-gossip",
+ "solana-hard-forks",
+ "solana-hash 4.6.0",
+ "solana-keypair",
+ "solana-leader-schedule",
+ "solana-ledger",
+ "solana-message",
+ "solana-native-token",
+ "solana-net-utils",
+ "solana-packet 4.3.0",
+ "solana-perf",
+ "solana-poh-config",
+ "solana-program-binaries",
+ "solana-pubkey 4.3.0",
+ "solana-pubsub-client",
+ "solana-rent",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-runtime",
+ "solana-sdk-ids",
+ "solana-shred-version",
+ "solana-signer",
+ "solana-slot-hashes",
+ "solana-stake-interface",
+ "solana-streamer",
+ "solana-system-interface 3.3.0",
+ "solana-system-transaction",
+ "solana-time-utils",
+ "solana-tpu-client",
+ "solana-tpu-client-next",
+ "solana-transaction",
+ "solana-transaction-error",
+ "solana-turbine",
+ "solana-validator-exit",
+ "solana-vote",
+ "solana-vote-interface",
+ "solana-vote-program",
+ "static_assertions",
+ "strum",
+ "tempfile",
+ "tokio",
+ "tokio-util 0.7.19",
+ "wincode",
 ]
 
 [[package]]
@@ -10069,6 +10189,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.0.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10084,7 +10228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7193cbd0ce53dc966037f54351dbbcf0d5a642c7f0038c382ef9e677ce8c13f2"
 dependencies = [
  "indexmap",
- "toml_datetime",
+ "toml_datetime 1.0.0+spec-1.1.0",
  "toml_parser",
  "winnow",
 ]
@@ -10097,6 +10241,12 @@ checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tonic"
