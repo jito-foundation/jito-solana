@@ -8,15 +8,10 @@ use {
             TransactionResult,
         },
     },
-    crate::{
-        bam_dependencies::BamConnectionState,
-        banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
-    },
+    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex},
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
-    solana_pubkey::Pubkey,
-    solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
@@ -59,8 +54,6 @@ pub(crate) struct ConsumeWorker<Tx> {
 
     shared_leader_state: SharedLeaderState,
     metrics: Arc<ConsumeWorkerMetrics>,
-
-    tip_processing_dependencies: Option<TipProcessingDependencies>,
 }
 
 impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
@@ -79,27 +72,6 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             consumed_sender,
             shared_leader_state,
             metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
-            tip_processing_dependencies: None,
-        }
-    }
-
-    pub fn new_with_tip_processing_deps(
-        id: u32,
-        exit: Arc<AtomicBool>,
-        consume_receiver: Receiver<ConsumeWork<Tx>>,
-        consumer: Consumer,
-        consumed_sender: Sender<FinishedConsumeWork<Tx>>,
-        shared_leader_state: SharedLeaderState,
-        tip_processing_dependencies: Option<TipProcessingDependencies>,
-    ) -> Self {
-        Self {
-            exit,
-            consume_receiver,
-            consumer,
-            consumed_sender,
-            shared_leader_state,
-            metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
-            tip_processing_dependencies,
         }
     }
 
@@ -147,7 +119,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     #[allow(clippy::result_large_err)]
     fn consume(
         &self,
-        work: ConsumeWork<Tx>,
+        mut work: ConsumeWork<Tx>,
     ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
@@ -162,34 +134,35 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return self.retry(work);
         }
 
-        // Best-effort tip-program upkeep for batches that touch tip accounts.
-        if !self.maybe_run_tip_programs(bank, &work.transactions) {
-            error!(
-                "Error running tip programs for transactions: {:?}",
-                work.transactions
-            );
-            datapoint_error!(
-                "consume-worker-error",
-                ("error", "tip_programs_error", String),
-            );
-        }
-
         self.metrics
             .count_metrics
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
-        let output = self.consumer.process_and_record_aged_transactions(
-            bank,
-            &work.transactions,
-            &work.max_ages,
-            &ExecutionFlags {
-                drop_on_failure: work.revert_on_error,
-                all_or_nothing: work.revert_on_error,
-            },
-            None, // bundle account locker checked in scheduler
-            work.revert_on_error,
-        );
+        // The scheduler already reserved cost on this exact bank, in scheduling order. Taking
+        // the admission out of the work marks the reservation as settled by this worker; work
+        // that goes back still carrying one is released by the scheduler.
+        if let Some((owner, _)) = &work.admission
+            && owner.bank_id() != bank.bank_id()
+        {
+            // A replacement Bank needs ordered admission again, through the scheduler.
+            return self.retry(work);
+        }
+        let admission_results = work.admission.take().map(|(_, results)| results);
+        let output = self
+            .consumer
+            .process_and_record_aged_transactions_with_policy(
+                bank,
+                &work.transactions,
+                &work.max_ages,
+                &ExecutionFlags {
+                    drop_on_failure: work.revert_on_error,
+                    all_or_nothing: work.revert_on_error,
+                },
+                None, // bundle account locker checked in scheduler
+                work.revert_on_error,
+                admission_results,
+            );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
@@ -205,104 +178,6 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             extra_info,
         })?;
         Ok(ProcessingStatus::Processed)
-    }
-
-    /// Best-effort per-slot tip-program maintenance for batches that touch tip accounts.
-    ///
-    /// Returns `true` when tip deps are disabled, no tip account is touched, tips were already
-    /// updated for this bank, or the best-effort upkeep path reaches the end.
-    /// Bundle-construction errors from init/crank bundle creation are non-fatal (crank errors are
-    /// logged), and this path still records the bank as updated.
-    ///
-    /// Returns `false` when required upkeep transactions fail to commit, or when block-builder
-    /// info is unavailable.
-    fn maybe_run_tip_programs(&self, bank: &Arc<Bank>, txs: &[impl TransactionWithMeta]) -> bool {
-        let Some(TipProcessingDependencies {
-            tip_manager,
-            last_tip_updated_bank,
-            block_builder_fee_info,
-            bam_enabled,
-            cluster_info,
-            bundle_account_locker,
-        }) = &self.tip_processing_dependencies
-        else {
-            return true;
-        };
-
-        // Return true if no tip accounts touched
-        let tip_accounts = tip_manager.get_tip_accounts();
-        if !txs
-            .iter()
-            .flat_map(|tx| tx.account_keys().iter())
-            .any(|key| tip_accounts.contains(key))
-        {
-            return true;
-        }
-
-        if bam_enabled.load(Ordering::Acquire) != BamConnectionState::Connected as u8 {
-            return true;
-        }
-
-        let mut last_tip_updated_bank_guard = last_tip_updated_bank.lock().unwrap();
-        if *last_tip_updated_bank_guard == Some((bank.slot(), bank.bank_id())) {
-            return true;
-        }
-
-        let keypair = cluster_info.keypair();
-        let initialize_tip_programs_bundle =
-            tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
-        if let Ok(init_bundle) = initialize_tip_programs_bundle {
-            let result = self.consumer.process_and_record_transactions(
-                bank,
-                &init_bundle,
-                bundle_account_locker,
-                true,
-            );
-            if result
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-                .map_or(true, |results| {
-                    results
-                        .iter()
-                        .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
-                })
-            {
-                return false;
-            }
-        }
-
-        let block_builder_fee_info = block_builder_fee_info.load();
-        if block_builder_fee_info.block_builder == Pubkey::default() {
-            return false;
-        }
-        match tip_manager.get_tip_programs_crank_bundle(bank, &keypair, &block_builder_fee_info) {
-            Ok(tip_crank_bundle) => {
-                let result = self.consumer.process_and_record_transactions(
-                    bank,
-                    &tip_crank_bundle,
-                    bundle_account_locker,
-                    true,
-                );
-                if result
-                    .execute_and_commit_transactions_output
-                    .commit_transactions_result
-                    .map_or(true, |results| {
-                        results
-                            .iter()
-                            .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
-                    })
-                {
-                    return false;
-                }
-            }
-            Err(e) => {
-                error!("error getting tip programs crank bundle: {e:?}");
-                // ignore this error for now so tips can get processed
-            }
-        }
-
-        *last_tip_updated_bank_guard = Some((bank.slot(), bank.bank_id()));
-        true
     }
 
     /// Builds `FinishedConsumeWorkExtraInfo` from consume output for BAM responses.
@@ -3257,8 +3132,16 @@ mod tests {
         crate::{
             banking_stage::{
                 committer::Committer,
+                consumer::TipProcessingDependencies,
+                decision_maker::BufferedPacketsDecision,
+                qos_service::QosService,
                 scheduler_messages::{MaxAge, TransactionBatchId},
-                tests::{create_slow_genesis_config, sanitize_transactions},
+                tests::{create_slow_genesis_config_with_leader, sanitize_transactions},
+                transaction_scheduler::{
+                    bam_scheduler::BamScheduler,
+                    scheduler::Scheduler,
+                    transaction_state_container::{StateContainer, TransactionStateContainer},
+                },
             },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -3269,8 +3152,9 @@ mod tests {
         },
         arc_swap::ArcSwap,
         crossbeam_channel::{bounded, unbounded},
-        solana_account::Account,
+        solana_account::{Account, AccountSharedData},
         solana_clock::Slot,
+        solana_cost_model::cost_tracker::CostTrackerLimits,
         solana_genesis_config::GenesisConfig,
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_keypair::Keypair,
@@ -3286,6 +3170,7 @@ mod tests {
             transaction_recorder::TransactionRecorder,
         },
         solana_program_binaries::{jito_tip_distribution, jito_tip_payment, spl_programs},
+        solana_pubkey::Pubkey,
         solana_rent::Rent,
         solana_runtime::{
             bank::Bank, bank_forks::BankForks, vote_sender_types::ReplayVoteReceiver,
@@ -3302,16 +3187,15 @@ mod tests {
         solana_transaction_error::TransactionError,
         std::{
             collections::HashSet,
-            sync::{
-                Mutex, RwLock,
-                atomic::{AtomicBool, AtomicU8},
-            },
+            sync::{RwLock, atomic::AtomicBool},
         },
+        test_case::test_case,
     };
 
     // Helper struct to create tests that hold channels, files, etc.
     // such that our tests can be more easily set up and run.
     struct TestFrame {
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
         mint_keypair: Keypair,
         genesis_config: GenesisConfig,
         bank: Arc<Bank>,
@@ -3330,16 +3214,22 @@ mod tests {
         TestFrame,
         ConsumeWorker<RuntimeTransaction<SanitizedTransaction>>,
     ) {
+        let leader_keypair = Keypair::new();
         let GenesisConfigInfo {
             mut genesis_config,
             mint_keypair,
             voting_keypair,
             ..
-        } = create_slow_genesis_config(10_000_000_000);
+        } = create_slow_genesis_config_with_leader(10_000_000_000, &leader_keypair.pubkey());
         if default_rent {
+            agave_logger::setup();
             // this is needed when you need to access accountsdb (0 lamports accounts don't get written to accountsdb)
             // if you don't have this, have fun debugging for a few hours :angry:
             genesis_config.rent = Rent::default();
+            genesis_config.accounts.insert(
+                leader_keypair.pubkey(),
+                Account::new(1_000_000_000, 0, &solana_system_interface::program::id()),
+            );
         }
         genesis_config.accounts.extend(
             spl_programs(&genesis_config.rent)
@@ -3364,50 +3254,48 @@ mod tests {
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 
         let cluster_info = {
-            let node = Node::new_localhost_with_pubkey(&mint_keypair.pubkey());
+            let node = Node::new_localhost_with_pubkey(&leader_keypair.pubkey());
             Arc::new(ClusterInfo::new(
                 node.info.clone(),
-                Arc::new(mint_keypair.insecure_clone()),
+                Arc::new(leader_keypair),
                 SocketAddrSpace::Unspecified,
             ))
         };
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();
-        let worker = ConsumeWorker::new_with_tip_processing_deps(
+        let worker = ConsumeWorker::new(
             0,
             Arc::new(AtomicBool::new(false)),
             consume_receiver,
             consumer,
             consumed_sender,
             shared_leader_state.clone(),
-            Some(TipProcessingDependencies {
-                tip_manager: TipManager::new(TipManagerConfig {
-                    tip_payment_program_id: Pubkey::new_from_array(
-                        *jito_tip_payment::id().as_array(),
-                    ),
-                    tip_distribution_program_id: Pubkey::new_from_array(
-                        *jito_tip_distribution::id().as_array(),
-                    ),
-                    tip_distribution_account_config: TipDistributionAccountConfig {
-                        merkle_root_upload_authority: mint_keypair.pubkey(),
-                        vote_account: voting_keypair.pubkey(),
-                        commission_bps: 0,
-                    },
-                }),
-                last_tip_updated_bank: Arc::new(Mutex::new(None)),
-                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-                    block_builder: mint_keypair.pubkey(),
-                    block_builder_commission: 0,
-                })),
-                bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
-                cluster_info,
-                bundle_account_locker: BundleAccountLocker::default(),
-            }),
         );
 
         (
             TestFrame {
+                tip_processing_dependencies: default_rent.then(|| TipProcessingDependencies {
+                    tip_manager: TipManager::new(TipManagerConfig {
+                        tip_payment_program_id: Pubkey::new_from_array(
+                            *jito_tip_payment::id().as_array(),
+                        ),
+                        tip_distribution_program_id: Pubkey::new_from_array(
+                            *jito_tip_distribution::id().as_array(),
+                        ),
+                        tip_distribution_account_config: TipDistributionAccountConfig {
+                            merkle_root_upload_authority: mint_keypair.pubkey(),
+                            vote_account: voting_keypair.pubkey(),
+                            commission_bps: 0,
+                        },
+                    }),
+                    block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                        block_builder: mint_keypair.pubkey(),
+                        block_builder_commission: 0,
+                    })),
+                    cluster_info,
+                    bundle_account_locker: BundleAccountLocker::default(),
+                }),
                 mint_keypair,
                 genesis_config,
                 bank,
@@ -3422,9 +3310,30 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_worker_consume_no_bank() {
-        let (test_frame, worker) = setup_test_frame(false);
+    fn block_costs(bank: &Bank) -> (u64, usize) {
+        let tracker = bank.read_cost_tracker().unwrap();
+        (tracker.block_cost(), tracker.in_flight_transaction_count())
+    }
+
+    impl TestFrame {
+        fn activate_bank(&mut self) {
+            self.shared_leader_state.store(Arc::new(LeaderState::new(
+                Some(self.bank.clone()),
+                self.bank.tick_height(),
+                None,
+                None,
+            )));
+            self.record_receiver.restart(self.bank.bank_id());
+        }
+    }
+
+    #[test_case(false; "no_bank")]
+    #[test_case(true; "complete_preadmitted_bank")]
+    fn test_worker_consume_no_bank(complete_bank: bool) {
+        let (mut test_frame, worker) = setup_test_frame(false);
+        if complete_bank {
+            test_frame.activate_bank();
+        }
         let TestFrame {
             mint_keypair,
             genesis_config,
@@ -3449,14 +3358,29 @@ mod tests {
             sanitized_epoch: bank.epoch(),
             alt_invalidation_slot: bank.slot(),
         };
+        let (admission, expected_costs) = if complete_bank {
+            let (results, estimate) = QosService::try_admit_transactions(
+                bank,
+                &transactions,
+                std::iter::repeat(Ok(())),
+                0,
+                false,
+            )
+            .unwrap();
+            bank.fill_bank_with_ticks_for_tests();
+            (Some((bank.clone(), results)), (estimate, 1))
+        } else {
+            (None, (0, 0))
+        };
         let work = ConsumeWork {
             batch_id: bid,
             ids: vec![id],
             transactions,
             max_ages: vec![max_age],
             revert_on_error: false,
-            respond_with_extra_info: false,
+            respond_with_extra_info: complete_bank,
             max_schedule_slot: None,
+            admission,
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -3467,6 +3391,17 @@ mod tests {
             consumed.retryable_indexes,
             vec![RetryableIndex::new(0, true)]
         );
+        assert_eq!(consumed.work.admission.is_some(), complete_bank);
+        if let Some((owner, results)) = consumed.work.admission {
+            assert_eq!(owner.bank_id(), bank.bank_id());
+            assert_eq!(results.as_slice(), &[Ok(())]);
+            assert!(matches!(
+                consumed.extra_info.unwrap().processed_results[0],
+                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout)
+            ));
+        }
+        assert_eq!(bank.get_balance(&pubkey1), 0);
+        assert_eq!(block_costs(bank), expected_costs);
 
         drop(test_frame);
         let _ = worker_thread.join().unwrap();
@@ -3505,6 +3440,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    admission: None,
                 })
                 .unwrap();
         }
@@ -3571,6 +3507,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            admission: None,
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -3629,6 +3566,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -3698,6 +3636,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -3710,6 +3649,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -3855,6 +3795,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                admission: None,
             })
             .unwrap();
 
@@ -3911,77 +3852,329 @@ mod tests {
         assert_eq!(sleep_duration, MAX_SLEEP_DURATION);
     }
 
-    #[test]
-    fn test_handle_tip_programs() {
-        let (mut test_frame, worker) = setup_test_frame(true);
-        let worker_thread = std::thread::spawn(move || worker.run());
-        let TestFrame {
-            mint_keypair,
-            consume_sender,
-            consumed_receiver,
-            bank,
-            shared_leader_state,
-            record_receiver,
-            ..
-        } = &mut test_frame;
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(bank.clone()),
-            bank.tick_height(),
-            None,
-            None,
-        )));
-        record_receiver.restart(bank.bank_id());
-
-        assert!(bank.slot() > 0);
-        assert!(bank.epoch() > 0);
-
-        let tx = system_transaction::transfer(
-            mint_keypair,
-            &Pubkey::find_program_address(
-                &[b"TIP_ACCOUNT_0"],
-                &Pubkey::new_from_array(*jito_tip_payment::id().as_array()),
+    #[test_case(None, false; "scheduler")]
+    #[test_case(Some(true), false; "replacement_worker")]
+    #[test_case(Some(false), false; "replacement_preparation_recovers")]
+    #[test_case(Some(true), true; "reconnect_between_returned_workers")]
+    fn test_tip_preparation_precedes_bam_admission(
+        replacement_succeeds: Option<bool>,
+        reconnect_between_workers: bool,
+    ) {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.activate_bank();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
+        assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
+        frame.record_receiver.drain().for_each(drop);
+        let parent = frame.bank.clone();
+        frame.bank = Arc::new(Bank::new_from_parent(
+            parent.clone(),
+            SlotLeader::new_unique(),
+            parent.slot() + parent.get_epoch_info().slots_in_epoch,
+        ));
+        frame.activate_bank();
+        let bank = frame.bank.clone();
+        let set_builder = |block_builder| {
+            tips.block_builder_fee_info
+                .store(Arc::new(BlockBuilderFeeInfo {
+                    block_builder,
+                    block_builder_commission: 0,
+                }))
+        };
+        set_builder(tips.cluster_info.id());
+        let config = |bank: &Bank| {
+            JitoTipPaymentConfig::from_account_shared_data(
+                &bank
+                    .get_account(&tips.tip_manager.tip_payment_config_pubkey())
+                    .unwrap(),
+                &jito_tip_payment::id(),
             )
-            .0,
-            1,
+            .unwrap()
+        };
+        let recipient = Pubkey::new_unique();
+        let amount = bank.get_minimum_balance_for_rent_exemption(0);
+        let mut transactions = sanitize_transactions(vec![system_transaction::transfer(
+            &frame.mint_keypair,
+            &recipient,
+            amount,
             bank.last_blockhash(),
+        )]);
+        if reconnect_between_workers {
+            transactions.extend(sanitize_transactions(vec![system_transaction::transfer(
+                &tips.cluster_info.keypair(),
+                &Pubkey::new_unique(),
+                amount,
+                bank.last_blockhash(),
+            )]));
+        }
+        // The first BAM batch has no tip account, but must not get ahead of the crank.
+        let crank = tips
+            .tip_manager
+            .get_tip_programs_crank_bundle(
+                &bank,
+                &tips.cluster_info.keypair(),
+                &tips.block_builder_fee_info.load(),
+            )
+            .unwrap();
+        let estimated_cost = |txs: &[RuntimeTransaction<SanitizedTransaction>]| -> u64 {
+            QosService::compute_transaction_costs(
+                &bank.feature_set,
+                txs.iter(),
+                std::iter::repeat(Ok(())),
+            )
+            .iter()
+            .map(|cost| cost.as_ref().unwrap().sum())
+            .sum()
+        };
+        let limit = estimated_cost(&crank);
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(CostTrackerLimits::new(u64::MAX, limit, u64::MAX));
+        let estimate = estimated_cost(&transactions);
+        // BAM fits alone, but reserving it first would leave less than the crank estimate.
+        assert!(0 < estimate && estimate < limit);
+
+        let (response_sender, _responses) = tokio::sync::mpsc::channel(4);
+        let mut scheduler = BamScheduler::new(
+            frame.consume_sender.clone(),
+            frame.consumed_receiver.clone(),
+            response_sender,
+            frame.shared_leader_state.clone(),
+            Some((worker.consumer.clone(), tips.clone())),
         );
-
-        let runtime_tx = RuntimeTransaction::from_transaction_for_tests(tx);
-        consume_sender
-            .send(ConsumeWork {
-                batch_id: TransactionBatchId::new(1),
-                ids: vec![0],
-                transactions: vec![runtime_tx.clone()],
-                max_ages: vec![MaxAge::MAX],
-                revert_on_error: false,
-                respond_with_extra_info: true,
-                max_schedule_slot: None,
-            })
+        let mut container = TransactionStateContainer::with_capacity(4);
+        for (index, tx) in transactions.into_iter().enumerate() {
+            container
+                .insert_new_batch(
+                    [(tx, MaxAge::MAX)].into_iter().collect(),
+                    u64::MAX - index as u64,
+                    false,
+                    bank.slot(),
+                    index as u32,
+                )
+                .unwrap();
+        }
+        let schedule = |scheduler: &mut BamScheduler<_>,
+                        container: &mut TransactionStateContainer<_>| {
+            scheduler
+                .schedule(container, u64::MAX)
+                .unwrap()
+                .num_scheduled
+        };
+        let wait_for_scheduling =
+            |scheduler: &mut BamScheduler<_>, container: &mut TransactionStateContainer<_>| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while schedule(scheduler, container) == 0 {
+                    assert!(Instant::now() < deadline, "tip preparation did not recover");
+                    std::thread::yield_now();
+                }
+            };
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        scheduler
+            .receive_completed(&mut container, &decision)
             .unwrap();
-
-        let consumed = consumed_receiver
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap();
-        assert_eq!(consumed.retryable_indexes.len(), 0);
-        assert_eq!(consumed.work.transactions.len(), 1);
+        set_builder(Pubkey::default());
+        for _ in 0..2 {
+            assert_eq!(schedule(&mut scheduler, &mut container), 0);
+            assert!(worker.consume_receiver.try_recv().is_err());
+            assert_eq!(block_costs(&bank), (0, 0));
+        }
+        set_builder(tips.cluster_info.id());
+        wait_for_scheduling(&mut scheduler, &mut container);
+        let mut work = worker.consume_receiver.try_recv().unwrap();
+        let mut second_work =
+            reconnect_between_workers.then(|| worker.consume_receiver.try_recv().unwrap());
+        assert_eq!(work.admission.as_ref().unwrap().1.as_slice(), &[Ok(())]);
+        let signature = *work.transactions[0].signature();
+        assert_eq!(config(&bank).block_builder(), tips.cluster_info.id());
         assert_eq!(
-            consumed.work.transactions[0].signature(),
-            runtime_tx.signature()
+            config(&bank).tip_receiver(),
+            tips.tip_manager.get_my_tip_distribution_pda(bank.epoch())
         );
+        let records: Vec<_> = frame.record_receiver.drain().collect();
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].reschedule_on_sad_handover);
+        assert_eq!(
+            records[0].transactions,
+            crank
+                .iter()
+                .map(|tx| tx.to_versioned_transaction())
+                .collect::<Vec<_>>()
+        );
+        let prepared_cost = block_costs(&bank).0 - estimate;
 
-        let tip_payment_config_account = bank
-            .get_account(&JitoTipPaymentConfig::find_program_address(&jito_tip_payment::id()).0)
-            .unwrap();
+        if let Some(succeeds) = replacement_succeeds {
+            frame.bank = Arc::new(Bank::new_from_parent(
+                parent,
+                SlotLeader::new_unique(),
+                bank.slot(),
+            ));
+            assert_ne!(frame.bank.bank_id(), bank.bank_id());
+            frame.activate_bank();
+            set_builder(if succeeds {
+                frame.mint_keypair.pubkey()
+            } else {
+                Pubkey::default()
+            });
+            // Return later work first. Neither worker may admit locally on the replacement.
+            let returned_work = second_work.take().into_iter().chain(std::iter::once(work));
+            let decision = BufferedPacketsDecision::Consume(frame.bank.clone());
+            for returned in returned_work {
+                worker.consume(returned).unwrap();
+                assert_eq!(block_costs(&frame.bank), (0, 0));
+                assert!(frame.record_receiver.try_recv().is_err());
+                scheduler
+                    .receive_completed(&mut container, &decision)
+                    .unwrap();
+                if scheduler.has_in_flight_transactions() {
+                    assert_eq!(schedule(&mut scheduler, &mut container), 0,);
+                    // Reconnection changes metadata while another old admission is outstanding.
+                    set_builder(tips.cluster_info.id());
+                }
+            }
+            assert_eq!(block_costs(&bank), (prepared_cost, 0));
+            if !succeeds {
+                assert_eq!(schedule(&mut scheduler, &mut container), 0,);
+                assert!(worker.consume_receiver.try_recv().is_err());
+                assert_eq!(block_costs(&frame.bank), (0, 0));
+                set_builder(frame.mint_keypair.pubkey());
+            }
+            wait_for_scheduling(&mut scheduler, &mut container);
+            assert_eq!(
+                config(&frame.bank).block_builder(),
+                tips.block_builder_fee_info.load().block_builder
+            );
+            frame.record_receiver.drain().for_each(drop);
+            work = worker.consume_receiver.try_recv().unwrap();
+            assert_eq!(
+                work.admission.as_ref().unwrap().0.bank_id(),
+                frame.bank.bank_id()
+            );
+            assert_eq!(*work.transactions[0].signature(), signature);
+            second_work =
+                reconnect_between_workers.then(|| worker.consume_receiver.try_recv().unwrap());
+        }
+        let decision = BufferedPacketsDecision::Consume(frame.bank.clone());
+        for (index, work) in std::iter::once(work).chain(second_work).enumerate() {
+            if index > 0 {
+                assert!(scheduler.has_in_flight_transactions());
+            }
+            worker.consume(work).unwrap();
+            if index > 0 {
+                assert_eq!(config(&frame.bank).block_builder(), tips.cluster_info.id());
+            }
+            let finished = frame.consumed_receiver.try_recv().unwrap();
+            assert_eq!(frame.bank.get_balance(&recipient), amount);
+            assert!(finished.work.admission.is_none());
+            assert!(matches!(
+                &finished.extra_info.as_ref().unwrap().processed_results[0],
+                TransactionResult::Committed(result) if result.execution_success
+            ));
+            let records: Vec<_> = frame.record_receiver.drain().collect();
+            assert_eq!(records.len(), 1);
+            if index == 0 {
+                assert_eq!(records[0].transactions[0].signatures[0], signature);
+            }
+            assert_eq!(
+                config(&frame.bank).block_builder(),
+                tips.block_builder_fee_info.load().block_builder
+            );
+            worker.consumed_sender.send(finished).unwrap();
+            scheduler
+                .receive_completed(&mut container, &decision)
+                .unwrap();
+        }
+        assert_eq!(block_costs(&bank).1, 0);
+        if replacement_succeeds.is_some() {
+            assert_eq!(block_costs(&bank).0, prepared_cost);
+        }
+        assert_eq!(block_costs(&frame.bank).1, 0);
+        let settled = block_costs(&frame.bank);
+        scheduler.schedule(&mut container, u64::MAX).unwrap();
+        assert_eq!(block_costs(&frame.bank), settled);
+        assert!(frame.record_receiver.try_recv().is_err());
+    }
 
-        let tip_payment_config = JitoTipPaymentConfig::from_account_shared_data(
-            &tip_payment_config_account,
-            &jito_tip_payment::id(),
-        )
-        .unwrap();
+    #[test_case("builder")]
+    #[test_case("construction")]
+    #[test_case("recording")]
+    #[test_case("cost")]
+    #[test_case("account_lock")]
+    #[test_case("execution")]
+    fn test_tip_preparation_failure_is_retryable(failure: &str) {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.activate_bank();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
+        assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
+        frame.record_receiver.drain().for_each(drop);
+        // Earlier success must not mask metadata or account changes on this same Bank.
+        let bank = &frame.bank;
+        let config_key = tips.tip_manager.tip_payment_config_pubkey();
+        let original = bank.get_account(&config_key).unwrap();
+        let cost = block_costs(bank).0;
+        let transaction_count = bank.transaction_count();
+        let payer_balance = bank.get_balance(&tips.cluster_info.id());
+        tips.block_builder_fee_info
+            .store(Arc::new(BlockBuilderFeeInfo {
+                block_builder: if failure == "builder" {
+                    Pubkey::default()
+                } else {
+                    tips.cluster_info.id()
+                },
+                block_builder_commission: if failure == "execution" { 101 } else { 0 },
+            }));
+        match failure {
+            "construction" => bank.store_account(
+                &config_key,
+                &AccountSharedData::new(1, 8, &jito_tip_payment::id()),
+            ),
+            "recording" => frame.record_receiver.shutdown(),
+            "account_lock" => tips
+                .bundle_account_locker
+                .account_locks()
+                .lock_accounts([std::iter::once((&config_key, true))]),
+            "cost" => bank
+                .write_cost_tracker()
+                .unwrap()
+                .set_limits(CostTrackerLimits::new(u64::MAX, cost, u64::MAX)),
+            _ => {}
+        }
+        assert!(!tips.process_tip_programs(&worker.consumer, bank));
+        if failure != "construction" {
+            assert_eq!(bank.get_account(&config_key).unwrap(), original);
+        }
+        assert_eq!(bank.transaction_count(), transaction_count);
+        assert_eq!(bank.get_balance(&tips.cluster_info.id()), payer_balance);
+        assert_eq!(block_costs(bank), (cost, 0));
+        assert!(frame.record_receiver.try_recv().is_err());
+        if failure == "account_lock" {
+            tips.bundle_account_locker
+                .account_locks()
+                .unlock_accounts([std::iter::once((&config_key, true))]);
+        }
+        bank.store_account(&config_key, &original);
+        frame.record_receiver.restart(bank.bank_id());
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(CostTrackerLimits::new(u64::MAX, u64::MAX, u64::MAX));
+        tips.block_builder_fee_info
+            .store(Arc::new(BlockBuilderFeeInfo {
+                block_builder: tips.cluster_info.id(),
+                block_builder_commission: 0,
+            }));
+        assert!(tips.process_tip_programs(&worker.consumer, bank));
+        assert_eq!(frame.record_receiver.drain().count(), 1);
+        assert!(tips.process_tip_programs(&worker.consumer, bank));
+        assert!(frame.record_receiver.try_recv().is_err());
+    }
 
-        assert_eq!(tip_payment_config.block_builder(), mint_keypair.pubkey(),);
-
-        drop(test_frame);
-        let _ = worker_thread.join().unwrap();
+    #[test]
+    fn test_tip_preparation_with_free_rent() {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.genesis_config.rent = Rent::free();
+        let bank = Arc::new(Bank::new_for_tests(&frame.genesis_config));
+        let tips = frame.tip_processing_dependencies.take().unwrap();
+        assert!(tips.process_tip_programs(&worker.consumer, &bank));
+        assert_eq!(block_costs(&bank), (0, 0));
+        assert!(frame.record_receiver.try_recv().is_err());
     }
 }
