@@ -1,23 +1,22 @@
 use {
     super::{
-        committer::CommitTransactionDetails,
         consumer::{Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         scheduler_messages::{
-            ConsumeWork, FinishedConsumeWork, FinishedConsumeWorkExtraInfo, NotCommittedReason,
-            TransactionResult,
+            ConsumeWork, FinishedConsumeWork, NotCommittedReason, TransactionResult,
         },
     },
-    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex},
+    crate::banking_stage::{
+        consumer::{ExecutionFlags, RetryableIndex},
+        transaction_scheduler::bam_utils::build_finished_consume_work_extra_info,
+    },
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
-    jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
     solana_pubkey::Pubkey,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
     std::{
-        marker::PhantomData,
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -28,16 +27,16 @@ use {
 };
 
 #[derive(Debug, Error)]
-pub enum ConsumeWorkerError<Tx> {
+pub enum ConsumeWorkerError {
     #[error("Failed to receive work from scheduler: {0}")]
     Recv(#[from] TryRecvError),
     #[error("Scheduler channel disconnected")]
-    Send(PhantomData<Tx>),
+    Send,
 }
 
-impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError<Tx> {
+impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError {
     fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
-        Self::Send(PhantomData)
+        Self::Send
     }
 }
 
@@ -80,8 +79,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    #[allow(clippy::result_large_err)]
-    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
+    pub fn run(self) -> Result<(), ConsumeWorkerError> {
         let mut did_work = false;
         let mut last_empty_time = Instant::now();
         let mut sleep_duration = STARTING_SLEEP_DURATION;
@@ -116,27 +114,17 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(())
     }
 
-    /// Consume a single batch.
-    #[allow(clippy::result_large_err)]
     fn consume(
         &self,
         mut work: ConsumeWork<Tx>,
-    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
-        let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
+    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError> {
+        let leader_state = self.shared_leader_state.load();
+        let Some(bank) = leader_state
+            .working_bank()
+            .filter(|bank| !bank.is_complete() && bank.slot() == work.target_slot)
+        else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
         };
-        let bank = leader_state
-            .working_bank()
-            .expect("active_leader_state should only return an active bank");
-        if bank.slot() != work.target_slot {
-            return Ok(ProcessingStatus::CouldNotProcess(work));
-        }
-
-        if let Some(max_schedule_slot) = work.max_schedule_slot
-            && max_schedule_slot < bank.slot()
-        {
-            return self.retry(work);
-        }
 
         self.metrics
             .count_metrics
@@ -150,7 +138,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             && owner.bank_id() != bank.bank_id()
         {
             // A replacement Bank needs ordered admission again, through the scheduler.
-            return self.retry(work);
+            return self.retry(work).map(|()| ProcessingStatus::Processed);
         }
         let admission_results = work.admission.take().map(|(_, results)| results);
         let output = self
@@ -172,7 +160,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 
         let extra_info = work
             .respond_with_extra_info
-            .then(|| Self::build_finished_consume_work_extra_info(&output, &work));
+            .then(|| build_finished_consume_work_extra_info(&output, work.transactions.len()));
 
         self.consumed_sender.send(FinishedConsumeWork {
             work,
@@ -184,63 +172,8 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(ProcessingStatus::Processed)
     }
 
-    /// Builds `FinishedConsumeWorkExtraInfo` from consume output for BAM responses.
-    ///
-    /// If commit details are available, each `CommitTransactionDetails` is mapped into a
-    /// `TransactionResult` with commit metadata or a not-committed error. If commit details are
-    /// unavailable (e.g., a PoH recorder failure), it falls back to one `NotCommitted(PohTimeout)`
-    /// result per input transaction.
-    fn build_finished_consume_work_extra_info(
-        output: &ProcessTransactionBatchOutput,
-        work: &ConsumeWork<Tx>,
-    ) -> FinishedConsumeWorkExtraInfo {
-        let Ok(commit_transactions_result) = output
-            .execute_and_commit_transactions_output
-            .commit_transactions_result
-            .as_ref()
-        else {
-            return FinishedConsumeWorkExtraInfo {
-                processed_results: vec![
-                    TransactionResult::NotCommitted(
-                        NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
-                    );
-                    work.transactions.len()
-                ],
-            };
-        };
-
-        let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
-        for commit_info in commit_transactions_result.iter() {
-            match commit_info {
-                CommitTransactionDetails::Committed {
-                    compute_units,
-                    loaded_accounts_data_size,
-                    fee_payer_post_balance,
-                    result,
-                } => {
-                    processed_results.push(TransactionResult::Committed(
-                        TransactionCommittedResult {
-                            cus_consumed: *compute_units as u32,
-                            feepayer_balance_lamports: *fee_payer_post_balance,
-                            loaded_accounts_data_size: *loaded_accounts_data_size,
-                            execution_success: result.is_ok(),
-                        },
-                    ));
-                }
-                CommitTransactionDetails::NotCommitted(err) => {
-                    processed_results.push(TransactionResult::NotCommitted(
-                        NotCommittedReason::Error(err.clone()),
-                    ));
-                }
-            }
-        }
-
-        FinishedConsumeWorkExtraInfo { processed_results }
-    }
-
     /// Retry current batch and all outstanding batches.
-    #[allow(clippy::result_large_err)]
-    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
+    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
         for work in try_drain_iter(work, &self.consume_receiver) {
             if self.exit.load(Ordering::Relaxed) {
                 return Ok(());
@@ -251,8 +184,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Send transactions back to scheduler as retryable.
-    #[allow(clippy::result_large_err)]
-    fn retry(&self, work: ConsumeWork<Tx>) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
+    fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
         let retryable_indexes: Vec<_> = (0..work.transactions.len())
             .map(|index| RetryableIndex {
                 index,
@@ -269,21 +201,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .retryable_expired_bank_count
             .fetch_add(num_retryable, Ordering::Relaxed);
         self.metrics.has_data.store(true, Ordering::Relaxed);
-        let extra_info = if work.respond_with_extra_info {
-            Some(FinishedConsumeWorkExtraInfo {
-                processed_results: (0..work.transactions.len())
-                    .map(|_| TransactionResult::NotCommitted(NotCommittedReason::PohTimeout))
-                    .collect(),
-            })
-        } else {
-            None
-        };
+        let extra_info = work.respond_with_extra_info.then(|| {
+            vec![
+                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout);
+                work.transactions.len()
+            ]
+        });
         self.consumed_sender.send(FinishedConsumeWork {
             work,
             retryable_indexes,
             extra_info,
         })?;
-        Ok(ProcessingStatus::Processed)
+        Ok(())
     }
 }
 
@@ -2317,20 +2246,18 @@ impl ConsumeWorkerTransactionErrorMetrics {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::result_large_err)]
-
     use {
         super::*,
         crate::{
+            bam_dependencies::TipProcessingDependencies,
             banking_stage::{
                 committer::Committer,
-                consumer::TipProcessingDependencies,
                 decision_maker::BufferedPacketsDecision,
                 qos_service::QosService,
                 scheduler_messages::{MaxAge, TransactionBatchId},
                 tests::{create_slow_genesis_config_with_leader, sanitize_transactions},
                 transaction_scheduler::{
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{BamScheduler, try_admit_transactions},
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -2550,14 +2477,9 @@ mod tests {
             alt_invalidation_slot: bank.slot(),
         };
         let (admission, expected_costs) = if complete_bank {
-            let (results, estimate) = QosService::try_admit_transactions(
-                bank,
-                &transactions,
-                std::iter::repeat(Ok(())),
-                0,
-                false,
-            )
-            .unwrap();
+            let (results, estimate) =
+                try_admit_transactions(bank, &transactions, std::iter::repeat(Ok(())), 0, false)
+                    .unwrap();
             bank.fill_bank_with_ticks_for_tests();
             (Some((bank.clone(), results)), (estimate, 1))
         } else {
@@ -2571,7 +2493,6 @@ mod tests {
             max_ages: vec![max_age],
             revert_on_error: false,
             respond_with_extra_info: complete_bank,
-            max_schedule_slot: None,
             admission,
         };
         consume_sender.send(work).unwrap();
@@ -2588,7 +2509,7 @@ mod tests {
             assert_eq!(owner.bank_id(), bank.bank_id());
             assert_eq!(results.as_slice(), &[Ok(())]);
             assert!(matches!(
-                consumed.extra_info.unwrap().processed_results[0],
+                consumed.extra_info.unwrap()[0],
                 TransactionResult::NotCommitted(NotCommittedReason::PohTimeout)
             ));
         }
@@ -2632,7 +2553,6 @@ mod tests {
                     }],
                     revert_on_error: false,
                     respond_with_extra_info: false,
-                    max_schedule_slot: None,
                     admission: None,
                 })
                 .unwrap();
@@ -2695,7 +2615,6 @@ mod tests {
                 }],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -2762,7 +2681,6 @@ mod tests {
             max_ages: vec![max_age],
             revert_on_error: false,
             respond_with_extra_info: false,
-            max_schedule_slot: None,
             admission: None,
         };
         consume_sender.send(work).unwrap();
@@ -2822,7 +2740,6 @@ mod tests {
                 max_ages: vec![max_age, max_age],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -2893,7 +2810,6 @@ mod tests {
                 max_ages: vec![max_age],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -2907,7 +2823,6 @@ mod tests {
                 max_ages: vec![max_age],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -3054,7 +2969,6 @@ mod tests {
                 ],
                 revert_on_error: false,
                 respond_with_extra_info: false,
-                max_schedule_slot: None,
                 admission: None,
             })
             .unwrap();
@@ -3123,7 +3037,11 @@ mod tests {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
         let tips = frame.tip_processing_dependencies.take().unwrap();
-        assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            &frame.bank,
+            &tips.block_builder_fee_info.load()
+        ));
         frame.record_receiver.drain().for_each(drop);
         let parent = frame.bank.clone();
         frame.bank = Arc::new(Bank::new_from_parent(
@@ -3253,12 +3171,12 @@ mod tests {
         let records: Vec<_> = frame.record_receiver.drain().collect();
         assert_eq!(records.len(), 1);
         assert!(!records[0].reschedule_on_sad_handover);
-        assert_eq!(
-            records[0].transactions,
-            crank
+        assert_eq!(records[0].transactions.len(), crank.len());
+        assert!(
+            records[0]
+                .transactions
                 .iter()
-                .map(|tx| tx.to_versioned_transaction())
-                .collect::<Vec<_>>()
+                .all(|tx| tx.signatures[0] != signature)
         );
         let prepared_cost = block_costs(&bank).0 - estimate;
 
@@ -3326,7 +3244,7 @@ mod tests {
             assert_eq!(frame.bank.get_balance(&recipient), amount);
             assert!(finished.work.admission.is_none());
             assert!(matches!(
-                &finished.extra_info.as_ref().unwrap().processed_results[0],
+                &finished.extra_info.as_ref().unwrap()[0],
                 TransactionResult::Committed(result) if result.execution_success
             ));
             let records: Vec<_> = frame.record_receiver.drain().collect();
@@ -3356,6 +3274,220 @@ mod tests {
         assert!(frame.record_receiver.try_recv().is_err());
     }
 
+    #[test_case(false, false, false; "idle_builder_change")]
+    #[test_case(false, true, false; "idle_commission_change")]
+    #[test_case(true, false, false; "inflight_builder_change")]
+    #[test_case(true, true, false; "inflight_commission_change")]
+    #[test_case(false, false, true; "reconnect_after_builder_change")]
+    #[test_case(false, true, true; "reconnect_after_commission_change")]
+    fn test_tip_metadata_refresh_before_admission(
+        inflight: bool,
+        commission_only: bool,
+        reconnect: bool,
+    ) {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.activate_bank();
+        let bank = frame.bank.clone();
+        let tips = frame.tip_processing_dependencies.take().unwrap();
+        let config = || {
+            let config = JitoTipPaymentConfig::from_account_shared_data(
+                &bank
+                    .get_account(&tips.tip_manager.tip_payment_config_pubkey())
+                    .unwrap(),
+                &jito_tip_payment::id(),
+            )
+            .unwrap();
+            (
+                config.block_builder(),
+                config.block_builder_commission_pct(),
+            )
+        };
+        let (response_sender, _responses) = tokio::sync::mpsc::channel(4);
+        let mut scheduler = BamScheduler::new(
+            frame.consume_sender.clone(),
+            frame.consumed_receiver.clone(),
+            response_sender,
+            frame.shared_leader_state.clone(),
+            Some((worker.consumer.clone(), tips.clone())),
+        );
+        let mut container = TransactionStateContainer::with_capacity(4);
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        let schedule = |scheduler: &mut BamScheduler<_>,
+                        container: &mut TransactionStateContainer<_>| {
+            scheduler
+                .schedule(container, bank.slot(), u64::MAX)
+                .unwrap()
+                .num_scheduled
+        };
+        let enqueue =
+            |container: &mut TransactionStateContainer<_>, payer: &Keypair, recipient, seq_id| {
+                let transaction = sanitize_transactions(vec![system_transaction::transfer(
+                    payer,
+                    &recipient,
+                    bank.get_minimum_balance_for_rent_exemption(0),
+                    bank.last_blockhash(),
+                )])
+                .pop()
+                .unwrap();
+                let signature = *transaction.signature();
+                container
+                    .insert_new_batch(
+                        [(transaction, MaxAge::MAX)].into_iter().collect(),
+                        u64::MAX - u64::from(seq_id),
+                        false,
+                        bank.slot(),
+                        seq_id,
+                    )
+                    .unwrap();
+                signature
+            };
+
+        // The first empty poll prepares X. No BAM tip has arrived yet.
+        assert_eq!(schedule(&mut scheduler, &mut container), 0);
+        let original = config();
+        assert_eq!(original, (frame.mint_keypair.pubkey(), 0));
+        assert!(frame.record_receiver.drain().count() > 0);
+        let old_work = inflight.then(|| {
+            enqueue(&mut container, &frame.mint_keypair, Pubkey::new_unique(), 0);
+            assert_eq!(schedule(&mut scheduler, &mut container), 1);
+            worker.consume_receiver.try_recv().unwrap()
+        });
+        let changed = if commission_only {
+            (original.0, 1)
+        } else {
+            (tips.cluster_info.id(), original.1)
+        };
+        if reconnect {
+            // While BAM scheduling is paused, Block Engine can prepare this same Bank for Y.
+            // Reconnecting BAM republishes X with equal values but a new snapshot.
+            let other_builder = Arc::new(BlockBuilderFeeInfo {
+                block_builder: changed.0,
+                block_builder_commission: changed.1,
+            });
+            tips.block_builder_fee_info.store(other_builder.clone());
+            assert!(tips.process_tip_programs(&worker.consumer, &bank, &other_builder));
+            assert_eq!(config(), changed);
+            assert_eq!(frame.record_receiver.drain().count(), 1);
+        }
+        let prior = config();
+        let expected = if reconnect { original } else { changed };
+        let publish = |(block_builder, block_builder_commission)| {
+            tips.block_builder_fee_info
+                .store(Arc::new(BlockBuilderFeeInfo {
+                    block_builder,
+                    block_builder_commission,
+                }));
+        };
+        publish(expected);
+        // This tip is independent of the outstanding ordinary transfer.
+        let signature = enqueue(
+            &mut container,
+            &tips.cluster_info.keypair(),
+            *tips.tip_manager.get_tip_accounts().iter().next().unwrap(),
+            1,
+        );
+        if let Some(work) = old_work {
+            let reserved = block_costs(&bank);
+            assert_eq!(schedule(&mut scheduler, &mut container), 0);
+            assert!(worker.consume_receiver.try_recv().is_err());
+            assert!(frame.record_receiver.try_recv().is_err());
+            assert_eq!(block_costs(&bank), reserved);
+            assert_eq!(config(), prior);
+            assert!(matches!(
+                worker.consume(work).unwrap(),
+                ProcessingStatus::Processed
+            ));
+            scheduler
+                .receive_completed(&mut container, &decision)
+                .unwrap();
+            assert_eq!(frame.record_receiver.drain().count(), 1);
+        }
+
+        // Even a previously prepared Bank must hold new work if refresh fails.
+        let config_key = tips.tip_manager.tip_payment_config_pubkey();
+        let settled = block_costs(&bank);
+        tips.bundle_account_locker
+            .account_locks()
+            .lock_accounts([std::iter::once((&config_key, true))]);
+        assert_eq!(schedule(&mut scheduler, &mut container), 0);
+        assert!(worker.consume_receiver.try_recv().is_err());
+        assert!(frame.record_receiver.try_recv().is_err());
+        assert_eq!(block_costs(&bank), settled);
+        assert_eq!(config(), prior);
+        tips.bundle_account_locker
+            .account_locks()
+            .unlock_accounts([std::iter::once((&config_key, true))]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while schedule(&mut scheduler, &mut container) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "metadata refresh did not recover"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(config(), expected);
+        let records: Vec<_> = frame.record_receiver.drain().collect();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0]
+                .transactions
+                .iter()
+                .all(|tx| tx.signatures[0] != signature)
+        );
+        let work = worker.consume_receiver.try_recv().unwrap();
+        assert_eq!(work.admission.as_ref().unwrap().1.as_slice(), &[Ok(())]);
+        assert!(matches!(
+            worker.consume(work).unwrap(),
+            ProcessingStatus::Processed
+        ));
+        let finished = frame.consumed_receiver.try_recv().unwrap();
+        assert!(matches!(&finished.extra_info.as_ref().unwrap()[0],
+            TransactionResult::Committed(result) if result.execution_success));
+        worker.consumed_sender.send(finished).unwrap();
+        scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        let records: Vec<_> = frame.record_receiver.drain().collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].transactions[0].signatures[0], signature);
+        assert_eq!(block_costs(&bank).1, 0);
+
+        // Publishing an equal snapshot must not record another crank transaction or charge.
+        publish(expected);
+        let settled = block_costs(&bank);
+        assert_eq!(schedule(&mut scheduler, &mut container), 0);
+        assert_eq!(block_costs(&bank), settled);
+        assert!(frame.record_receiver.try_recv().is_err());
+
+        // Cycling back with the same blockhash must produce a fresh crank, not AlreadyProcessed.
+        let blockhash = bank.last_blockhash();
+        for (seq_id, expected) in [prior, expected].into_iter().enumerate() {
+            publish(expected);
+            enqueue(
+                &mut container,
+                &frame.mint_keypair,
+                Pubkey::new_unique(),
+                seq_id as u32 + 2,
+            );
+            assert_eq!(schedule(&mut scheduler, &mut container), 1);
+            assert_eq!(config(), expected);
+            assert_eq!(bank.last_blockhash(), blockhash);
+            let work = worker.consume_receiver.try_recv().unwrap();
+            assert!(matches!(
+                worker.consume(work).unwrap(),
+                ProcessingStatus::Processed
+            ));
+            scheduler
+                .receive_completed(&mut container, &decision)
+                .unwrap();
+            assert_eq!(block_costs(&bank).1, 0);
+            assert_eq!(frame.record_receiver.drain().count(), 2);
+        }
+    }
+
     #[test_case("builder")]
     #[test_case("construction")]
     #[test_case("recording")]
@@ -3366,7 +3498,11 @@ mod tests {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
         let tips = frame.tip_processing_dependencies.take().unwrap();
-        assert!(tips.process_tip_programs(&worker.consumer, &frame.bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            &frame.bank,
+            &tips.block_builder_fee_info.load()
+        ));
         frame.record_receiver.drain().for_each(drop);
         // Earlier success must not mask metadata or account changes on this same Bank.
         let bank = &frame.bank;
@@ -3400,7 +3536,11 @@ mod tests {
                 .set_limits(CostTrackerLimits::new(u64::MAX, cost, u64::MAX)),
             _ => {}
         }
-        assert!(!tips.process_tip_programs(&worker.consumer, bank));
+        assert!(!tips.process_tip_programs(
+            &worker.consumer,
+            bank,
+            &tips.block_builder_fee_info.load()
+        ));
         if failure != "construction" {
             assert_eq!(bank.get_account(&config_key).unwrap(), original);
         }
@@ -3423,9 +3563,17 @@ mod tests {
                 block_builder: tips.cluster_info.id(),
                 block_builder_commission: 0,
             }));
-        assert!(tips.process_tip_programs(&worker.consumer, bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            bank,
+            &tips.block_builder_fee_info.load()
+        ));
         assert_eq!(frame.record_receiver.drain().count(), 1);
-        assert!(tips.process_tip_programs(&worker.consumer, bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            bank,
+            &tips.block_builder_fee_info.load()
+        ));
         assert!(frame.record_receiver.try_recv().is_err());
     }
 
@@ -3435,7 +3583,11 @@ mod tests {
         frame.genesis_config.rent = Rent::free();
         let bank = Arc::new(Bank::new_for_tests(&frame.genesis_config));
         let tips = frame.tip_processing_dependencies.take().unwrap();
-        assert!(tips.process_tip_programs(&worker.consumer, &bank));
+        assert!(tips.process_tip_programs(
+            &worker.consumer,
+            &bank,
+            &tips.block_builder_fee_info.load()
+        ));
         assert_eq!(block_costs(&bank), (0, 0));
         assert!(frame.record_receiver.try_recv().is_err());
     }

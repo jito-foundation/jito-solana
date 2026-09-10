@@ -8,9 +8,7 @@ use {
     agave_feature_set::FeatureSet,
     smallvec::SmallVec,
     solana_cost_model::{
-        cost_model::CostModel,
-        cost_tracker::{CostTrackerError, UpdatedCosts},
-        transaction_cost::TransactionCost,
+        cost_model::CostModel, cost_tracker::UpdatedCosts, transaction_cost::TransactionCost,
     },
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -54,70 +52,6 @@ impl QosService {
             transactions_qos_cost_results,
             cost_model_throttled_transactions_count,
         )
-    }
-
-    /// Reserves transaction costs in order and returns the decisions and reserved-cost sum.
-    /// A block-limit shortfall covered by unsettled estimates rolls back this attempt and returns
-    /// `None`. Atomic batches only defer if their known costs could fit after refunds;
-    /// a final atomic rejection releases its reservations and cancels its accepted transactions.
-    pub(super) fn try_admit_transactions(
-        bank: &Bank,
-        transactions: &[impl TransactionWithMeta],
-        pre_results: impl Iterator<Item = transaction::Result<()>>,
-        inflight_reserved_cost: u64,
-        revert_on_error: bool,
-    ) -> Option<(SmallVec<[transaction::Result<()>; 1]>, u64)> {
-        let transaction_costs =
-            Self::compute_transaction_costs(&bank.feature_set, transactions.iter(), pre_results);
-
-        let mut results = SmallVec::with_capacity(transaction_costs.len());
-        let mut cost_tracker = bank.write_cost_tracker().unwrap();
-        let mut reserved_cost = 0;
-        for cost_result in &transaction_costs {
-            results.push(match cost_result {
-                Err(err) => Err(err.clone()),
-                Ok(cost) => match cost_tracker.try_add(cost) {
-                    Ok(_) => {
-                        reserved_cost += cost.sum();
-                        Ok(())
-                    }
-                    Err(CostTrackerError::WouldExceedBlockMaxLimit)
-                        if cost_tracker.block_cost().saturating_add(cost.sum())
-                            - cost_tracker.block_cost_limit()
-                            <= inflight_reserved_cost
-                            && (!revert_on_error
-                                // Exclude this attempt's prefix and all earlier estimates.
-                                // Estimates can already be settled before their completion arrives.
-                                || transaction_costs.iter().flatten().fold(
-                                    cost_tracker.block_cost()
-                                        .saturating_sub(reserved_cost)
-                                        .saturating_sub(inflight_reserved_cost),
-                                    |total, cost| total.saturating_add(cost.sum()),
-                                ) <= cost_tracker.block_cost_limit()) =>
-                    {
-                        for (result, cost) in results.iter().zip(&transaction_costs) {
-                            if let (Ok(()), Ok(cost)) = (result, cost) {
-                                cost_tracker.remove(cost);
-                            }
-                        }
-                        return None;
-                    }
-                    Err(err) => Err(TransactionError::from(err)),
-                },
-            });
-        }
-        if revert_on_error && results.iter().any(Result::is_err) {
-            // These transactions cannot commit; do not hold capacity until the worker responds.
-            for (result, cost) in results.iter_mut().zip(&transaction_costs) {
-                if let (Ok(()), Ok(cost)) = (&*result, cost) {
-                    cost_tracker.remove(cost);
-                    *result = Err(TransactionError::CommitCancelled);
-                }
-            }
-            reserved_cost = 0;
-        }
-        cost_tracker.add_transactions_in_flight(results.iter().flatten().count());
-        Some((results, reserved_cost))
     }
 
     // invoke cost_model to calculate cost for the given list of transactions that have not

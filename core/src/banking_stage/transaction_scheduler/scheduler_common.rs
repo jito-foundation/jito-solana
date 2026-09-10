@@ -217,7 +217,6 @@ impl<Tx> SchedulingCommon<Tx> {
             max_ages,
             revert_on_error: false,
             respond_with_extra_info: false,
-            max_schedule_slot: None,
             admission: None,
         };
         self.consume_work_senders[thread_index]
@@ -252,13 +251,10 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                         mut ids,
                         mut transactions,
                         mut max_ages,
-                        revert_on_error: _,
-                        respond_with_extra_info: _,
-                        max_schedule_slot: _,
-                        admission: _,
+                        ..
                     },
                 retryable_indexes,
-                extra_info: _,
+                ..
             }) => {
                 let num_transactions = ids.len();
                 let num_retryable = retryable_indexes.len();
