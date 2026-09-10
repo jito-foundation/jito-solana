@@ -1039,16 +1039,19 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.8.8"
+version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
+checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http 1.4.2",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -1056,10 +1059,15 @@ dependencies = [
  "percent-encoding 2.3.2",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1078,6 +1086,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1168,18 +1177,21 @@ dependencies = [
 
 [[package]]
 name = "bam-local-cluster"
-version = "4.4.0-alpha.2"
+version = "4.3.0-rc.0"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
  "anyhow",
+ "axum",
  "clap 2.34.0",
  "log",
  "serde",
  "serde_json",
- "solana-account 4.6.0",
+ "solana-account 4.5.0",
+ "solana-clock",
  "solana-cluster-type",
  "solana-commitment-config",
+ "solana-core",
  "solana-faucet",
  "solana-feature-gate-interface",
  "solana-fee-calculator",
@@ -1197,6 +1209,7 @@ dependencies = [
  "solana-runtime",
  "solana-shred-version",
  "solana-signer",
+ "solana-streamer",
  "solana-system-interface 3.3.0",
  "solana-vote-program",
  "tokio",
@@ -5588,6 +5601,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7430,7 +7454,7 @@ dependencies = [
 
 [[package]]
 name = "solana-local-cluster"
-version = "4.4.0-alpha.2"
+version = "4.3.0-rc.0"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
@@ -7440,13 +7464,12 @@ dependencies = [
  "agave-votor-transport",
  "arc-swap",
  "crossbeam-channel",
- "itertools 0.15.0",
+ "itertools 0.14.0",
  "log",
  "rand 0.9.4",
  "rayon",
- "solana-account 4.6.0",
+ "solana-account 4.5.0",
  "solana-accounts-db",
- "solana-bls-signatures",
  "solana-client-traits",
  "solana-clock",
  "solana-cluster-type",
