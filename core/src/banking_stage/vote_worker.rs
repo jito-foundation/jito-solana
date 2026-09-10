@@ -546,16 +546,21 @@ mod tests {
             vote_storage::tests::to_sanitized_view,
         },
         crossbeam_channel::{bounded, never},
+        solana_account::WritableAccount,
+        solana_clock::MAX_TRANSACTION_FORWARDING_DELAY,
         solana_hash::Hash,
+        solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_perf::packet::BytesPacket,
         solana_poh::{
             poh_recorder::{LeaderState, SharedLeaderState},
-            record_channels::record_channels,
+            record_channels::{RecordReceiver, record_channels},
         },
+        solana_signer::Signer,
         solana_svm::account_loader::CheckedTransactionDetails,
         solana_system_transaction as system_transaction,
+        solana_transaction::Transaction,
         solana_vote::vote_transaction::new_tower_sync_transaction,
         solana_vote_program::vote_state::TowerSync,
     };
@@ -674,96 +679,552 @@ mod tests {
         assert!(!summary.reached_max_poh_height);
     }
 
+    /// Exercises the worker contract with legacy-voting banks. Manually replacing
+    /// these banks does not establish that this ordering is reachable in production.
+    struct VoteRestorationFixture {
+        worker: VoteWorker,
+        root_bank: Arc<Bank>,
+        bank: Arc<Bank>,
+        shared_leader_state: SharedLeaderState,
+        record_receiver: RecordReceiver,
+        mint_keypair: Keypair,
+        voting_keypair: Keypair,
+        vote_a: Transaction,
+        stats: BankingStageStats,
+        metrics: LeaderSlotMetricsTracker,
+    }
+
+    impl VoteRestorationFixture {
+        fn new() -> Self {
+            let GenesisConfigInfo {
+                genesis_config,
+                mint_keypair,
+                voting_keypair,
+                ..
+            } = create_slow_genesis_config(10_000);
+            let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+            let bank = Arc::new(Bank::new_from_parent(
+                root_bank.clone(),
+                SlotLeader::new_unique(),
+                1,
+            ));
+            assert!(!root_bank.is_alpenglow());
+            assert!(!bank.is_alpenglow());
+            let (record_sender, mut record_receiver) = record_channels(false);
+            record_receiver.restart(bank.bank_id());
+            let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+            shared_leader_state.store(Arc::new(LeaderState::new(
+                Some(bank.clone()),
+                bank.tick_height(),
+                None,
+                None,
+            )));
+            let worker = VoteWorker::new(
+                Arc::new(AtomicBool::new(false)),
+                CancellationToken::new(),
+                DecisionMaker::new(shared_leader_state.clone()),
+                VotePacketReceiver::new(never(), Arc::default()),
+                VotePacketReceiver::new(never(), Arc::default()),
+                VoteStorage::new(&bank),
+                bank_forks,
+                Consumer::new(
+                    Committer::new(None, bounded(1).0, None),
+                    solana_poh::transaction_recorder::TransactionRecorder::new(record_sender),
+                    None,
+                ),
+                BundleAccountLocker::default(),
+            );
+            let mut tower = TowerSync::from(vec![(0, 1)]);
+            tower.hash = root_bank.hash();
+            let vote_a = new_tower_sync_transaction(
+                tower,
+                root_bank.last_blockhash(),
+                &mint_keypair,
+                &voting_keypair,
+                &voting_keypair,
+                None,
+            );
+            let mut fixture = Self {
+                worker,
+                root_bank,
+                bank,
+                shared_leader_state,
+                record_receiver,
+                mint_keypair,
+                voting_keypair,
+                vote_a,
+                stats: BankingStageStats::new(),
+                metrics: LeaderSlotMetricsTracker::default(),
+            };
+            fixture.insert(&fixture.vote_a.clone());
+            fixture.consume();
+            fixture.assert_committed(&fixture.vote_a);
+            fixture
+        }
+
+        fn insert(&mut self, transaction: &Transaction) {
+            transaction.verify().unwrap();
+            self.worker.storage.insert_packet(
+                VoteSource::Tpu,
+                to_sanitized_view(BytesPacket::from_data(transaction).unwrap()),
+            );
+        }
+
+        fn consume(&mut self) {
+            self.worker
+                .process_buffered_packets(&mut self.stats, &mut self.metrics);
+        }
+
+        fn replace_bank(&mut self) {
+            assert_eq!(self.record_receiver.drain().count(), 0);
+            self.record_receiver.shutdown();
+            self.bank.quiesce_transaction_execution();
+            assert!(self.record_receiver.is_safe_to_restart());
+            self.root_bank
+                .remove_unrooted_slots(&[(self.bank.slot(), self.bank.bank_id())]);
+            self.root_bank.clear_slot_signatures(self.bank.slot());
+            // Construct only after purging the old bank's accounts and signatures.
+            let replacement = Arc::new(Bank::new_from_parent(
+                self.root_bank.clone(),
+                SlotLeader::new_unique(),
+                self.bank.slot(),
+            ));
+            assert_ne!(replacement.bank_id(), self.bank.bank_id());
+            assert!(!replacement.is_alpenglow());
+            self.record_receiver.restart(replacement.bank_id());
+            self.shared_leader_state.store(Arc::new(LeaderState::new(
+                Some(replacement.clone()),
+                replacement.tick_height(),
+                None,
+                None,
+            )));
+            self.bank = replacement;
+            assert_eq!(
+                self.bank.get_signature_status(&self.vote_a.signatures[0]),
+                None
+            );
+        }
+
+        fn successor(&self, timestamp: i64, recent_blockhash: Hash) -> Transaction {
+            let mut tower = TowerSync::from(vec![(0, 1)]);
+            tower.hash = self.root_bank.hash();
+            tower.timestamp = Some(timestamp);
+            new_tower_sync_transaction(
+                tower,
+                recent_blockhash,
+                &self.mint_keypair,
+                &self.voting_keypair,
+                &self.voting_keypair,
+                None,
+            )
+        }
+
+        fn assert_committed(&self, transaction: &Transaction) {
+            let records: Vec<_> = self.record_receiver.drain().collect();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].bank_id, self.bank.bank_id());
+            assert_eq!(records[0].transactions.len(), 1);
+            assert_eq!(
+                records[0].transactions[0].signatures,
+                transaction.signatures
+            );
+            assert_eq!(
+                self.bank.get_signature_status(&transaction.signatures[0]),
+                Some(Ok(())),
+            );
+            assert_eq!(self.worker.storage.len(), 0);
+        }
+
+        fn assert_idle(&mut self) {
+            self.consume();
+            assert_eq!(self.record_receiver.drain().count(), 0);
+            assert_eq!(self.worker.storage.len(), 0);
+        }
+
+        /// The caller holds real account locks. Check the raw execution result
+        /// separately from the forwarding-age filter used by the worker.
+        fn assert_account_conflict(&self, transaction: &Transaction, final_retry: &[usize]) {
+            let transaction = RuntimeTransaction::from_transaction_for_tests(transaction.clone());
+            let transactions = std::slice::from_ref(&transaction);
+            let summary = VoteWorker::process_transactions(
+                &self.worker.consumer,
+                &self.bank,
+                transactions,
+                &self.worker.bundle_account_locker,
+            );
+            assert_eq!(summary.error_counters.account_in_use.0, 1);
+            assert_eq!(summary.retryable_transaction_indexes, [0]);
+            assert_eq!(summary.transaction_counts.committed_transactions_count.0, 0);
+            assert_eq!(
+                VoteWorker::filter_pending_packets_from_pending_txs(
+                    &self.bank,
+                    transactions,
+                    &summary.retryable_transaction_indexes,
+                ),
+                final_retry,
+            );
+            assert_eq!(self.record_receiver.drain().count(), 0);
+        }
+
+        fn assert_blockhash_rejected(&self, transaction: &Transaction) {
+            let transaction = RuntimeTransaction::from_transaction_for_tests(transaction.clone());
+            let summary = VoteWorker::process_transactions(
+                &self.worker.consumer,
+                &self.bank,
+                std::slice::from_ref(&transaction),
+                &self.worker.bundle_account_locker,
+            );
+            assert_eq!(summary.error_counters.blockhash_not_found.0, 1);
+            assert_eq!(summary.error_counters.account_in_use.0, 0);
+            assert!(summary.retryable_transaction_indexes.is_empty());
+            assert_eq!(summary.transaction_counts.committed_transactions_count.0, 0);
+            assert_eq!(self.record_receiver.drain().count(), 0);
+        }
+
+        fn rebuffered_count(&self) -> usize {
+            self.stats.rebuffered_packets_count.load(Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RetrySuccessor {
+        None,
+        IncompatibleFork,
+        InvalidBlockhash,
+        Valid,
+    }
+
+    #[test]
+    fn test_restored_retry_worker_keeps_fallback() {
+        for successor in [
+            RetrySuccessor::None,
+            RetrySuccessor::IncompatibleFork,
+            RetrySuccessor::InvalidBlockhash,
+            RetrySuccessor::Valid,
+        ] {
+            let mut fixture = VoteRestorationFixture::new();
+            fixture.replace_bank();
+            let bank = fixture.bank.clone();
+            let transaction =
+                RuntimeTransaction::from_transaction_for_tests(fixture.vote_a.clone());
+            {
+                let held_accounts =
+                    bank.prepare_sanitized_batch(std::slice::from_ref(&transaction));
+                assert_eq!(held_accounts.lock_results(), &[Ok(())]);
+                fixture.assert_account_conflict(&fixture.vote_a, &[0]);
+                let rebuffered_before = fixture.rebuffered_count();
+                let consumed_before = fixture
+                    .stats
+                    .consumed_buffered_packets_count
+                    .load(Ordering::Relaxed);
+                fixture.consume();
+                // One direct restoration and one retry; no terminal outcome.
+                assert_eq!(fixture.rebuffered_count() - rebuffered_before, 2);
+                assert_eq!(
+                    fixture
+                        .stats
+                        .consumed_buffered_packets_count
+                        .load(Ordering::Relaxed),
+                    consumed_before
+                );
+                assert_eq!(fixture.record_receiver.drain().count(), 0);
+                assert_eq!(
+                    bank.get_signature_status(&fixture.vote_a.signatures[0]),
+                    None
+                );
+                assert_eq!(fixture.worker.storage.len(), 1);
+            }
+
+            let vote_b = match successor {
+                RetrySuccessor::None => None,
+                RetrySuccessor::IncompatibleFork => {
+                    // Newer by slot, unlike the same-slot timestamp successors.
+                    let mut tower = TowerSync::from(vec![(1, 1)]);
+                    tower.hash = Hash::new_unique();
+                    Some(new_tower_sync_transaction(
+                        tower,
+                        bank.last_blockhash(),
+                        &fixture.mint_keypair,
+                        &fixture.voting_keypair,
+                        &fixture.voting_keypair,
+                        None,
+                    ))
+                }
+                RetrySuccessor::InvalidBlockhash => Some(fixture.successor(1, Hash::new_unique())),
+                RetrySuccessor::Valid => Some(fixture.successor(1, bank.last_blockhash())),
+            };
+            if let Some(vote_b) = &vote_b {
+                fixture.insert(vote_b);
+                assert_eq!(fixture.worker.storage.len(), 1);
+            }
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.consume();
+            let succeeded = if matches!(successor, RetrySuccessor::Valid) {
+                assert_eq!(
+                    bank.get_signature_status(&fixture.vote_a.signatures[0]),
+                    None
+                );
+                vote_b.as_ref().unwrap().clone()
+            } else {
+                if let Some(vote_b) = &vote_b {
+                    assert_eq!(bank.get_signature_status(&vote_b.signatures[0]), None);
+                }
+                fixture.vote_a.clone()
+            };
+            fixture.assert_committed(&succeeded);
+            assert_eq!(
+                fixture.rebuffered_count() - rebuffered_before,
+                usize::from(matches!(
+                    successor,
+                    RetrySuccessor::IncompatibleFork | RetrySuccessor::InvalidBlockhash
+                )),
+                "successor={successor:?}",
+            );
+            fixture.assert_idle();
+
+            // Duplicate delivery after successful restoration must not replenish it.
+            fixture.insert(&succeeded);
+            assert_eq!(fixture.worker.storage.len(), 0);
+            fixture.assert_idle();
+
+            if matches!(successor, RetrySuccessor::Valid) {
+                let vote_c = fixture.successor(2, Hash::new_unique());
+                fixture.insert(&vote_c);
+                fixture.assert_idle();
+                assert_eq!(
+                    bank.get_signature_status(&fixture.vote_a.signatures[0]),
+                    None
+                );
+                // A second replacement proves successful B replaced retained A.
+                fixture.replace_bank();
+                fixture.consume();
+                fixture.assert_committed(&succeeded);
+                assert_eq!(
+                    fixture
+                        .bank
+                        .get_signature_status(&fixture.vote_a.signatures[0]),
+                    None
+                );
+                fixture.assert_idle();
+            }
+        }
+    }
+
     #[test]
     fn test_retained_vote_after_direct_bank_replacement() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            voting_keypair,
-            ..
-        } = create_slow_genesis_config(10_000);
-        let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-        let bank_a = Arc::new(Bank::new_from_parent(
-            root_bank.clone(),
-            SlotLeader::new_unique(),
-            1,
-        ));
-        let bank_b = Arc::new(Bank::new_from_parent(
-            root_bank.clone(),
-            SlotLeader::new_unique(),
-            1,
-        ));
-        let (record_sender, mut record_receiver) = record_channels(false);
-        record_receiver.restart(bank_a.bank_id());
-        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(bank_a.clone()),
-            bank_a.tick_height(),
-            None,
-            None,
-        )));
-        let mut worker = VoteWorker::new(
-            Arc::new(AtomicBool::new(false)),
-            CancellationToken::new(),
-            DecisionMaker::new(shared_leader_state.clone()),
-            VotePacketReceiver::new(never(), Arc::default()),
-            VotePacketReceiver::new(never(), Arc::default()),
-            VoteStorage::new(&bank_a),
-            bank_forks,
-            Consumer::new(
-                Committer::new(None, bounded(1).0, None),
-                solana_poh::transaction_recorder::TransactionRecorder::new(record_sender),
-                None,
-            ),
-            BundleAccountLocker::default(),
+        let mut fixture = VoteRestorationFixture::new();
+        let vote_b = fixture.successor(1, Hash::new_unique());
+        fixture.insert(&vote_b);
+        fixture.replace_bank();
+        fixture.consume();
+        fixture.assert_committed(&fixture.vote_a);
+        assert_eq!(
+            fixture.bank.get_signature_status(&vote_b.signatures[0]),
+            None
         );
-        let mut tower_sync = TowerSync::from(vec![(0, 1)]);
-        tower_sync.hash = root_bank.hash();
-        let vote_a = new_tower_sync_transaction(
-            tower_sync.clone(),
-            root_bank.last_blockhash(),
-            &mint_keypair,
-            &voting_keypair,
-            &voting_keypair,
-            None,
-        );
-        let vote_a_signature = vote_a.signatures[0];
-        worker.storage.insert_packet(
-            VoteSource::Tpu,
-            to_sanitized_view(BytesPacket::from_data(vote_a).unwrap()),
-        );
-        let mut banking_stage_stats = BankingStageStats::new();
-        let mut slot_metrics_tracker = LeaderSlotMetricsTracker::default();
+        fixture.assert_idle();
+    }
 
-        worker.process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker);
-        assert_eq!(record_receiver.drain().count(), 1);
-
-        tower_sync.timestamp = Some(1);
-        let vote_b = new_tower_sync_transaction(
-            tower_sync,
-            Hash::new_unique(),
-            &mint_keypair,
-            &voting_keypair,
-            &voting_keypair,
-            None,
+    #[test]
+    fn test_restored_retry_worker_deferred_fallback_survives_successor() {
+        let mut fixture = VoteRestorationFixture::new();
+        // B must be fork-compatible at replacement: otherwise A is directly
+        // restored, and the Deferred -> Restored transition is never exercised.
+        let vote_b = fixture.successor(1, Hash::new_unique());
+        fixture.insert(&vote_b);
+        fixture.replace_bank();
+        assert_eq!(
+            fixture
+                .worker
+                .storage
+                .restore_taken_votes_for_bank(&fixture.bank),
+            0
         );
-        worker.storage.insert_packet(
-            VoteSource::Tpu,
-            to_sanitized_view(BytesPacket::from_data(vote_b).unwrap()),
+        assert_eq!(fixture.worker.storage.len(), 1);
+        let bank = fixture.bank.clone();
+        let transaction = RuntimeTransaction::from_transaction_for_tests(fixture.vote_a.clone());
+        {
+            let held_accounts = bank.prepare_sanitized_batch(std::slice::from_ref(&transaction));
+            assert_eq!(held_accounts.lock_results(), &[Ok(())]);
+            // Consumer rejects B's blockhash before locking accounts. Deferred A
+            // then reaches the held locks and remains retryable after age filtering.
+            fixture.assert_blockhash_rejected(&vote_b);
+            fixture.assert_account_conflict(&fixture.vote_a, &[0]);
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.consume();
+            // Exactly one deferred materialization and one retry of that A.
+            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 2);
+            assert_eq!(
+                fixture
+                    .stats
+                    .dropped_forward_packets_count
+                    .load(Ordering::Relaxed),
+                0
+            );
+            assert_eq!(fixture.record_receiver.drain().count(), 0);
+            assert_eq!(
+                bank.get_signature_status(&fixture.vote_a.signatures[0]),
+                None
+            );
+            assert_eq!(bank.get_signature_status(&vote_b.signatures[0]), None);
+            assert_eq!(fixture.worker.storage.len(), 1);
+        }
+        let vote_c = fixture.successor(2, Hash::new_unique());
+        fixture.insert(&vote_c);
+        assert_eq!(fixture.worker.storage.len(), 1);
+        let rebuffered_before = fixture.rebuffered_count();
+        fixture.consume();
+        assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
+        fixture.assert_committed(&fixture.vote_a);
+        assert_eq!(bank.get_signature_status(&vote_c.signatures[0]), None);
+        fixture.assert_idle();
+    }
+
+    #[test]
+    fn test_restored_retry_worker_terminal_execution_failure() {
+        for deferred in [false, true] {
+            let mut fixture = VoteRestorationFixture::new();
+            if deferred {
+                let vote_b = fixture.successor(1, Hash::new_unique());
+                fixture.insert(&vote_b);
+            }
+            fixture.replace_bank();
+            for _ in 0..=fixture.bank.max_processing_age() {
+                fixture.bank.register_unique_recent_blockhash_for_test();
+            }
+            fixture.assert_blockhash_rejected(&fixture.vote_a);
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.consume();
+            // Direct or deferred A is materialized once, then fails terminally.
+            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
+            fixture.assert_idle();
+            let vote_c = fixture.successor(2, Hash::new_unique());
+            fixture.insert(&vote_c);
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.assert_idle();
+            assert_eq!(fixture.rebuffered_count(), rebuffered_before);
+            assert_eq!(
+                fixture
+                    .bank
+                    .get_signature_status(&fixture.vote_a.signatures[0]),
+                None
+            );
+            assert!(
+                fixture
+                    .worker
+                    .storage
+                    .take_deferred_retained_vote(fixture.voting_keypair.pubkey())
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn test_restored_retry_worker_terminal_pre_execution_failure() {
+        for deferred in [false, true] {
+            let mut fixture = VoteRestorationFixture::new();
+            if deferred {
+                let vote_b = fixture.successor(1, Hash::new_unique());
+                fixture.insert(&vote_b);
+            }
+            fixture.replace_bank();
+            let payer_pubkey = fixture.mint_keypair.pubkey();
+            let payer_account = fixture.bank.get_account(&payer_pubkey).unwrap();
+            let mut invalid_payer = payer_account.clone();
+            invalid_payer.set_owner(solana_pubkey::new_rand());
+            fixture.bank.store_account(&payer_pubkey, &invalid_payer);
+            let mut errors = TransactionErrorMetrics::default();
+            assert!(
+                consume_scan_should_process_packet(
+                    &fixture.bank,
+                    to_sanitized_view(BytesPacket::from_data(&fixture.vote_a).unwrap()),
+                    &mut errors,
+                )
+                .is_none()
+            );
+            assert_eq!(errors.invalid_account_for_fee.0, 1);
+            let consumed_before = fixture
+                .stats
+                .consumed_buffered_packets_count
+                .load(Ordering::Relaxed);
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.consume();
+            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
+            // Neither candidate reaches the execution call after fee-payer rejection.
+            assert_eq!(
+                fixture
+                    .stats
+                    .consumed_buffered_packets_count
+                    .load(Ordering::Relaxed),
+                consumed_before
+            );
+            fixture.assert_idle();
+            fixture.bank.store_account(&payer_pubkey, &payer_account);
+            // A would now execute successfully if a later B could re-arm it.
+            let vote_c = fixture.successor(2, Hash::new_unique());
+            fixture.insert(&vote_c);
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.assert_idle();
+            assert_eq!(fixture.rebuffered_count(), rebuffered_before);
+            assert_eq!(
+                fixture
+                    .bank
+                    .get_signature_status(&fixture.vote_a.signatures[0]),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_restored_retry_worker_expired_retry_is_terminal() {
+        let mut fixture = VoteRestorationFixture::new();
+        fixture.replace_bank();
+        let bank = fixture.bank.clone();
+        let retry_max_age = bank
+            .max_processing_age()
+            .saturating_sub(MAX_TRANSACTION_FORWARDING_DELAY)
+            .saturating_sub(FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET as usize);
+        for _ in 0..=retry_max_age {
+            bank.register_unique_recent_blockhash_for_test();
+        }
+        let transaction = RuntimeTransaction::from_transaction_for_tests(fixture.vote_a.clone());
+        assert!(
+            bank.check_transactions(
+                std::slice::from_ref(&transaction),
+                &[Ok(())],
+                bank.max_processing_age(),
+                false,
+                &mut TransactionErrorMetrics::default(),
+            )[0]
+            .is_ok()
         );
-
-        // Mirror BankForks::clear_bank() for the replaced bank.
-        root_bank.remove_unrooted_slots(&[(bank_a.slot(), bank_a.bank_id())]);
-        root_bank.clear_slot_signatures(bank_a.slot());
-        record_receiver.restart(bank_b.bank_id());
-        shared_leader_state.store(Arc::new(LeaderState::new(
-            Some(bank_b.clone()),
-            bank_b.tick_height(),
-            None,
-            None,
-        )));
-        worker.process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker);
-
-        assert_eq!(bank_b.get_signature_status(&vote_a_signature), Some(Ok(())));
+        {
+            let held_accounts = bank.prepare_sanitized_batch(std::slice::from_ref(&transaction));
+            assert_eq!(held_accounts.lock_results(), &[Ok(())]);
+            fixture.assert_account_conflict(&fixture.vote_a, &[]);
+            let rebuffered_before = fixture.rebuffered_count();
+            fixture.consume();
+            // The raw retry is dropped, leaving only the direct restoration count.
+            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
+            assert_eq!(
+                fixture
+                    .stats
+                    .dropped_forward_packets_count
+                    .load(Ordering::Relaxed),
+                1
+            );
+            assert_eq!(fixture.worker.storage.len(), 0);
+            assert_eq!(fixture.record_receiver.drain().count(), 0);
+        }
+        // A is still executable after unlocking, so recovery would expose a re-arm.
+        let vote_b = fixture.successor(1, Hash::new_unique());
+        fixture.insert(&vote_b);
+        let rebuffered_before = fixture.rebuffered_count();
+        fixture.assert_idle();
+        assert_eq!(fixture.rebuffered_count(), rebuffered_before);
+        assert_eq!(
+            bank.get_signature_status(&fixture.vote_a.signatures[0]),
+            None
+        );
     }
 }
