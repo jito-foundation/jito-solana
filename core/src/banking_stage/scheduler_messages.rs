@@ -1,6 +1,7 @@
 use {
     crate::banking_stage::consumer::RetryableIndex,
     jito_protos::proto::bam_types::TransactionCommittedResult,
+    smallvec::SmallVec,
     solana_clock::{Epoch, Slot},
     solana_runtime::bank::Bank,
     solana_transaction_error::{TransactionError, TransactionResult as CostResult},
@@ -59,7 +60,7 @@ pub struct ConsumeWork<Tx> {
     pub respond_with_extra_info: bool,
     pub max_schedule_slot: Option<Slot>,
     /// Admission bank and cost results, taken when settled or returned for release.
-    pub admission: Option<(Arc<Bank>, Vec<CostResult<()>>)>,
+    pub admission: Option<(Arc<Bank>, SmallVec<[CostResult<()>; 1]>)>,
 }
 
 /// Message: [Worker -> Scheduler]

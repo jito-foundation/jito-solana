@@ -273,7 +273,7 @@ impl Consumer {
         flags: &ExecutionFlags,
         bundle_account_locker: Option<&BundleAccountLocker>,
         revert_on_error: bool,
-        admission_results: Option<Vec<Result<(), TransactionError>>>,
+        admission_results: Option<SmallVec<[Result<(), TransactionError>; 1]>>,
     ) -> ProcessTransactionBatchOutput {
         if let Some(results) = admission_results {
             return self.process_and_record_transactions_with_pre_results(
@@ -1722,9 +1722,10 @@ mod tests {
                 transactions,
                 std::iter::once(resanitize()),
                 0,
+                false,
             )
             .unwrap();
-            assert_eq!(admission_results, vec![Ok(())]);
+            assert_eq!(admission_results.as_slice(), &[Ok(())]);
             // The lookup changes after admission, so the worker must recheck and release it.
             bank.store_account(
                 &address_table_key,
@@ -1809,6 +1810,7 @@ mod tests {
             &transactions,
             [Err(TransactionError::WouldExceedMaxBlockCostLimit), Ok(())].into_iter(),
             0,
+            revert_on_error,
         )
         .unwrap();
         let max_age = MaxAge {
@@ -1827,7 +1829,10 @@ mod tests {
             revert_on_error,
             Some(admission_results),
         );
-        assert_eq!(output.cost_model_throttled_transactions_count, 1);
+        assert_eq!(
+            output.cost_model_throttled_transactions_count,
+            if revert_on_error { 2 } else { 1 },
+        );
         assert_eq!(
             output
                 .execute_and_commit_transactions_output

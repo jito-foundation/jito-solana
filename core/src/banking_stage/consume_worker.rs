@@ -2555,6 +2555,7 @@ mod tests {
                 &transactions,
                 std::iter::repeat(Ok(())),
                 0,
+                false,
             )
             .unwrap();
             bank.fill_bank_with_ticks_for_tests();
@@ -2585,7 +2586,7 @@ mod tests {
         assert_eq!(consumed.work.admission.is_some(), complete_bank);
         if let Some((owner, results)) = consumed.work.admission {
             assert_eq!(owner.bank_id(), bank.bank_id());
-            assert_eq!(results, vec![Ok(())]);
+            assert_eq!(results.as_slice(), &[Ok(())]);
             assert!(matches!(
                 consumed.extra_info.unwrap().processed_results[0],
                 TransactionResult::NotCommitted(NotCommittedReason::PohTimeout)
@@ -3242,7 +3243,7 @@ mod tests {
         let mut work = worker.consume_receiver.try_recv().unwrap();
         let mut second_work =
             reconnect_between_workers.then(|| worker.consume_receiver.try_recv().unwrap());
-        assert_eq!(work.admission.as_ref().unwrap().1, vec![Ok(())]);
+        assert_eq!(work.admission.as_ref().unwrap().1.as_slice(), &[Ok(())]);
         let signature = *work.transactions[0].signature();
         assert_eq!(config(&bank).block_builder(), tips.cluster_info.id());
         assert_eq!(

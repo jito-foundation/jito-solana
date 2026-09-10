@@ -370,6 +370,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                         )
                     }),
                 self.inflight_reserved_cost,
+                revert_on_error,
             );
             let Some((results, reserved_cost)) = attempt else {
                 debug!(
@@ -1950,7 +1951,7 @@ mod tests {
     }
 
     #[test_case::test_case(1; "single_transaction")]
-    #[test_case::test_case(2; "partial_batch_rollback")]
+    #[test_case::test_case(2; "atomic_prefix_rollback")]
     fn test_deferred_batch_is_final_once_inflight_settles_without_freeing_budget(
         second_batch_size: usize,
     ) {
@@ -1984,17 +1985,121 @@ mod tests {
         assert!(test.scheduler.pending_admission.is_empty());
         let work_b = test.consume_work_receivers[0].try_recv().unwrap();
         assert_eq!(
-            work_b.admission.as_ref().unwrap().1,
-            std::iter::repeat_n(Ok(()), second_batch_size - 1)
-                .chain([Err(TransactionError::WouldExceedMaxBlockCostLimit)])
-                .collect_vec()
+            work_b.admission.as_ref().unwrap().1.as_slice(),
+            std::iter::repeat_n(
+                Err(TransactionError::CommitCancelled),
+                second_batch_size - 1,
+            )
+            .chain([Err(TransactionError::WouldExceedMaxBlockCostLimit)])
+            .collect_vec()
         );
-        assert_eq!(
-            block_cost_and_in_flight(&bank),
-            (estimate * second_batch_size as u64, second_batch_size - 1)
-        );
+        assert_eq!(block_cost_and_in_flight(&bank), (estimate, 0));
         test.scheduler.recycle_work_object(work_b);
         assert_eq!(block_cost_and_in_flight(&bank), (estimate, 0));
+    }
+
+    #[test_case::test_case(false, true; "feasible_atomic_waits")]
+    #[test_case::test_case(true, true; "impossible_atomic_releases_capacity")]
+    #[test_case::test_case(true, false; "partial_batch_waits")]
+    fn test_atomic_admission_preserves_priority_and_releases_failed_costs(
+        impossible_head: bool,
+        revert_on_error: bool,
+    ) {
+        let (mut test, bank) = admission_scheduler();
+        let estimate = estimated_cost(&bank);
+        let transfer = |outputs| {
+            prioritized_tranfers(
+                &Keypair::new(),
+                (0..outputs).map(|_| Pubkey::new_unique()),
+                1000,
+                0,
+            )
+        };
+        // The head fits the whole block limit, but settled work leaves only 3 estimates
+        // available even after every earlier reservation is refunded.
+        let settled = transfer(5);
+        let settled_costs = QosService::compute_transaction_costs(
+            &bank.feature_set,
+            std::iter::once(&settled),
+            std::iter::once(Ok(())),
+        );
+        let settled_cost = settled_costs[0].as_ref().unwrap();
+        let baseline = settled_cost.sum();
+        assert!(baseline > estimate);
+        set_block_cost_limit(&bank, baseline + 3 * estimate);
+        bank.write_cost_tracker()
+            .unwrap()
+            .try_add(settled_cost)
+            .unwrap();
+        let mut container = TransactionStateContainer::with_capacity(8);
+        insert_admission_batch(&mut container, [transfer(1)], 0);
+        container
+            .insert_new_batch(
+                [
+                    transfer(1),
+                    transfer(if impossible_head { 5 } else { 1 }),
+                    transfer(1),
+                ]
+                .into_iter()
+                .map(|tx| (tx, MaxAge::MAX))
+                .collect(),
+                u64::MAX - 1,
+                revert_on_error,
+                u64::MAX,
+                1,
+            )
+            .unwrap();
+        insert_admission_batch(&mut container, [transfer(1)], 2);
+        test.receive_completed(
+            &mut container,
+            &BufferedPacketsDecision::Consume(bank.clone()),
+        );
+
+        let should_defer = !impossible_head || !revert_on_error;
+        assert_eq!(
+            test.schedule(&mut container),
+            if should_defer { 1 } else { 5 }
+        );
+        let work_a = test.consume_work_receivers[0].try_recv().unwrap();
+        if should_defer {
+            // A refund could admit the whole atomic head at equality, or part of a non-atomic
+            // head. Independent C fits now, but must not take priority over that retry.
+            assert_eq!(block_cost_and_in_flight(&bank), (baseline + estimate, 1));
+            assert_eq!(test.scheduler.pending_admission.len(), 1);
+            assert_eq!(test.schedule(&mut container), 0);
+            assert!(test.consume_work_receivers[0].try_recv().is_err());
+        } else {
+            let work_b = test.consume_work_receivers[0].try_recv().unwrap();
+            let work_c = test.consume_work_receivers[0].try_recv().unwrap();
+            assert_eq!(
+                test.scheduler.inflight_batch_info[&work_b.batch_id].batch_priority_ids[0].1,
+                1
+            );
+            assert_eq!(
+                test.scheduler.inflight_batch_info[&work_c.batch_id].batch_priority_ids[0].1,
+                2
+            );
+            assert_eq!(
+                work_b.admission.as_ref().unwrap().1.as_slice(),
+                &[
+                    Err(TransactionError::CommitCancelled),
+                    Err(TransactionError::WouldExceedMaxBlockCostLimit),
+                    Err(TransactionError::CommitCancelled),
+                ]
+            );
+            assert_eq!(work_c.admission.as_ref().unwrap().1.as_slice(), &[Ok(())]);
+            assert!(test.scheduler.pending_admission.is_empty());
+            // B's accepted prefix AND suffix were released before C was admitted, while A
+            // is still outstanding. Returning B must not release either A's or C's cost.
+            test.scheduler.recycle_work_object(work_b);
+            assert_eq!(
+                block_cost_and_in_flight(&bank),
+                (baseline + 2 * estimate, 2)
+            );
+            test.scheduler.recycle_work_object(work_c);
+        }
+        test.scheduler.recycle_work_object(work_a);
+        assert_eq!(block_cost_and_in_flight(&bank), (baseline, 0));
     }
 
     #[test]
@@ -2154,7 +2259,7 @@ mod tests {
             assert_eq!(work.batch_id.0, batch_id);
             let (owner, results) = work.admission.as_ref().unwrap();
             assert_eq!(owner.bank_id(), bank_c.bank_id());
-            assert_eq!(results, &vec![Ok(())]);
+            assert_eq!(results.as_slice(), &[Ok(())]);
             settle_committed(&bank_c, &mut work, 150);
             finish_committed(&mut test, &mut container, &decision, work, 150);
             let (seq_id, result) = next_result(&mut test.response_receiver);
