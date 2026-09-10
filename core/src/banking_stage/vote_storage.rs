@@ -690,57 +690,75 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_restored_retry_keeps_fallback_after_newer_invalid_vote() {
-        for newer_arrives_after_retry in [false, true] {
-            let keypair = ValidatorVoteKeypairs::new_rand();
-            let genesis_config = genesis_utils::create_genesis_config_with_vote_accounts(
-                100,
-                &[&keypair],
-                vec![200],
-            )
-            .genesis_config;
-            let (root, _forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-            let old_bank = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
-            let replacement = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
-            let mut storage = VoteStorage::new(&old_bank);
-            let packet = packet_from_slots_with_hash(vec![(0, 1)], &keypair, None, root.hash());
-            storage.insert_packet(VoteSource::Tpu, to_sanitized_view(packet));
-            let (vote_pubkey, vote) = storage.drain_unprocessed(&old_bank).pop().unwrap();
-            let retained_bytes = vote.into_inner_data();
-            // Synthetic retention isolates storage bookkeeping; the worker test proves execution.
-            storage.retain_processed_vote(vote_pubkey, retained_bytes.clone());
+    fn test_restored_retry_keeps_fallback() {
+        for (initially_deferred, superseded) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut fixture = RetainedVoteFixture::new();
+            if initially_deferred {
+                fixture.insert(2, fixture.root.hash());
+            }
+            assert_eq!(fixture.replace_bank(), usize::from(!initially_deferred));
+            if initially_deferred {
+                fixture.assert_state(RetainedVoteState::Deferred, 1);
+                // Incompatible C arrives after validation, so draining selects deferred A.
+                fixture.insert(3, Hash::new_unique());
+            }
+            let (mut ready, deferred) = fixture
+                .storage
+                .drain_unprocessed_with_deferred_restores(&fixture.bank);
+            assert_eq!(deferred, usize::from(initially_deferred));
+            assert_eq!(ready.len(), 1);
+            let (_, restored) = ready.pop().unwrap();
+            assert_eq!(restored.data(), fixture.retained_bytes.as_ref());
+            fixture.assert_state(RetainedVoteState::Restored, 0);
 
-            assert_eq!(storage.restore_taken_votes_for_bank(&replacement), 1);
-            let (_, restored) = storage.drain_unprocessed(&replacement).pop().unwrap();
-            // Model the production retry path after AccountInUse.
-            storage.reinsert_packets(std::iter::once(restored));
-            assert_eq!(storage.len(), 1);
-            if newer_arrives_after_retry {
-                // Newer, but its slot/hash cannot land on this replacement fork.
-                let newer = packet_from_slots(vec![(0, 2), (1, 1)], &keypair, None);
-                storage.insert_packet(VoteSource::Tpu, to_sanitized_view(newer));
+            // Both AccountInUse retries and unattempted queue tails use this reinsert path.
+            fixture.storage.reinsert_packets(std::iter::once(restored));
+            fixture.assert_state(RetainedVoteState::Restored, 1);
+            if superseded {
+                // Cover both timestamp and slot successors incompatible with this bank.
+                if initially_deferred {
+                    fixture.insert(4, Hash::new_unique());
+                } else {
+                    let newer = to_sanitized_view(packet_from_slots(
+                        vec![(0, 2), (1, 1)],
+                        &fixture.keypairs,
+                        None,
+                    ));
+                    fixture.storage.insert_packet(VoteSource::Tpu, newer);
+                }
+                fixture.assert_state(RetainedVoteState::Deferred, 1);
             }
 
             // The worker observes the same replacement bank on its next consume.
-            assert_eq!(storage.restore_taken_votes_for_bank(&replacement), 0);
-            let (ready, deferred) = storage.drain_unprocessed_with_deferred_restores(&replacement);
+            assert_eq!(
+                fixture.storage.restore_taken_votes_for_bank(&fixture.bank),
+                0
+            );
+            let (ready, deferred) = fixture
+                .storage
+                .drain_unprocessed_with_deferred_restores(&fixture.bank);
             assert_eq!(
                 ready.len(),
                 1,
                 "valid retained retry must survive unusable newer vote; \
-                 superseded={newer_arrives_after_retry}"
+                 initially_deferred={initially_deferred}, superseded={superseded}"
             );
-            assert_eq!(deferred, usize::from(newer_arrives_after_retry));
-            assert_eq!(ready[0].1.data(), retained_bytes.as_ref());
-            assert_eq!(storage.get_latest_vote_slot(vote_pubkey), Some(0));
-            assert_eq!(storage.len(), 0);
+            assert_eq!(deferred, usize::from(superseded));
+            assert_eq!(ready[0].1.data(), fixture.retained_bytes.as_ref());
+            assert_eq!(
+                fixture.storage.get_latest_vote_slot(fixture.pubkey()),
+                Some(0)
+            );
+            fixture.assert_state(RetainedVoteState::Restored, 0);
         }
     }
 
     struct RetainedVoteFixture {
         keypairs: ValidatorVoteKeypairs,
         root: Arc<Bank>,
-        // Banks' program caches keep a weak reference to the fork graph.
+        // Child-bank construction extracts builtins through a weak fork-graph reference.
         _bank_forks: Arc<RwLock<BankForks>>,
         bank: Bank,
         storage: VoteStorage,
@@ -786,13 +804,14 @@ pub(crate) mod tests {
             self.keypairs.vote_keypair.pubkey()
         }
 
-        fn vote(&self, timestamp: i64, hash: Hash) -> SanitizedTransactionView<Bytes> {
-            to_sanitized_view(packet_from_slots_with_hash(
+        fn insert(&mut self, timestamp: i64, hash: Hash) -> VoteInsertionMetrics {
+            let vote = to_sanitized_view(packet_from_slots_with_hash(
                 vec![(0, 1)],
                 &self.keypairs,
                 Some(timestamp),
                 hash,
-            ))
+            ));
+            self.storage.insert_packet(VoteSource::Tpu, vote)
         }
 
         fn replace_bank(&mut self) -> usize {
@@ -827,55 +846,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_restored_retry_deferred_vote_survives_unattempted_requeue() {
-        let mut fixture = RetainedVoteFixture::new();
-        fixture
-            .storage
-            .insert_packet(VoteSource::Tpu, fixture.vote(2, fixture.root.hash()));
-        assert_eq!(fixture.replace_bank(), 0);
-        fixture.assert_state(RetainedVoteState::Deferred, 1);
-
-        // Incompatible C arrives after bank validation, so draining selects deferred A.
-        fixture
-            .storage
-            .insert_packet(VoteSource::Tpu, fixture.vote(3, Hash::new_unique()));
-        let (mut votes, deferred) = fixture
-            .storage
-            .drain_unprocessed_with_deferred_restores(&fixture.bank);
-        assert_eq!(deferred, 1);
-        assert_eq!(votes.len(), 1);
-        let (_, restored) = votes.pop().unwrap();
-        assert_eq!(restored.data(), fixture.retained_bytes.as_ref());
-        fixture.assert_state(RetainedVoteState::Restored, 0);
-
-        // Model the worker returning its unattempted queue tail at end of slot.
-        fixture.storage.reinsert_packets(std::iter::once(restored));
-        fixture.assert_state(RetainedVoteState::Restored, 1);
-        fixture
-            .storage
-            .insert_packet(VoteSource::Tpu, fixture.vote(4, Hash::new_unique()));
-        fixture.assert_state(RetainedVoteState::Deferred, 1);
-        assert_eq!(
-            fixture.storage.restore_taken_votes_for_bank(&fixture.bank),
-            0
-        );
-        let (votes, deferred) = fixture
-            .storage
-            .drain_unprocessed_with_deferred_restores(&fixture.bank);
-        assert_eq!(deferred, 1);
-        assert_eq!(votes.len(), 1);
-        assert_eq!(votes[0].1.data(), fixture.retained_bytes.as_ref());
-        fixture.assert_state(RetainedVoteState::Restored, 0);
-    }
-
-    #[test]
     fn test_restored_retry_terminal_failure_is_not_rearmed() {
         for deferred in [false, true] {
             let mut fixture = RetainedVoteFixture::new();
             if deferred {
-                fixture
-                    .storage
-                    .insert_packet(VoteSource::Tpu, fixture.vote(2, fixture.root.hash()));
+                fixture.insert(2, fixture.root.hash());
             }
             assert_eq!(fixture.replace_bank(), usize::from(!deferred));
             assert_eq!(fixture.storage.drain_unprocessed(&fixture.bank).len(), 1);
@@ -904,9 +879,7 @@ pub(crate) mod tests {
                 fixture.assert_state(RetainedVoteState::Disabled, 0);
             }
 
-            fixture
-                .storage
-                .insert_packet(VoteSource::Tpu, fixture.vote(3, fixture.root.hash()));
+            fixture.insert(3, fixture.root.hash());
             fixture.assert_state(RetainedVoteState::Disabled, 1);
             assert_eq!(fixture.storage.drain_unprocessed(&fixture.bank).len(), 1);
             assert!(
@@ -936,10 +909,7 @@ pub(crate) mod tests {
         fixture.assert_state(RetainedVoteState::Restored, 1);
 
         for timestamp in [0, 1] {
-            let dropped = fixture.storage.insert_packet(
-                VoteSource::Tpu,
-                fixture.vote(timestamp, fixture.root.hash()),
-            );
+            let dropped = fixture.insert(timestamp, fixture.root.hash());
             assert_eq!(dropped.total_dropped_packets(), 1);
             fixture.assert_state(RetainedVoteState::Restored, 1);
         }
@@ -953,9 +923,7 @@ pub(crate) mod tests {
             .storage
             .retain_processed_vote(fixture.pubkey(), vote.into_inner_data());
         fixture.assert_state(RetainedVoteState::Disabled, 0);
-        fixture
-            .storage
-            .insert_packet(VoteSource::Tpu, fixture.vote(1, fixture.root.hash()));
+        fixture.insert(1, fixture.root.hash());
         assert_eq!(
             fixture.storage.restore_taken_votes_for_bank(&fixture.bank),
             0
@@ -998,9 +966,7 @@ pub(crate) mod tests {
             } else {
                 fixture.root.hash()
             };
-            fixture
-                .storage
-                .insert_packet(VoteSource::Tpu, fixture.vote(2, successor_hash));
+            fixture.insert(2, successor_hash);
             fixture.assert_state(RetainedVoteState::Deferred, 1);
             fixture
                 .root
@@ -1032,9 +998,7 @@ pub(crate) mod tests {
     #[test]
     fn test_restored_retry_failed_reconstruction_disables_fallback() {
         let mut fixture = RetainedVoteFixture::new();
-        fixture
-            .storage
-            .insert_packet(VoteSource::Tpu, fixture.vote(2, fixture.root.hash()));
+        fixture.insert(2, fixture.root.hash());
         assert_eq!(fixture.replace_bank(), 0);
         assert_eq!(fixture.storage.drain_unprocessed(&fixture.bank).len(), 1);
         fixture.assert_state(RetainedVoteState::Deferred, 0);

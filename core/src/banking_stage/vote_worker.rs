@@ -546,8 +546,9 @@ mod tests {
             vote_storage::tests::to_sanitized_view,
         },
         crossbeam_channel::{bounded, never},
+        itertools::Itertools,
         solana_account::WritableAccount,
-        solana_clock::MAX_TRANSACTION_FORWARDING_DELAY,
+        solana_clock::{MAX_TRANSACTION_FORWARDING_DELAY, Slot},
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
@@ -563,6 +564,7 @@ mod tests {
         solana_transaction::Transaction,
         solana_vote::vote_transaction::new_tower_sync_transaction,
         solana_vote_program::vote_state::TowerSync,
+        test_case::test_case,
     };
 
     #[test]
@@ -757,7 +759,7 @@ mod tests {
                 metrics: LeaderSlotMetricsTracker::default(),
             };
             fixture.insert(&fixture.vote_a.clone());
-            fixture.consume();
+            fixture.consume(0);
             fixture.assert_committed(&fixture.vote_a);
             fixture
         }
@@ -770,9 +772,22 @@ mod tests {
             );
         }
 
-        fn consume(&mut self) {
+        fn consume(&mut self, expected_rebuffered: usize) -> usize {
+            let before = self.stats.rebuffered_packets_count.load(Ordering::Relaxed);
+            let consumed_before = self
+                .stats
+                .consumed_buffered_packets_count
+                .load(Ordering::Relaxed);
             self.worker
                 .process_buffered_packets(&mut self.stats, &mut self.metrics);
+            assert_eq!(
+                self.stats.rebuffered_packets_count.load(Ordering::Relaxed) - before,
+                expected_rebuffered,
+            );
+            self.stats
+                .consumed_buffered_packets_count
+                .load(Ordering::Relaxed)
+                - consumed_before
         }
 
         fn replace_bank(&mut self) {
@@ -805,8 +820,8 @@ mod tests {
             );
         }
 
-        fn successor(&self, timestamp: i64, recent_blockhash: Hash) -> Transaction {
-            let mut tower = TowerSync::from(vec![(0, 1)]);
+        fn successor(&self, slot: Slot, timestamp: i64, recent_blockhash: Hash) -> Transaction {
+            let mut tower = TowerSync::from(vec![(slot, 1)]);
             tower.hash = self.root_bank.hash();
             tower.timestamp = Some(timestamp);
             new_tower_sync_transaction(
@@ -820,14 +835,10 @@ mod tests {
         }
 
         fn assert_committed(&self, transaction: &Transaction) {
-            let records: Vec<_> = self.record_receiver.drain().collect();
-            assert_eq!(records.len(), 1);
-            assert_eq!(records[0].bank_id, self.bank.bank_id());
-            assert_eq!(records[0].transactions.len(), 1);
-            assert_eq!(
-                records[0].transactions[0].signatures,
-                transaction.signatures
-            );
+            let record = self.record_receiver.drain().exactly_one().ok().unwrap();
+            assert_eq!(record.bank_id, self.bank.bank_id());
+            let recorded = record.transactions.iter().exactly_one().unwrap();
+            assert_eq!(recorded.signatures, transaction.signatures);
             assert_eq!(
                 self.bank.get_signature_status(&transaction.signatures[0]),
                 Some(Ok(())),
@@ -836,7 +847,7 @@ mod tests {
         }
 
         fn assert_idle(&mut self) {
-            self.consume();
+            self.consume(0);
             assert_eq!(self.record_receiver.drain().count(), 0);
             assert_eq!(self.worker.storage.len(), 0);
         }
@@ -880,180 +891,47 @@ mod tests {
             assert_eq!(summary.transaction_counts.committed_transactions_count.0, 0);
             assert_eq!(self.record_receiver.drain().count(), 0);
         }
+    }
 
-        fn rebuffered_count(&self) -> usize {
-            self.stats.rebuffered_packets_count.load(Ordering::Relaxed)
+    #[test_case(None, false, false; "direct without successor")]
+    #[test_case(Some(1), true, false; "direct with incompatible fork")]
+    #[test_case(Some(0), false, false; "direct with invalid blockhash")]
+    #[test_case(Some(0), true, false; "direct with valid successor")]
+    #[test_case(Some(0), false, true; "deferred with invalid successor")]
+    fn test_restored_retry_worker_keeps_fallback(
+        successor_slot: Option<Slot>,
+        valid_blockhash: bool,
+        deferred: bool,
+    ) {
+        let mut fixture = VoteRestorationFixture::new();
+        // Fork-compatible B makes A deferred at replacement; B's invalid
+        // blockhash then selects A before A reaches the held account locks.
+        let initial_successor = deferred.then(|| fixture.successor(0, 1, Hash::new_unique()));
+        if let Some(vote) = &initial_successor {
+            fixture.insert(vote);
         }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    enum RetrySuccessor {
-        None,
-        IncompatibleFork,
-        InvalidBlockhash,
-        Valid,
-    }
-
-    #[test]
-    fn test_restored_retry_worker_keeps_fallback() {
-        for successor in [
-            RetrySuccessor::None,
-            RetrySuccessor::IncompatibleFork,
-            RetrySuccessor::InvalidBlockhash,
-            RetrySuccessor::Valid,
-        ] {
-            let mut fixture = VoteRestorationFixture::new();
-            fixture.replace_bank();
-            let bank = fixture.bank.clone();
-            let transaction =
-                RuntimeTransaction::from_transaction_for_tests(fixture.vote_a.clone());
-            {
-                let held_accounts =
-                    bank.prepare_sanitized_batch(std::slice::from_ref(&transaction));
-                assert_eq!(held_accounts.lock_results(), &[Ok(())]);
-                fixture.assert_account_conflict(&fixture.vote_a, &[0]);
-                let rebuffered_before = fixture.rebuffered_count();
-                let consumed_before = fixture
-                    .stats
-                    .consumed_buffered_packets_count
-                    .load(Ordering::Relaxed);
-                fixture.consume();
-                // One direct restoration and one retry; no terminal outcome.
-                assert_eq!(fixture.rebuffered_count() - rebuffered_before, 2);
-                assert_eq!(
-                    fixture
-                        .stats
-                        .consumed_buffered_packets_count
-                        .load(Ordering::Relaxed),
-                    consumed_before
-                );
-                assert_eq!(fixture.record_receiver.drain().count(), 0);
-                assert_eq!(
-                    bank.get_signature_status(&fixture.vote_a.signatures[0]),
-                    None
-                );
-                assert_eq!(fixture.worker.storage.len(), 1);
-            }
-
-            let vote_b = match successor {
-                RetrySuccessor::None => None,
-                RetrySuccessor::IncompatibleFork => {
-                    // Newer by slot, unlike the same-slot timestamp successors.
-                    let mut tower = TowerSync::from(vec![(1, 1)]);
-                    tower.hash = Hash::new_unique();
-                    Some(new_tower_sync_transaction(
-                        tower,
-                        bank.last_blockhash(),
-                        &fixture.mint_keypair,
-                        &fixture.voting_keypair,
-                        &fixture.voting_keypair,
-                        None,
-                    ))
-                }
-                RetrySuccessor::InvalidBlockhash => Some(fixture.successor(1, Hash::new_unique())),
-                RetrySuccessor::Valid => Some(fixture.successor(1, bank.last_blockhash())),
-            };
-            if let Some(vote_b) = &vote_b {
-                fixture.insert(vote_b);
-                assert_eq!(fixture.worker.storage.len(), 1);
-            }
-            let rebuffered_before = fixture.rebuffered_count();
-            fixture.consume();
-            let succeeded = if matches!(successor, RetrySuccessor::Valid) {
-                assert_eq!(
-                    bank.get_signature_status(&fixture.vote_a.signatures[0]),
-                    None
-                );
-                vote_b.as_ref().unwrap().clone()
-            } else {
-                if let Some(vote_b) = &vote_b {
-                    assert_eq!(bank.get_signature_status(&vote_b.signatures[0]), None);
-                }
-                fixture.vote_a.clone()
-            };
-            fixture.assert_committed(&succeeded);
+        fixture.replace_bank();
+        if deferred {
             assert_eq!(
-                fixture.rebuffered_count() - rebuffered_before,
-                usize::from(matches!(
-                    successor,
-                    RetrySuccessor::IncompatibleFork | RetrySuccessor::InvalidBlockhash
-                )),
-                "successor={successor:?}",
+                fixture
+                    .worker
+                    .storage
+                    .restore_taken_votes_for_bank(&fixture.bank),
+                0
             );
-            fixture.assert_idle();
-
-            // Duplicate delivery after successful restoration must not replenish it.
-            fixture.insert(&succeeded);
-            assert_eq!(fixture.worker.storage.len(), 0);
-            fixture.assert_idle();
-
-            if matches!(successor, RetrySuccessor::Valid) {
-                let vote_c = fixture.successor(2, Hash::new_unique());
-                fixture.insert(&vote_c);
-                fixture.assert_idle();
-                assert_eq!(
-                    bank.get_signature_status(&fixture.vote_a.signatures[0]),
-                    None
-                );
-                // A second replacement proves successful B replaced retained A.
-                fixture.replace_bank();
-                fixture.consume();
-                fixture.assert_committed(&succeeded);
-                assert_eq!(
-                    fixture
-                        .bank
-                        .get_signature_status(&fixture.vote_a.signatures[0]),
-                    None
-                );
-                fixture.assert_idle();
-            }
+            assert_eq!(fixture.worker.storage.len(), 1);
         }
-    }
-
-    #[test]
-    fn test_retained_vote_after_direct_bank_replacement() {
-        let mut fixture = VoteRestorationFixture::new();
-        let vote_b = fixture.successor(1, Hash::new_unique());
-        fixture.insert(&vote_b);
-        fixture.replace_bank();
-        fixture.consume();
-        fixture.assert_committed(&fixture.vote_a);
-        assert_eq!(
-            fixture.bank.get_signature_status(&vote_b.signatures[0]),
-            None
-        );
-        fixture.assert_idle();
-    }
-
-    #[test]
-    fn test_restored_retry_worker_deferred_fallback_survives_successor() {
-        let mut fixture = VoteRestorationFixture::new();
-        // B must be fork-compatible at replacement: otherwise A is directly
-        // restored, and the Deferred -> Restored transition is never exercised.
-        let vote_b = fixture.successor(1, Hash::new_unique());
-        fixture.insert(&vote_b);
-        fixture.replace_bank();
-        assert_eq!(
-            fixture
-                .worker
-                .storage
-                .restore_taken_votes_for_bank(&fixture.bank),
-            0
-        );
-        assert_eq!(fixture.worker.storage.len(), 1);
         let bank = fixture.bank.clone();
         let transaction = RuntimeTransaction::from_transaction_for_tests(fixture.vote_a.clone());
         {
             let held_accounts = bank.prepare_sanitized_batch(std::slice::from_ref(&transaction));
             assert_eq!(held_accounts.lock_results(), &[Ok(())]);
-            // Consumer rejects B's blockhash before locking accounts. Deferred A
-            // then reaches the held locks and remains retryable after age filtering.
-            fixture.assert_blockhash_rejected(&vote_b);
+            if let Some(vote) = &initial_successor {
+                fixture.assert_blockhash_rejected(vote);
+            }
             fixture.assert_account_conflict(&fixture.vote_a, &[0]);
-            let rebuffered_before = fixture.rebuffered_count();
-            fixture.consume();
-            // Exactly one deferred materialization and one retry of that A.
-            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 2);
+            // One direct/deferred restoration and one retry of A.
+            assert_eq!(fixture.consume(2), usize::from(deferred));
             assert_eq!(
                 fixture
                     .stats
@@ -1066,113 +944,149 @@ mod tests {
                 bank.get_signature_status(&fixture.vote_a.signatures[0]),
                 None
             );
-            assert_eq!(bank.get_signature_status(&vote_b.signatures[0]), None);
+            if let Some(vote) = &initial_successor {
+                assert_eq!(bank.get_signature_status(&vote.signatures[0]), None);
+            }
             assert_eq!(fixture.worker.storage.len(), 1);
         }
-        let vote_c = fixture.successor(2, Hash::new_unique());
-        fixture.insert(&vote_c);
-        assert_eq!(fixture.worker.storage.len(), 1);
-        let rebuffered_before = fixture.rebuffered_count();
-        fixture.consume();
-        assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
-        fixture.assert_committed(&fixture.vote_a);
-        assert_eq!(bank.get_signature_status(&vote_c.signatures[0]), None);
-        fixture.assert_idle();
-    }
 
-    #[test]
-    fn test_restored_retry_worker_terminal_execution_failure() {
-        for deferred in [false, true] {
-            let mut fixture = VoteRestorationFixture::new();
-            if deferred {
-                let vote_b = fixture.successor(1, Hash::new_unique());
-                fixture.insert(&vote_b);
+        let vote_b = successor_slot.map(|slot| {
+            fixture.successor(
+                slot,
+                2,
+                if valid_blockhash {
+                    bank.last_blockhash()
+                } else {
+                    Hash::new_unique()
+                },
+            )
+        });
+        if let Some(vote_b) = &vote_b {
+            fixture.insert(vote_b);
+            assert_eq!(fixture.worker.storage.len(), 1);
+        }
+        let successor_succeeds = successor_slot == Some(0) && valid_blockhash;
+        fixture.consume(usize::from(vote_b.is_some() && !successor_succeeds));
+        let succeeded = if successor_succeeds {
+            assert_eq!(
+                bank.get_signature_status(&fixture.vote_a.signatures[0]),
+                None
+            );
+            vote_b.as_ref().unwrap().clone()
+        } else {
+            if let Some(vote_b) = &vote_b {
+                assert_eq!(bank.get_signature_status(&vote_b.signatures[0]), None);
             }
-            fixture.replace_bank();
-            for _ in 0..=fixture.bank.max_processing_age() {
-                fixture.bank.register_unique_recent_blockhash_for_test();
-            }
-            fixture.assert_blockhash_rejected(&fixture.vote_a);
-            let rebuffered_before = fixture.rebuffered_count();
-            fixture.consume();
-            // Direct or deferred A is materialized once, then fails terminally.
-            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
-            fixture.assert_idle();
-            let vote_c = fixture.successor(2, Hash::new_unique());
+            fixture.vote_a.clone()
+        };
+        fixture.assert_committed(&succeeded);
+        fixture.assert_idle();
+
+        // Duplicate delivery after successful restoration must not replenish it.
+        fixture.insert(&succeeded);
+        assert_eq!(fixture.worker.storage.len(), 0);
+        fixture.assert_idle();
+
+        if successor_succeeds {
+            let vote_c = fixture.successor(0, 3, Hash::new_unique());
             fixture.insert(&vote_c);
-            let rebuffered_before = fixture.rebuffered_count();
             fixture.assert_idle();
-            assert_eq!(fixture.rebuffered_count(), rebuffered_before);
+            assert_eq!(
+                bank.get_signature_status(&fixture.vote_a.signatures[0]),
+                None
+            );
+            // A second replacement proves successful B replaced retained A.
+            fixture.replace_bank();
+            fixture.consume(1);
+            fixture.assert_committed(&succeeded);
             assert_eq!(
                 fixture
                     .bank
                     .get_signature_status(&fixture.vote_a.signatures[0]),
                 None
             );
-            assert!(
-                fixture
-                    .worker
-                    .storage
-                    .take_deferred_retained_vote(fixture.voting_keypair.pubkey())
-                    .is_none()
-            );
+            fixture.assert_idle();
         }
     }
 
     #[test]
-    fn test_restored_retry_worker_terminal_pre_execution_failure() {
-        for deferred in [false, true] {
-            let mut fixture = VoteRestorationFixture::new();
-            if deferred {
-                let vote_b = fixture.successor(1, Hash::new_unique());
-                fixture.insert(&vote_b);
-            }
-            fixture.replace_bank();
-            let payer_pubkey = fixture.mint_keypair.pubkey();
-            let payer_account = fixture.bank.get_account(&payer_pubkey).unwrap();
-            let mut invalid_payer = payer_account.clone();
-            invalid_payer.set_owner(solana_pubkey::new_rand());
-            fixture.bank.store_account(&payer_pubkey, &invalid_payer);
+    fn test_retained_vote_after_direct_bank_replacement() {
+        let mut fixture = VoteRestorationFixture::new();
+        let vote_b = fixture.successor(0, 1, Hash::new_unique());
+        fixture.insert(&vote_b);
+        fixture.replace_bank();
+        fixture.consume(1);
+        fixture.assert_committed(&fixture.vote_a);
+        assert_eq!(
+            fixture.bank.get_signature_status(&vote_b.signatures[0]),
+            None
+        );
+        fixture.assert_idle();
+    }
+
+    #[test_case(false, false; "direct execution rejection")]
+    #[test_case(true, false; "deferred execution rejection")]
+    #[test_case(false, true; "direct pre-execution rejection")]
+    #[test_case(true, true; "deferred pre-execution rejection")]
+    fn test_restored_retry_worker_terminal_failure(deferred: bool, invalid_payer: bool) {
+        let mut fixture = VoteRestorationFixture::new();
+        if deferred {
+            let vote_b = fixture.successor(0, 1, Hash::new_unique());
+            fixture.insert(&vote_b);
+        }
+        fixture.replace_bank();
+        let bank = fixture.bank.clone();
+        let payer_pubkey = fixture.mint_keypair.pubkey();
+        let payer_account = bank.get_account(&payer_pubkey).unwrap();
+        if invalid_payer {
+            let mut invalid_account = payer_account.clone();
+            invalid_account.set_owner(solana_pubkey::new_rand());
+            bank.store_account(&payer_pubkey, &invalid_account);
             let mut errors = TransactionErrorMetrics::default();
             assert!(
                 consume_scan_should_process_packet(
-                    &fixture.bank,
+                    &bank,
                     to_sanitized_view(BytesPacket::from_data(&fixture.vote_a).unwrap()),
                     &mut errors,
                 )
                 .is_none()
             );
             assert_eq!(errors.invalid_account_for_fee.0, 1);
-            let consumed_before = fixture
-                .stats
-                .consumed_buffered_packets_count
-                .load(Ordering::Relaxed);
-            let rebuffered_before = fixture.rebuffered_count();
-            fixture.consume();
-            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
-            // Neither candidate reaches the execution call after fee-payer rejection.
-            assert_eq!(
-                fixture
-                    .stats
-                    .consumed_buffered_packets_count
-                    .load(Ordering::Relaxed),
-                consumed_before
-            );
-            fixture.assert_idle();
-            fixture.bank.store_account(&payer_pubkey, &payer_account);
-            // A would now execute successfully if a later B could re-arm it.
-            let vote_c = fixture.successor(2, Hash::new_unique());
-            fixture.insert(&vote_c);
-            let rebuffered_before = fixture.rebuffered_count();
-            fixture.assert_idle();
-            assert_eq!(fixture.rebuffered_count(), rebuffered_before);
-            assert_eq!(
-                fixture
-                    .bank
-                    .get_signature_status(&fixture.vote_a.signatures[0]),
-                None
-            );
+        } else {
+            for _ in 0..=bank.max_processing_age() {
+                bank.register_unique_recent_blockhash_for_test();
+            }
+            fixture.assert_blockhash_rejected(&fixture.vote_a);
         }
+        // Direct or deferred A is materialized once, then fails terminally.
+        // Fee-payer rejection prevents either candidate from reaching execution.
+        assert_eq!(
+            fixture.consume(1),
+            if invalid_payer {
+                0
+            } else {
+                1 + usize::from(deferred)
+            }
+        );
+        fixture.assert_idle();
+        if invalid_payer {
+            bank.store_account(&payer_pubkey, &payer_account);
+        }
+        // After fee-payer repair A would execute if a later vote could re-arm it.
+        let vote_c = fixture.successor(0, 2, Hash::new_unique());
+        fixture.insert(&vote_c);
+        fixture.assert_idle();
+        assert_eq!(
+            bank.get_signature_status(&fixture.vote_a.signatures[0]),
+            None
+        );
+        assert!(
+            fixture
+                .worker
+                .storage
+                .take_deferred_retained_vote(fixture.voting_keypair.pubkey())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1202,10 +1116,8 @@ mod tests {
             let held_accounts = bank.prepare_sanitized_batch(std::slice::from_ref(&transaction));
             assert_eq!(held_accounts.lock_results(), &[Ok(())]);
             fixture.assert_account_conflict(&fixture.vote_a, &[]);
-            let rebuffered_before = fixture.rebuffered_count();
-            fixture.consume();
             // The raw retry is dropped, leaving only the direct restoration count.
-            assert_eq!(fixture.rebuffered_count() - rebuffered_before, 1);
+            fixture.consume(1);
             assert_eq!(
                 fixture
                     .stats
@@ -1217,11 +1129,9 @@ mod tests {
             assert_eq!(fixture.record_receiver.drain().count(), 0);
         }
         // A is still executable after unlocking, so recovery would expose a re-arm.
-        let vote_b = fixture.successor(1, Hash::new_unique());
+        let vote_b = fixture.successor(0, 1, Hash::new_unique());
         fixture.insert(&vote_b);
-        let rebuffered_before = fixture.rebuffered_count();
         fixture.assert_idle();
-        assert_eq!(fixture.rebuffered_count(), rebuffered_before);
         assert_eq!(
             bank.get_signature_status(&fixture.vote_a.signatures[0]),
             None

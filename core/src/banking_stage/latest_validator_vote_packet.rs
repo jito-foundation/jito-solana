@@ -176,17 +176,13 @@ impl LatestValidatorVote {
             .retained_vote
             .as_ref()
             .is_some_and(|(_, _, slot_hash)| is_valid_for_fork(*slot_hash));
-        self.retained_vote_state = if current_vote_is_valid && retained_vote_is_valid {
+        if !current_vote_is_valid || !retained_vote_is_valid {
+            self.retained_vote_state = RetainedVoteState::Disabled;
+        } else if self.retained_vote_state != RetainedVoteState::Restored {
             // A queued restored vote must not acquire itself as a fallback when
             // another same-slot bank replacement occurs before it is processed.
-            if self.retained_vote_state == RetainedVoteState::Restored {
-                RetainedVoteState::Restored
-            } else {
-                RetainedVoteState::Deferred
-            }
-        } else {
-            RetainedVoteState::Disabled
-        };
+            self.retained_vote_state = RetainedVoteState::Deferred;
+        }
 
         if current_vote_is_valid || !retained_vote_is_valid {
             return None;
