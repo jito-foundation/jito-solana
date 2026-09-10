@@ -109,15 +109,13 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         &self,
         mut work: ConsumeWork<Tx>,
     ) -> Result<Option<ConsumeWork<Tx>>, ConsumeWorkerError> {
-        let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
+        let leader_state = self.shared_leader_state.load();
+        let Some(bank) = leader_state
+            .working_bank()
+            .filter(|bank| !bank.is_complete() && bank.slot() == work.target_slot)
+        else {
             return Ok(Some(work));
         };
-        let bank = leader_state
-            .working_bank()
-            .expect("active_leader_state should only return an active bank");
-        if bank.slot() != work.target_slot {
-            return Ok(Some(work));
-        }
 
         self.metrics
             .count_metrics

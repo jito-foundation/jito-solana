@@ -290,7 +290,12 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 (batch_id, id)
             };
 
-            let (batch_ids, revert_on_error, _, seq_id) = container.get_batch(id.id).unwrap();
+            let Some((batch_ids, revert_on_error, _, seq_id)) = container.get_batch(id.id) else {
+                error!("Batch {} not found in container", id.id);
+                container.remove_by_id(id.id);
+                self.prio_graph.unblock(&id);
+                continue;
+            };
 
             // Update time in prio-graph metric
             if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
@@ -337,11 +342,11 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 });
             work.ids.extend(batch_ids);
             // The entries were checked above and the container is exclusively borrowed.
-            for txn_id in &work.ids {
-                let (transaction, max_age) = container
+            for (transaction, max_age) in work.ids.iter().filter_map(|txn_id| {
+                container
                     .get_mut_transaction_state(*txn_id)
-                    .unwrap()
-                    .take_transaction_for_scheduling();
+                    .map(|state| state.take_transaction_for_scheduling())
+            }) {
                 work.transactions.push(transaction);
                 work.max_ages.push(max_age);
             }
@@ -371,10 +376,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 );
                 // The retry takes the transactions out again; hand them back until then.
                 for (txn_id, transaction) in work.ids.iter().zip(work.transactions.drain(..)) {
-                    container
-                        .get_mut_transaction_state(*txn_id)
-                        .unwrap()
-                        .retry_transaction(transaction);
+                    if let Some(state) = container.get_mut_transaction_state(*txn_id) {
+                        state.retry_transaction(transaction);
+                    }
                 }
                 self.recycle_work_object(work);
                 self.pending_admission
@@ -722,10 +726,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             if retry_on_replacement {
                 Self::release_admission(&mut work);
                 for (id, transaction) in work.ids.iter().zip(work.transactions.drain(..)) {
-                    container
-                        .get_mut_transaction_state(*id)
-                        .unwrap()
-                        .retry_transaction(transaction);
+                    if let Some(state) = container.get_mut_transaction_state(*id) {
+                        state.retry_transaction(transaction);
+                    }
                 }
                 // Keep the graph node blocked and its original dispatch ID across replacements.
                 self.pending_admission
@@ -1399,6 +1402,7 @@ mod tests {
     #[test_case::test_case(&[0]; "missing_first")]
     #[test_case::test_case(&[1]; "missing_last")]
     #[test_case::test_case(&[0, 1]; "all_missing")]
+    #[test_case::test_case(&[]; "missing_batch")]
     fn test_missing_transaction_rejects_batch_and_unblocks_dependents(missing: &[usize]) {
         let (mut test, bank) = admission_scheduler();
         let payer = Keypair::new();
@@ -1438,6 +1442,9 @@ mod tests {
         for &index in missing {
             container.remove_by_id(malformed_ids[index]);
         }
+        if missing.is_empty() {
+            container.remove_by_id(malformed);
+        }
 
         assert_eq!(
             test.scheduler
@@ -1445,20 +1452,26 @@ mod tests {
                 .unwrap(),
             1
         );
-        let (seq_id, NotCommitted(result)) = next_result(&mut test.response_receiver) else {
-            panic!("expected rejection of the incomplete batch");
-        };
-        assert_eq!(seq_id, 0);
-        assert_eq!(
-            result.reason,
-            Some(Reason::TransactionError(
-                jito_protos::proto::bam_types::TransactionError {
-                    index: missing[0] as u32,
-                    reason: jito_protos::proto::bam_types::TransactionErrorReason::SanitizeFailure
-                        as i32,
-                }
-            ))
-        );
+        if let Some(&index) = missing.first() {
+            let (seq_id, NotCommitted(result)) = next_result(&mut test.response_receiver) else {
+                panic!("expected rejection of the incomplete batch");
+            };
+            assert_eq!(seq_id, 0);
+            assert_eq!(
+                result.reason,
+                Some(Reason::TransactionError(
+                    jito_protos::proto::bam_types::TransactionError {
+                        index: index as u32,
+                        reason:
+                            jito_protos::proto::bam_types::TransactionErrorReason::SanitizeFailure
+                                as i32,
+                    }
+                ))
+            );
+        } else {
+            // Missing metadata leaves no seq_id to report, but must still release dependents.
+            assert!(test.response_receiver.try_recv().is_err());
+        }
         assert!(container.get_batch(malformed).is_none());
         assert!(
             malformed_ids
