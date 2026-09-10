@@ -1,14 +1,9 @@
 [workspace]
-<<<<<<< HEAD
-members = ["../accounts-db/store-tool", "../ledger-tool"]
-=======
 members = [
     "../accounts-db/store-tool",
     "../bam-local-cluster",
     "../ledger-tool",
-    "../svm-conformance",
 ]
->>>>>>> 9c28417687 (build(workspace): Isolate bam-local-cluster (#1630))
 
 resolver = "2"
 
@@ -48,8 +43,9 @@ agave-reserved-account-keys = { path = "../reserved-account-keys", version = "=4
 agave-snapshots = { path = "../snapshots", version = "=4.2.1", features = ["agave-unstable-api"] }
 agave-votor = { path = "../votor", version = "=4.2.1", features = ["agave-unstable-api"] }
 ahash = "0.8.11"
-anyhow = "1.0.104"
+anyhow = "1.0.102"
 assert_cmd = "2.2.2"
+axum = "0.8.9"
 bincode = "1.3.3"
 chrono = { version = "0.4.42", default-features = false }
 clap = { version = "2.33.1", default-features = false, features = ["suggestions"] }
@@ -120,7 +116,7 @@ solana-native-token = "3.0.0"
 solana-net-utils = { path = "../net-utils", version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-nonce = ">=3.2.0,<3.3.0"
 solana-precompile-error = "3.0.0"
-<<<<<<< HEAD
+solana-program-binaries = { path = "../program-binaries", version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-program-runtime = { path = "../program-runtime", version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-pubkey = { version = ">=4.2.0,<4.3.0", default-features = false }
 solana-quic-client = { path = "../quic-client", version = "=4.2.1", features = ["agave-unstable-api"] }
@@ -131,19 +127,6 @@ solana-rpc-client-api = { path = "../rpc-client-api", version = "=4.2.1" }
 solana-runtime = { path = "../runtime", version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-runtime-transaction = { path = "../runtime-transaction", version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-sbpf = { version = "=0.21.1", default-features = false }
-=======
-solana-program-binaries = { path = "../program-binaries", version = "=4.4.0-alpha.2", features = ["agave-unstable-api"] }
-solana-program-runtime = { path = "../program-runtime", version = "=4.4.0-alpha.2", features = ["agave-unstable-api"] }
-solana-pubkey = { version = "4.2.0", default-features = false }
-solana-quic-client = { path = "../quic-client", version = "=4.4.0-alpha.2", features = ["agave-unstable-api"] }
-solana-rent = "4.2.1"
-solana-rpc = { path = "../rpc", version = "=4.4.0-alpha.2", features = ["agave-unstable-api"] }
-solana-rpc-client = { path = "../rpc-client", version = "=4.4.0-alpha.2", default-features = false }
-solana-rpc-client-api = { path = "../rpc-client-api", version = "=4.4.0-alpha.2" }
-solana-runtime = { path = "../runtime", version = "=4.4.0-alpha.2", features = ["agave-unstable-api"] }
-solana-runtime-transaction = { path = "../runtime-transaction", version = "=4.4.0-alpha.2", features = ["agave-unstable-api"] }
-solana-sbpf = { version = "=0.24.0", default-features = false }
->>>>>>> 9c28417687 (build(workspace): Isolate bam-local-cluster (#1630))
 solana-sdk-ids = "3.1.0"
 solana-shred-version = "3.0.1"
 solana-signature = { version = ">=3.4.1,<3.5.0", default-features = false }
@@ -175,11 +158,7 @@ solana-vote-program = { path = "../programs/vote", version = "=4.2.1", default-f
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 tokio = "1.48.0"
-<<<<<<< HEAD
-=======
 toml = "0.9.11"
-wincode = { version = "0.6.1", features = ["derive"] }
->>>>>>> 9c28417687 (build(workspace): Isolate bam-local-cluster (#1630))
 
 [profile.dev]
 debug = "line-tables-only"

@@ -1009,16 +1009,19 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.8.8"
+version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
+checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http 1.4.2",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -1026,10 +1029,15 @@ dependencies = [
  "percent-encoding 2.3.2",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1048,6 +1056,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1135,18 +1144,21 @@ dependencies = [
 
 [[package]]
 name = "bam-local-cluster"
-version = "4.4.0-alpha.2"
+version = "4.2.1"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
  "anyhow",
- "clap 2.34.0",
+ "axum",
+ "clap",
  "log",
  "serde",
  "serde_json",
- "solana-account 4.6.0",
+ "solana-account 4.3.1",
+ "solana-clock",
  "solana-cluster-type",
  "solana-commitment-config",
+ "solana-core",
  "solana-faucet",
  "solana-feature-gate-interface",
  "solana-fee-calculator",
@@ -1157,14 +1169,15 @@ dependencies = [
  "solana-local-cluster",
  "solana-native-token",
  "solana-program-binaries",
- "solana-pubkey 4.3.0",
+ "solana-pubkey 4.2.0",
  "solana-rent",
  "solana-rpc",
  "solana-rpc-client",
  "solana-runtime",
  "solana-shred-version",
  "solana-signer",
- "solana-system-interface 3.3.0",
+ "solana-streamer",
+ "solana-system-interface 3.2.0",
  "solana-vote-program",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -5575,6 +5588,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7396,23 +7420,21 @@ dependencies = [
 
 [[package]]
 name = "solana-local-cluster"
-version = "4.4.0-alpha.2"
+version = "4.2.1"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
  "agave-snapshots",
  "agave-votor",
  "agave-votor-messages",
- "agave-votor-transport",
- "arc-swap",
  "crossbeam-channel",
- "itertools 0.15.0",
+ "itertools 0.14.0",
  "log",
  "rand 0.9.4",
  "rayon",
- "solana-account 4.6.0",
+ "solana-account 4.3.1",
  "solana-accounts-db",
- "solana-bls-signatures",
+ "solana-client",
  "solana-client-traits",
  "solana-clock",
  "solana-cluster-type",
@@ -7425,19 +7447,20 @@ dependencies = [
  "solana-genesis-config",
  "solana-gossip",
  "solana-hard-forks",
- "solana-hash 4.6.0",
+ "solana-hash 4.4.0",
  "solana-keypair",
  "solana-leader-schedule",
  "solana-ledger",
  "solana-message",
  "solana-native-token",
  "solana-net-utils",
- "solana-packet 4.3.0",
+ "solana-packet 4.1.0",
  "solana-perf",
  "solana-poh-config",
  "solana-program-binaries",
- "solana-pubkey 4.3.0",
+ "solana-pubkey 4.2.0",
  "solana-pubsub-client",
+ "solana-quic-client",
  "solana-rent",
  "solana-rpc-client",
  "solana-rpc-client-api",
@@ -7448,7 +7471,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-stake-interface",
  "solana-streamer",
- "solana-system-interface 3.3.0",
+ "solana-system-interface 3.2.0",
  "solana-system-transaction",
  "solana-time-utils",
  "solana-tpu-client",
@@ -7464,7 +7487,7 @@ dependencies = [
  "strum",
  "tempfile",
  "tokio",
- "tokio-util 0.7.19",
+ "tokio-util 0.7.18",
  "wincode",
 ]
 
