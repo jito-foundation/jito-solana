@@ -119,9 +119,6 @@ struct Job {
 }
 
 impl Job {
-    fn ordered(&self) -> bool {
-        self.return_to_validator
-    }
     fn atomic(&self) -> bool {
         u16::from(self.ingress.flags) & execution_message_flags::ALL_OR_NOTHING != 0
     }
@@ -745,7 +742,7 @@ impl Scheduler {
         for (key, job) in &self.jobs {
             let lane = if job.is_vote {
                 0
-            } else if job.ordered() {
+            } else if job.return_to_validator {
                 1
             } else {
                 2

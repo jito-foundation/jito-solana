@@ -314,7 +314,6 @@ checksum = "dadd1abed9cc620c70f5ff2f517317426a57f77c405e9de8bf09a2b29e629ad6"
 name = "agave-scheduling-utils"
 version = "4.4.0-alpha.2"
 dependencies = [
- "agave-feature-set",
  "agave-scheduler-bindings",
  "agave-transaction-view",
  "ahash 0.8.12",
@@ -323,10 +322,7 @@ dependencies = [
  "nix",
  "rts-alloc",
  "shaq",
- "slotmap",
- "solana-fee",
  "solana-pubkey 4.3.0",
- "solana-runtime-transaction",
  "solana-transaction-error",
  "thiserror 2.0.20",
 ]
@@ -5638,15 +5634,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slotmap"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
-dependencies = [
- "version_check",
-]
 
 [[package]]
 name = "smallvec"
