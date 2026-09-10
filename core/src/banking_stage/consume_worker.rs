@@ -212,102 +212,13 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(ProcessingStatus::Processed)
     }
 
-    /// Best-effort per-slot tip-program maintenance for batches that touch tip accounts.
-    ///
-    /// Returns `true` when tip deps are disabled, no tip account is touched, tips were already
-    /// updated for this bank, or the best-effort upkeep path reaches the end.
-    /// Bundle-construction errors from init/crank bundle creation are non-fatal (crank errors are
-    /// logged), and this path still records the bank as updated.
-    ///
-    /// Returns `false` when required upkeep transactions fail to commit, or when block-builder
-    /// info is unavailable.
     fn maybe_run_tip_programs(&self, bank: &Arc<Bank>, txs: &[impl TransactionWithMeta]) -> bool {
-        let Some(TipProcessingDependencies {
-            tip_manager,
-            last_tip_updated_bank,
-            block_builder_fee_info,
-            bam_enabled,
-            cluster_info,
-            bundle_account_locker,
-        }) = &self.tip_processing_dependencies
-        else {
-            return true;
-        };
-
-        // Return true if no tip accounts touched
-        let tip_accounts = tip_manager.get_tip_accounts();
-        if !txs
-            .iter()
-            .flat_map(|tx| tx.account_keys().iter())
-            .any(|key| tip_accounts.contains(key))
-        {
-            return true;
-        }
-
-        if bam_enabled.load(Ordering::Acquire) != BamConnectionState::Connected as u8 {
-            return true;
-        }
-
-        let mut last_tip_updated_bank_guard = last_tip_updated_bank.lock().unwrap();
-        if *last_tip_updated_bank_guard == Some((bank.slot(), bank.bank_id())) {
-            return true;
-        }
-
-        let keypair = cluster_info.keypair();
-        let initialize_tip_programs_bundle =
-            tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
-        if let Ok(init_bundle) = initialize_tip_programs_bundle {
-            let result = self.consumer.process_and_record_transactions_with_policy(
-                bank,
-                &init_bundle,
-                Some(bundle_account_locker),
-                true,
-            );
-            if result
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-                .map_or(true, |results| {
-                    results
-                        .iter()
-                        .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
-                })
-            {
-                return false;
-            }
-        }
-
-        let block_builder_fee_info = block_builder_fee_info.load();
-        if block_builder_fee_info.block_builder == Pubkey::default() {
-            return false;
-        }
-        match tip_manager.get_tip_programs_crank_bundle(bank, &keypair, &block_builder_fee_info) {
-            Ok(tip_crank_bundle) => {
-                let result = self.consumer.process_and_record_transactions_with_policy(
-                    bank,
-                    &tip_crank_bundle,
-                    Some(bundle_account_locker),
-                    true,
-                );
-                if result
-                    .execute_and_commit_transactions_output
-                    .commit_transactions_result
-                    .map_or(true, |results| {
-                        results
-                            .iter()
-                            .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
-                    })
-                {
-                    return false;
-                }
-            }
-            Err(e) => {
-                error!("error getting tip programs crank bundle: {e:?}");
-                // ignore this error for now so tips can get processed
-            }
-        }
-
-        *last_tip_updated_bank_guard = Some((bank.slot(), bank.bank_id()));
-        true
+        maybe_run_bam_tip_programs(
+            &self.consumer,
+            self.tip_processing_dependencies.as_ref(),
+            bank,
+            txs,
+        )
     }
 
     /// Builds `FinishedConsumeWorkExtraInfo` from consume output for BAM responses.
@@ -413,6 +324,133 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 }
 
+/// Best-effort BAM upkeep when transactions touch a tip account.
+pub(crate) fn maybe_run_bam_tip_programs(
+    consumer: &Consumer,
+    dependencies: Option<&TipProcessingDependencies>,
+    bank: &Arc<Bank>,
+    txs: &[impl TransactionWithMeta],
+) -> bool {
+    let Some(dependencies) = dependencies else {
+        return true;
+    };
+
+    // Return true if no tip accounts touched
+    let tip_accounts = dependencies.tip_manager.get_tip_accounts();
+    if !txs
+        .iter()
+        .flat_map(|tx| tx.account_keys().iter())
+        .any(|key| tip_accounts.contains(key))
+    {
+        return true;
+    }
+
+    if dependencies.bam_enabled.load(Ordering::Acquire) != BamConnectionState::Connected as u8 {
+        return true;
+    }
+
+    run_tip_programs(consumer, dependencies, bank, false)
+}
+
+/// Performs upkeep once per bank across all workers. Call only after ParentReady.
+/// Required mode preserves legacy bundle behavior on construction errors.
+pub(crate) fn run_tip_programs(
+    consumer: &Consumer,
+    dependencies: &TipProcessingDependencies,
+    bank: &Arc<Bank>,
+    required: bool,
+) -> bool {
+    if required && bank.rent_collector().rent.minimum_balance(0) == 0 {
+        return true;
+    }
+    let TipProcessingDependencies {
+        tip_manager,
+        last_tip_updated_bank,
+        block_builder_fee_info,
+        cluster_info,
+        bundle_account_locker,
+        ..
+    } = dependencies;
+    let mut last_tip_updated_bank_guard = last_tip_updated_bank.lock().unwrap();
+    if *last_tip_updated_bank_guard == Some((bank.slot(), bank.bank_id())) {
+        return true;
+    }
+
+    let keypair = cluster_info.keypair();
+    let initialize_tip_programs_bundle =
+        tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
+    if required && initialize_tip_programs_bundle.is_err() {
+        return false;
+    }
+    if let Ok(init_bundle) = initialize_tip_programs_bundle {
+        let result = consumer.process_and_record_transactions_with_policy(
+            bank,
+            &init_bundle,
+            Some(bundle_account_locker),
+            true,
+        );
+        debug!(
+            "tip initialization result: {:?}",
+            result
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+        );
+        if result
+            .execute_and_commit_transactions_output
+            .commit_transactions_result
+            .map_or(true, |results| {
+                results
+                    .iter()
+                    .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
+            })
+        {
+            return false;
+        }
+    }
+
+    let block_builder_fee_info = block_builder_fee_info.load();
+    if block_builder_fee_info.block_builder == Pubkey::default() {
+        return false;
+    }
+    match tip_manager.get_tip_programs_crank_bundle(bank, &keypair, &block_builder_fee_info) {
+        Ok(tip_crank_bundle) => {
+            let result = consumer.process_and_record_transactions_with_policy(
+                bank,
+                &tip_crank_bundle,
+                Some(bundle_account_locker),
+                true,
+            );
+            debug!(
+                "tip crank result: {:?}",
+                result
+                    .execute_and_commit_transactions_output
+                    .commit_transactions_result
+            );
+            if result
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+                .map_or(true, |results| {
+                    results
+                        .iter()
+                        .any(|r| matches!(r, CommitTransactionDetails::NotCommitted(_)))
+                })
+            {
+                return false;
+            }
+        }
+        Err(e) => {
+            error!("error getting tip programs crank bundle: {e:?}");
+            if required {
+                return false;
+            }
+            // BAM retains best-effort handling of construction errors.
+        }
+    }
+
+    *last_tip_updated_bank_guard = Some((bank.slot(), bank.bank_id()));
+    true
+}
+
 #[cfg(unix)]
 pub(crate) mod external {
     use {
@@ -426,6 +464,7 @@ pub(crate) mod external {
                 },
             },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
+            jito_scheduler::JitoSchedulerControl,
         },
         agave_scheduler_bindings::{
             ExecutionResponseRegion, ExecutionWorkerToPackMessage, MAX_TRANSACTIONS_PER_MESSAGE,
@@ -434,20 +473,28 @@ pub(crate) mod external {
         },
         agave_scheduling_utils::{
             error::transaction_error_to_not_included_reason,
+            handshake::JitoAgaveWorkerSession,
             responses_region::execution_responses_from_iter,
             transaction_ptr::{TransactionPtr, TransactionPtrBatch},
         },
         agave_transaction_view::{
             resolved_transaction_view::ResolvedTransactionView, sanitize::SanitizeConfig,
+            transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
         },
         ahash::HashSet,
         arrayvec::ArrayVec,
+        jito_scheduler_bindings::{
+            JitoExecutionRequest, JitoExecutionResponse, JitoResponseRegion, JitoTransactionResult,
+            SOURCE_BAM, SOURCE_LEGACY_BUNDLE, SOURCE_TPU, SOURCE_VOTE,
+        },
         solana_cost_model::cost_model::CostModel,
         solana_runtime::bank::Bank,
         solana_runtime_transaction::{
             runtime_transaction::RuntimeTransaction, sanitize_config::sanitize_config,
+            transaction_meta::TransactionMeta,
         },
         solana_svm_transaction::svm_message::SVMMessage,
+        solana_transaction_error::TransactionError,
         std::{num::NonZeroUsize, sync::Arc},
     };
 
@@ -469,6 +516,9 @@ pub(crate) mod external {
         metrics: Arc<ConsumeWorkerMetrics>,
         bundle_account_locker: BundleAccountLocker,
         blacklisted_accounts: Arc<HashSet<Pubkey>>,
+        jito: Option<JitoAgaveWorkerSession>,
+        jito_control: Option<Arc<JitoSchedulerControl>>,
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -497,7 +547,28 @@ pub(crate) mod external {
                 metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
                 bundle_account_locker,
                 blacklisted_accounts,
+                jito: None,
+                jito_control: None,
+                tip_processing_dependencies: None,
             }
+        }
+
+        pub fn with_jito_worker(mut self, session: Option<JitoAgaveWorkerSession>) -> Self {
+            self.jito = session;
+            self
+        }
+
+        pub fn with_jito_control(mut self, control: Option<Arc<JitoSchedulerControl>>) -> Self {
+            self.jito_control = control;
+            self
+        }
+
+        pub fn with_tip_processing_deps(
+            mut self,
+            dependencies: Option<TipProcessingDependencies>,
+        ) -> Self {
+            self.tip_processing_dependencies = dependencies;
+            self
         }
 
         pub fn metrics_handle(&self) -> Arc<ConsumeWorkerMetrics> {
@@ -540,10 +611,22 @@ pub(crate) mod external {
             should_drain_executes: &mut bool,
         ) -> Result<IterationResult, ExternalConsumeWorkerError> {
             self.allocator.clean_remote_frees();
+            let jito_request = self
+                .jito
+                .as_mut()
+                .and_then(|session| session.request.try_read());
+            let processed_jito = jito_request.is_some();
+            if let Some(request) = jito_request {
+                self.process_jito_request(&request)?;
+            }
             let capacity = NonZeroUsize::new(receiver.capacity())
                 .expect("shaq queue capacity must be non-zero");
             let Some(messages) = receiver.try_reserve_read_batch(capacity) else {
-                return Ok(IterationResult::Idle);
+                return Ok(if processed_jito {
+                    IterationResult::ProcessedMessage
+                } else {
+                    IterationResult::Idle
+                });
             };
 
             *should_drain_executes = false;
@@ -617,6 +700,17 @@ pub(crate) mod external {
                     .working_bank()
                     .expect("active_leader_state_with_timeout should only return an active bank");
                 last_attempted_slot = bank.slot();
+                if message.flags & execution_message_flags::ALL_OR_NOTHING != 0
+                    && !leader_state.atomic_batches_enabled()
+                {
+                    return self
+                        .return_not_included_with_reason(
+                            message,
+                            not_included_reasons::BANK_NOT_AVAILABLE,
+                            bank.slot(),
+                        )
+                        .map(|()| false);
+                }
                 if bank.slot() > message.max_working_slot {
                     return self
                         .return_unprocessed_message(
@@ -698,6 +792,368 @@ pub(crate) mod external {
                 last_attempted_slot,
             )
             .map(|()| true)
+        }
+
+        fn process_jito_request(
+            &mut self,
+            request: &JitoExecutionRequest,
+        ) -> Result<(), ExternalConsumeWorkerError> {
+            let atomic_flags = (execution_message_flags::DROP_ON_FAILURE
+                | execution_message_flags::ALL_OR_NOTHING) as u8;
+            let valid_mode = match request.source {
+                SOURCE_TPU | SOURCE_VOTE => request.flags == 0,
+                SOURCE_BAM => request.flags == 0 || request.flags == atomic_flags,
+                SOURCE_LEGACY_BUNDLE => request.flags == atomic_flags,
+                _ => false,
+            };
+            if !valid_mode
+                || request.batch.num_transactions == 0
+                || usize::from(request.batch.num_transactions) > MAX_TRANSACTIONS_PER_MESSAGE
+            {
+                return self.send_jito_response(JitoExecutionResponse {
+                    id: request.id,
+                    batch: request.batch,
+                    processed_code: agave_scheduler_bindings::processed_codes::INVALID,
+                    execution_slot: 0,
+                    bank_id: 0,
+                    responses: JitoResponseRegion::default(),
+                });
+            }
+
+            if let Some(dependencies) = &self.tip_processing_dependencies {
+                let bam_state = dependencies.bam_enabled.load(Ordering::Acquire);
+                let source_active = match request.source {
+                    SOURCE_BAM => bam_state == BamConnectionState::Connected as u8,
+                    SOURCE_LEGACY_BUNDLE => {
+                        bam_state <= BamConnectionState::DrainingBlockEngine as u8
+                    }
+                    _ => true,
+                };
+                if !source_active {
+                    return self.reject_jito_request(request, 0, 0, "ingress source inactive");
+                }
+            }
+
+            let control = self.jito_control.clone();
+            // Hold the stream generation stable through execution and commit. A reconnect
+            // waits for in-flight work before publishing its next authenticated generation.
+            let _generation_guard = if request.source == SOURCE_BAM {
+                control
+                    .as_ref()
+                    .map(|control| control.bam_generation_lock.read().unwrap())
+            } else {
+                None
+            };
+            if request.source == SOURCE_BAM
+                && control.as_ref().is_some_and(|control| {
+                    request.bam_generation != control.bam_generation.load(Ordering::Acquire)
+                })
+            {
+                return self.reject_jito_request(request, 0, 0, "BAM connection changed");
+            }
+
+            let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
+                return self.reject_jito_request(request, 0, 0, "leader bank unavailable");
+            };
+            let bank = leader_state.working_bank().expect("active leader bank");
+            if (bank.slot(), bank.bank_id()) != (request.slot, request.bank_id) {
+                return self.reject_jito_request(request, 0, 0, "target bank changed");
+            }
+            let atomic = request.flags & execution_message_flags::ALL_OR_NOTHING as u8 != 0;
+            if (atomic || request.source == SOURCE_BAM) && !leader_state.atomic_batches_enabled() {
+                return self.reject_jito_request(request, 0, 0, "waiting for ParentReady");
+            }
+
+            // SAFETY: the negotiated Jito peer owns this live batch and keeps it
+            // immutable until completion, using the same allocator as the worker.
+            let batch = unsafe {
+                TransactionPtrBatch::from_sharable_transaction_batch_region(
+                    &request.batch,
+                    &self.allocator,
+                )
+            };
+            let (translation_results, transactions, max_ages) =
+                self.translate_transaction_batch(&batch, bank);
+            if atomic && transactions.len() != translation_results.len() {
+                let results = translation_results
+                    .iter()
+                    .zip(batch.iter())
+                    .map(|(result, (transaction_ptr, _))| match result {
+                        Ok(()) => (
+                            JitoTransactionResult {
+                                not_included_reason:
+                                    not_included_reasons::ALL_OR_NOTHING_BATCH_FAILURE,
+                                ..JitoTransactionResult::default()
+                            },
+                            Self::encode_jito_error(&TransactionError::CommitCancelled),
+                        ),
+                        Err(err) => (
+                            JitoTransactionResult {
+                                not_included_reason: Self::reason_from_packet_handling_error(err),
+                                ..JitoTransactionResult::default()
+                            },
+                            Self::encode_jito_error(&Self::jito_translation_error(
+                                transaction_ptr,
+                                bank,
+                            )),
+                        ),
+                    })
+                    .collect::<Vec<_>>();
+                return self.finish_jito_request(request, bank.slot(), bank.bank_id(), results);
+            }
+
+            let needs_bam_upkeep = request.source == SOURCE_BAM
+                && self
+                    .tip_processing_dependencies
+                    .as_ref()
+                    .is_some_and(|deps| {
+                        let accounts = deps.tip_manager.get_tip_accounts();
+                        deps.bam_enabled.load(Ordering::Acquire)
+                            == BamConnectionState::Connected as u8
+                            && transactions.iter().any(|tx| {
+                                tx.account_keys().iter().any(|key| accounts.contains(key))
+                            })
+                    });
+            if needs_bam_upkeep && !leader_state.atomic_batches_enabled() {
+                return self.reject_jito_request(
+                    request,
+                    0,
+                    0,
+                    "tip upkeep waiting for ParentReady",
+                );
+            }
+            if request.source == SOURCE_LEGACY_BUNDLE {
+                if !self
+                    .tip_processing_dependencies
+                    .as_ref()
+                    .is_some_and(|dependencies| {
+                        run_tip_programs(&self.consumer, dependencies, bank, true)
+                    })
+                {
+                    return self.reject_jito_request(request, 0, 0, "tip programs unavailable");
+                }
+            } else if needs_bam_upkeep
+                && !maybe_run_bam_tip_programs(
+                    &self.consumer,
+                    self.tip_processing_dependencies.as_ref(),
+                    bank,
+                    &transactions,
+                )
+            {
+                // Preserve BAM's best-effort behavior; execution remains authoritative.
+                error!(
+                    "Error running tip programs for Jito scheduler request {}",
+                    request.id
+                );
+            }
+
+            let flags = ExecutionFlags {
+                drop_on_failure: request.flags & execution_message_flags::DROP_ON_FAILURE as u8
+                    != 0,
+                all_or_nothing: atomic,
+            };
+            self.metrics
+                .count_metrics
+                .num_messages_processed
+                .fetch_add(1, Ordering::Relaxed);
+            let output = self
+                .consumer
+                .process_and_record_aged_transactions_with_policy(
+                    bank,
+                    &transactions,
+                    &max_ages,
+                    &flags,
+                    Some(&self.bundle_account_locker),
+                    flags.drop_on_failure && flags.all_or_nothing,
+                );
+            self.metrics.update_for_consume(&output);
+            self.metrics.has_data.store(true, Ordering::Relaxed);
+            let commit_results = match output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+            {
+                Ok(results) => results,
+                Err(err) => {
+                    return self.reject_jito_request(
+                        request,
+                        bank.slot(),
+                        bank.bank_id(),
+                        &format!("{err:?}"),
+                    );
+                }
+            };
+            let mut commits = commit_results.iter();
+            let results = translation_results
+                .iter()
+                .zip(batch.iter())
+                .map(|(translation, (transaction_ptr, _))| match translation {
+                    Ok(()) => Self::jito_result_from_commit_details(
+                        commits
+                            .next()
+                            .expect("one result per translated transaction"),
+                        atomic,
+                    ),
+                    Err(err) => (
+                        JitoTransactionResult {
+                            not_included_reason: Self::reason_from_packet_handling_error(err),
+                            ..JitoTransactionResult::default()
+                        },
+                        Self::encode_jito_error(&Self::jito_translation_error(
+                            transaction_ptr,
+                            bank,
+                        )),
+                    ),
+                })
+                .collect();
+            self.finish_jito_request(request, bank.slot(), bank.bank_id(), results)
+        }
+
+        fn encode_jito_error(error: &TransactionError) -> Vec<u8> {
+            bincode::serialize(error).expect("TransactionError serialization is infallible")
+        }
+
+        fn jito_translation_error(
+            transaction_ptr: TransactionPtr,
+            bank: &Bank,
+        ) -> TransactionError {
+            // The upstream translator intentionally keeps only an error category. Recover
+            // the exact runtime error on this cold path for BAM's typed response contract.
+            let check = || -> Result<(), TransactionError> {
+                let view = SanitizedTransactionView::try_new_sanitized(
+                    transaction_ptr,
+                    &sanitize_config(),
+                )
+                .map_err(|_| TransactionError::SanitizeFailure)?;
+                let view = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
+                    view,
+                    solana_transaction::sanitized::MessageHash::Compute,
+                    None,
+                )?;
+                if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+                    return Err(TransactionError::SanitizeFailure);
+                }
+                let limit = bank.get_transaction_account_lock_limit();
+                if usize::from(view.total_num_accounts()) > limit {
+                    return Err(TransactionError::TooManyAccountLocks);
+                }
+                let loaded_addresses = match view.version() {
+                    TransactionVersion::Legacy | TransactionVersion::V1 => None,
+                    TransactionVersion::V0 => Some(
+                        bank.load_addresses_from_ref(view.address_table_lookup_iter())
+                            .map_err(TransactionError::from)?
+                            .0,
+                    ),
+                };
+                let view = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
+                    view,
+                    loaded_addresses,
+                    bank.get_reserved_account_keys(),
+                )
+                .map_err(|_| TransactionError::SanitizeFailure)?;
+                solana_accounts_db::account_locks::validate_account_locks(
+                    view.account_keys(),
+                    limit,
+                )
+            };
+            check().err().unwrap_or(TransactionError::SanitizeFailure)
+        }
+
+        fn jito_result_from_commit_details(
+            commit: &CommitTransactionDetails,
+            atomic: bool,
+        ) -> (JitoTransactionResult, Vec<u8>) {
+            match commit {
+                CommitTransactionDetails::Committed {
+                    compute_units,
+                    loaded_accounts_data_size,
+                    fee_payer_post_balance,
+                    result,
+                } => (
+                    JitoTransactionResult {
+                        not_included_reason: not_included_reasons::NONE,
+                        executed_units: *compute_units,
+                        loaded_accounts_data_size: *loaded_accounts_data_size,
+                        fee_payer_balance: *fee_payer_post_balance,
+                        execution_success: u8::from(result.is_ok()),
+                        ..JitoTransactionResult::default()
+                    },
+                    result
+                        .as_ref()
+                        .err()
+                        .map(Self::encode_jito_error)
+                        .unwrap_or_default(),
+                ),
+                CommitTransactionDetails::NotCommitted(err) => (
+                    JitoTransactionResult {
+                        not_included_reason: transaction_error_to_not_included_reason(err, atomic),
+                        ..JitoTransactionResult::default()
+                    },
+                    Self::encode_jito_error(err),
+                ),
+            }
+        }
+
+        fn reject_jito_request(
+            &mut self,
+            request: &JitoExecutionRequest,
+            slot: u64,
+            bank_id: u64,
+            diagnostic: &str,
+        ) -> Result<(), ExternalConsumeWorkerError> {
+            debug!("Jito request {} not executed: {diagnostic}", request.id);
+            let results = (0..request.batch.num_transactions)
+                .map(|_| {
+                    (
+                        JitoTransactionResult {
+                            not_included_reason: not_included_reasons::BANK_NOT_AVAILABLE,
+                            ..JitoTransactionResult::default()
+                        },
+                        Vec::new(),
+                    )
+                })
+                .collect();
+            self.finish_jito_request(request, slot, bank_id, results)
+        }
+
+        fn finish_jito_request(
+            &mut self,
+            request: &JitoExecutionRequest,
+            slot: u64,
+            bank_id: u64,
+            results: Vec<(JitoTransactionResult, Vec<u8>)>,
+        ) -> Result<(), ExternalConsumeWorkerError> {
+            let results = results
+                .iter()
+                .map(|(result, error)| (*result, error.as_slice()))
+                .collect::<Vec<_>>();
+            let responses = jito_scheduler_bindings::allocate_results(&self.allocator, &results)
+                .ok_or(ExternalConsumeWorkerError::AllocationFailure)?;
+            let response = JitoExecutionResponse {
+                id: request.id,
+                batch: request.batch,
+                processed_code: agave_scheduler_bindings::processed_codes::PROCESSED,
+                execution_slot: slot,
+                bank_id,
+                responses,
+            };
+            if let Err(err) = self.send_jito_response(response) {
+                // SAFETY: the failed write did not transfer ownership to the peer.
+                unsafe { jito_scheduler_bindings::free_results(&self.allocator, responses) };
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        fn send_jito_response(
+            &mut self,
+            response: JitoExecutionResponse,
+        ) -> Result<(), ExternalConsumeWorkerError> {
+            self.jito
+                .as_mut()
+                .expect("Jito request requires negotiated queues")
+                .response
+                .try_write(response)
+                .map_err(|_| ExternalConsumeWorkerError::SenderDisconnected)
         }
 
         fn send_execution_response(
@@ -963,17 +1419,24 @@ pub(crate) mod external {
     mod tests {
         use {
             super::*,
-            crate::banking_stage::{committer::Committer, tests::create_slow_genesis_config},
+            crate::{
+                banking_stage::{committer::Committer, tests::create_slow_genesis_config},
+                proxy::block_engine_stage::BlockBuilderFeeInfo,
+                tip_manager::{TipManager, TipManagerConfig},
+            },
             agave_scheduler_bindings::{SharableTransactionBatchRegion, processed_codes},
             agave_scheduling_utils::{
                 handshake::{ClientLogon, client, server::Server},
                 responses_region::ExecutionResponsesPtr,
             },
+            arc_swap::ArcSwap,
             crossbeam_channel::bounded,
             solana_genesis_config::GenesisConfig,
+            solana_gossip::{cluster_info::ClusterInfo, node::Node},
             solana_keypair::Keypair,
             solana_leader_schedule::SlotLeader,
             solana_ledger::genesis_utils::GenesisConfigInfo,
+            solana_net_utils::SocketAddrSpace,
             solana_poh::{
                 record_channels::{RecordReceiver, record_channels},
                 transaction_recorder::TransactionRecorder,
@@ -982,11 +1445,15 @@ pub(crate) mod external {
             solana_runtime::{
                 bank_forks::BankForks, genesis_utils, vote_sender_types::ReplayVoteReceiver,
             },
+            solana_signer::Signer,
             solana_system_transaction::transfer,
             solana_transaction::TransactionError,
             std::{
                 ptr::NonNull,
-                sync::{RwLock, atomic::AtomicBool},
+                sync::{
+                    Mutex, RwLock,
+                    atomic::{AtomicBool, AtomicU8},
+                },
             },
             test_case::test_case,
         };
@@ -1010,9 +1477,31 @@ pub(crate) mod external {
             worker: ExternalWorker,
             receiver: shaq::spsc::Consumer<PackToExecutionWorkerMessage>,
             should_drain_executes: bool,
+            jito: Option<agave_scheduling_utils::handshake::JitoClientWorkerSession>,
         }
 
         impl ExternalTestFrame {
+            fn enable_tip_dependencies(&mut self, state: BamConnectionState) -> Arc<AtomicU8> {
+                let bam_enabled = Arc::new(AtomicU8::new(state as u8));
+                let node = Node::new_localhost_with_pubkey(&self.mint_keypair.pubkey());
+                self.worker.tip_processing_dependencies = Some(TipProcessingDependencies {
+                    tip_manager: TipManager::new(TipManagerConfig::default()),
+                    last_tip_updated_bank: Arc::new(Mutex::new(None)),
+                    block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                        block_builder: self.mint_keypair.pubkey(),
+                        block_builder_commission: 0,
+                    })),
+                    bam_enabled: bam_enabled.clone(),
+                    cluster_info: Arc::new(ClusterInfo::new(
+                        node.info,
+                        Arc::new(self.mint_keypair.insecure_clone()),
+                        SocketAddrSpace::Unspecified,
+                    )),
+                    bundle_account_locker: BundleAccountLocker::default(),
+                });
+                bam_enabled
+            }
+
             fn set_active_bank(&mut self) {
                 self.shared_leader_state.store(Arc::new(LeaderState::new(
                     Some(self.bank.clone()),
@@ -1041,6 +1530,48 @@ pub(crate) mod external {
 
             fn recv_response(&mut self) -> ExecutionWorkerToPackMessage {
                 self.worker_to_pack.try_read().unwrap()
+            }
+
+            fn send_jito(&mut self, request: JitoExecutionRequest) {
+                self.jito
+                    .as_mut()
+                    .unwrap()
+                    .request
+                    .try_write(request)
+                    .unwrap();
+            }
+
+            fn recv_jito(
+                &mut self,
+            ) -> (JitoExecutionResponse, Vec<(JitoTransactionResult, Vec<u8>)>) {
+                let response = self.jito.as_mut().unwrap().response.try_read().unwrap();
+                let results = if response.responses.num_transaction_responses == 0 {
+                    vec![]
+                } else {
+                    // SAFETY: the worker returned ownership of these live result allocations.
+                    unsafe {
+                        let results = jito_scheduler_bindings::read_results(
+                            &self.allocator,
+                            &response.responses,
+                        )
+                        .unwrap();
+                        jito_scheduler_bindings::free_results(&self.allocator, response.responses);
+                        results
+                    }
+                };
+                (response, results)
+            }
+
+            fn jito_request(&self, batch: &SharedBatch, flags: u8) -> JitoExecutionRequest {
+                JitoExecutionRequest {
+                    id: 42,
+                    source: SOURCE_BAM,
+                    flags,
+                    slot: self.bank.slot(),
+                    bank_id: self.bank.bank_id(),
+                    bam_generation: 0,
+                    batch: batch.region,
+                }
             }
 
             fn execution_responses(
@@ -1140,6 +1671,13 @@ pub(crate) mod external {
         }
 
         fn setup_external_test_frame_disable_features(feature_ids: &[Pubkey]) -> ExternalTestFrame {
+            setup_external_test_frame_with_jito(feature_ids, false)
+        }
+
+        fn setup_external_test_frame_with_jito(
+            feature_ids: &[Pubkey],
+            jito: bool,
+        ) -> ExternalTestFrame {
             let GenesisConfigInfo {
                 mut genesis_config,
                 mint_keypair,
@@ -1162,7 +1700,11 @@ pub(crate) mod external {
                 progress_tracker_capacity: 16,
                 pack_to_worker_capacity: 16,
                 worker_to_pack_capacity: 16,
-                flags: 0,
+                flags: if jito {
+                    agave_scheduling_utils::handshake::logon_flags::JITO
+                } else {
+                    0
+                },
                 pack_to_check_worker_capacity: 16,
                 check_worker_to_pack_capacity: 16,
             };
@@ -1188,7 +1730,8 @@ pub(crate) mod external {
                 shared_leader_state.clone(),
                 BundleAccountLocker::default(),
                 Arc::new(ahash::HashSet::default()),
-            );
+            )
+            .with_jito_worker(agave_worker.jito);
 
             ExternalTestFrame {
                 mint_keypair,
@@ -1204,7 +1747,812 @@ pub(crate) mod external {
                 worker,
                 receiver: agave_worker.pack_to_worker,
                 should_drain_executes: false,
+                jito: client_worker.jito,
             }
+        }
+
+        #[test]
+        fn test_jito_exact_transaction_result_details() {
+            let error = TransactionError::InstructionError(
+                2,
+                solana_transaction::InstructionError::Custom(123),
+            );
+            let (result, diagnostic) = ExternalWorker::jito_result_from_commit_details(
+                &CommitTransactionDetails::Committed {
+                    compute_units: 123,
+                    loaded_accounts_data_size: 456,
+                    fee_payer_post_balance: 789,
+                    result: Err(error.clone()),
+                },
+                false,
+            );
+            assert_eq!(result.not_included_reason, not_included_reasons::NONE);
+            assert_eq!(result.executed_units, 123);
+            assert_eq!(result.loaded_accounts_data_size, 456);
+            assert_eq!(result.fee_payer_balance, 789);
+            assert_eq!(result.execution_success, 0);
+            assert_eq!(
+                bincode::deserialize::<TransactionError>(&diagnostic).unwrap(),
+                error
+            );
+        }
+
+        #[test_case(SOURCE_BAM, 0)]
+        #[test_case(SOURCE_BAM, 3)]
+        #[test_case(SOURCE_LEGACY_BUNDLE, 3)]
+        fn test_jito_scheduler_client_executes_with_real_workers(source: u8, flags: u8) {
+            use crate::banking_stage::transaction_scheduler::check_worker::external::ExternalCheckWorker;
+
+            let GenesisConfigInfo {
+                genesis_config,
+                mint_keypair,
+                ..
+            } = create_slow_genesis_config(1_000_000);
+            let (root_bank, _root_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+            let (bank, forks) = Bank::new_from_parent(root_bank, SlotLeader::new_unique(), 1)
+                .wrap_with_bank_forks_for_tests();
+            let mut state = SharedLeaderState::new(0, None, None);
+            state.store(Arc::new(LeaderState::new(
+                Some(bank.clone()),
+                bank.tick_height(),
+                None,
+                None,
+            )));
+            let mut logon = jito_scheduler::client_logon(1, 1);
+            logon.allocator_size = 64 * 1024 * 1024;
+            let (mut server, files) = Server::setup_session(logon).unwrap();
+            let client = client::setup_session(&logon, files).unwrap();
+            let mut addon = server.jito.take().unwrap();
+            let execution = server.workers.pop().unwrap();
+            let checking = server.check_workers.pop().unwrap();
+            let (record_sender, mut records) = record_channels(false);
+            records.restart(bank.bank_id());
+            let (vote_sender, _vote_receiver) = bounded(1024);
+            let consumer = Consumer::new(
+                Committer::new(None, vote_sender, None),
+                TransactionRecorder::new(record_sender),
+                None,
+            );
+            let exit = Arc::new(AtomicBool::new(false));
+            let node = Node::new_localhost_with_pubkey(&mint_keypair.pubkey());
+            let dependencies = TipProcessingDependencies {
+                tip_manager: TipManager::new(TipManagerConfig::default()),
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
+                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                    block_builder: mint_keypair.pubkey(),
+                    block_builder_commission: 0,
+                })),
+                bam_enabled: Arc::new(AtomicU8::new(if source == SOURCE_BAM {
+                    BamConnectionState::Connected as u8
+                } else {
+                    BamConnectionState::Disconnected as u8
+                })),
+                cluster_info: Arc::new(ClusterInfo::new(
+                    node.info,
+                    Arc::new(mint_keypair.insecure_clone()),
+                    SocketAddrSpace::Unspecified,
+                )),
+                bundle_account_locker: BundleAccountLocker::default(),
+            };
+            let mut worker = ExternalWorker::new(
+                0,
+                exit.clone(),
+                consumer,
+                execution.worker_to_pack,
+                execution.allocator,
+                state.clone(),
+                BundleAccountLocker::default(),
+                Arc::default(),
+            )
+            .with_jito_worker(execution.jito)
+            .with_tip_processing_deps(Some(dependencies));
+            let mut receiver = execution.pack_to_worker;
+            let mut checker = ExternalCheckWorker::new(
+                exit.clone(),
+                checking.pack_to_check_worker,
+                checking.check_worker_to_pack,
+                checking.allocator,
+                state,
+                forks.read().unwrap().sharable_banks(),
+                Arc::default(),
+            );
+            let recipients = [Pubkey::new_unique(), Pubkey::new_unique()];
+            let transactions = recipients
+                .iter()
+                .map(|recipient| {
+                    wincode::serialize(&transfer(
+                        &mint_keypair,
+                        recipient,
+                        1,
+                        bank.confirmed_last_blockhash(),
+                    ))
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let batch =
+                jito_scheduler_bindings::allocate_batch(&addon.allocator, &transactions).unwrap();
+            addon
+                .ingress
+                .try_write(jito_scheduler_bindings::JitoIngressMessage {
+                    bam_generation: 0,
+                    id: 1,
+                    source,
+                    flags,
+                    max_slot: bank.slot(),
+                    batch,
+                })
+                .unwrap();
+            let client_exit = exit.clone();
+            let handle = std::thread::spawn(move || {
+                jito_scheduler::run(
+                    client,
+                    client_exit,
+                    jito_scheduler::SchedulerConfig::default(),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let response = loop {
+                addon
+                    .progress
+                    .try_write(jito_scheduler_bindings::JitoProgressMessage {
+                        bam_generation: 0,
+                        progress: agave_scheduler_bindings::ProgressMessage {
+                            leader_state: agave_scheduler_bindings::LEADER_READY,
+                            current_slot_progress: 1,
+                            epoch: bank.epoch(),
+                            current_slot: bank.slot(),
+                            next_leader_slot: bank.slot() + 1,
+                            leader_range_end: bank.slot() + 3,
+                            remaining_cost_units: 60_000_000,
+                            remaining_allocated_accounts_data_size: 100_000_000,
+                            latest_blockhash: bank.last_blockhash().to_bytes(),
+                            target_bank_time_ms: 400,
+                        },
+                        bank_id: bank.bank_id(),
+                        atomic_batches_enabled: 1,
+                        bam_connected: u8::from(source == SOURCE_BAM),
+                    })
+                    .ok();
+                checker.iterate(Duration::from_millis(1)).unwrap();
+                worker.iterate(&mut receiver, &mut false).unwrap();
+                if let Some(response) = addon.completion.try_read()
+                    && response.id != jito_scheduler_bindings::HEARTBEAT_ID
+                {
+                    break response;
+                }
+                if Instant::now() >= deadline {
+                    exit.store(true, Ordering::Relaxed);
+                    let result = handle.join().unwrap();
+                    panic!("scheduler did not complete real bank execution: {result:?}");
+                }
+            };
+            exit.store(true, Ordering::Relaxed);
+            let stats = handle.join().unwrap().unwrap();
+            assert!(stats.check_requests > 0);
+            assert_eq!(stats.submitted_batches, 1);
+            assert_eq!(stats.completed_batches, 1);
+            assert_eq!(response.id, 1);
+            assert_eq!(
+                (response.execution_slot, response.bank_id),
+                (bank.slot(), bank.bank_id())
+            );
+            // SAFETY: completion returned ownership of the request and result allocations.
+            let results = unsafe {
+                let results =
+                    jito_scheduler_bindings::read_results(&addon.allocator, &response.responses)
+                        .unwrap();
+                jito_scheduler_bindings::free_results(&addon.allocator, response.responses);
+                jito_scheduler_bindings::free_batch(&addon.allocator, batch);
+                results
+            };
+            assert_eq!(results.len(), 2);
+            for (result, diagnostic) in results {
+                assert_eq!(result.not_included_reason, not_included_reasons::NONE);
+                assert_eq!(result.execution_success, 1);
+                assert!(result.executed_units > 0);
+                assert!(diagnostic.is_empty());
+            }
+            for recipient in recipients {
+                assert_eq!(bank.get_balance(&recipient), 1);
+            }
+            let record = records.drain().next().unwrap();
+            assert_eq!(record.transactions.len(), 2);
+            assert_eq!(record.reschedule_on_sad_handover, flags == 0);
+        }
+
+        #[test]
+        fn test_jito_scheduler_client_executes_real_vote_while_bam_connected() {
+            use {
+                crate::banking_stage::transaction_scheduler::check_worker::external::ExternalCheckWorker,
+                agave_scheduler_bindings::{
+                    SharableTransactionRegion, TpuToPackMessage, tpu_message_flags,
+                },
+                solana_account::ReadableAccount,
+                solana_transaction::{
+                    simple_vote_transaction_checker::is_simple_vote_transaction,
+                    versioned::{VersionedTransaction, sanitized::SanitizedVersionedTransaction},
+                },
+                solana_vote::vote_transaction::new_tower_sync_transaction,
+                solana_vote_interface::state::{TowerSync, VoteStateV4},
+            };
+
+            let GenesisConfigInfo {
+                genesis_config,
+                mint_keypair,
+                voting_keypair,
+                ..
+            } = create_slow_genesis_config(1_000_000);
+            let (root_bank, _root_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+            let (bank, forks) =
+                Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1)
+                    .wrap_with_bank_forks_for_tests();
+            let mut state = SharedLeaderState::new(0, None, None);
+            state.store(Arc::new(LeaderState::new(
+                Some(bank.clone()),
+                bank.tick_height(),
+                None,
+                None,
+            )));
+            let mut logon = jito_scheduler::client_logon(1, 1);
+            logon.allocator_size = 64 * 1024 * 1024;
+            let (mut server, files) = Server::setup_session(logon).unwrap();
+            let client = client::setup_session(&logon, files).unwrap();
+            let mut addon = server.jito.take().unwrap();
+            let execution = server.workers.pop().unwrap();
+            let checking = server.check_workers.pop().unwrap();
+            let (record_sender, mut records) = record_channels(false);
+            records.restart(bank.bank_id());
+            let (vote_sender, _vote_receiver) = bounded(1024);
+            let consumer = Consumer::new(
+                Committer::new(None, vote_sender, None),
+                TransactionRecorder::new(record_sender),
+                None,
+            );
+            let exit = Arc::new(AtomicBool::new(false));
+            let node = Node::new_localhost_with_pubkey(&mint_keypair.pubkey());
+            let dependencies = TipProcessingDependencies {
+                tip_manager: TipManager::new(TipManagerConfig::default()),
+                last_tip_updated_bank: Arc::new(Mutex::new(None)),
+                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                    block_builder: mint_keypair.pubkey(),
+                    block_builder_commission: 0,
+                })),
+                bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
+                cluster_info: Arc::new(ClusterInfo::new(
+                    node.info,
+                    Arc::new(mint_keypair.insecure_clone()),
+                    SocketAddrSpace::Unspecified,
+                )),
+                bundle_account_locker: BundleAccountLocker::default(),
+            };
+            let mut worker = ExternalWorker::new(
+                0,
+                exit.clone(),
+                consumer,
+                execution.worker_to_pack,
+                execution.allocator,
+                state.clone(),
+                BundleAccountLocker::default(),
+                Arc::default(),
+            )
+            .with_jito_worker(execution.jito)
+            .with_tip_processing_deps(Some(dependencies));
+            let mut receiver = execution.pack_to_worker;
+            let mut checker = ExternalCheckWorker::new(
+                exit.clone(),
+                checking.pack_to_check_worker,
+                checking.check_worker_to_pack,
+                checking.allocator,
+                state,
+                forks.read().unwrap().sharable_banks(),
+                Arc::default(),
+            );
+            let vote_pubkey = voting_keypair.pubkey();
+            let before = bank.get_account(&vote_pubkey).unwrap();
+            assert!(
+                VoteStateV4::deserialize(before.data(), &vote_pubkey)
+                    .unwrap()
+                    .votes
+                    .is_empty()
+            );
+            // Vote for the actual frozen parent; the mint pays the transaction fee,
+            // while the genesis account's authorized voter signs the TowerSync.
+            let vote = new_tower_sync_transaction(
+                TowerSync::new_from_slots(vec![root_bank.slot()], root_bank.hash(), None),
+                bank.confirmed_last_blockhash(),
+                &mint_keypair,
+                &voting_keypair,
+                &voting_keypair,
+                None,
+            );
+            vote.verify().unwrap();
+            let recipient = Pubkey::new_unique();
+            let ordinary = transfer(
+                &mint_keypair,
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            // Both use the TPU queue. Derive its vote flag from the real transaction,
+            // so the transfer cannot pass merely because the fixture labels it a vote.
+            for (transaction, expected_vote) in [(&ordinary, false), (&vote, true)] {
+                let sanitized = SanitizedVersionedTransaction::try_from(
+                    VersionedTransaction::from(transaction.clone()),
+                )
+                .unwrap();
+                let is_vote = is_simple_vote_transaction(&sanitized);
+                assert_eq!(is_vote, expected_vote);
+                let bytes = wincode::serialize(transaction).unwrap();
+                let allocator = &server.tpu_to_pack.allocator;
+                let pointer = allocator
+                    .allocate(u32::try_from(bytes.len()).unwrap())
+                    .unwrap();
+                // SAFETY: this fresh allocation is large enough for the serialized
+                // transaction; successful publication transfers ownership to the client.
+                let offset = unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.as_ptr(), bytes.len());
+                    allocator.offset(pointer)
+                };
+                server
+                    .tpu_to_pack
+                    .producer
+                    .try_write(TpuToPackMessage {
+                        transaction: SharableTransactionRegion {
+                            offset,
+                            length: u32::try_from(bytes.len()).unwrap(),
+                        },
+                        flags: if is_vote {
+                            tpu_message_flags::IS_SIMPLE_VOTE
+                        } else {
+                            0
+                        },
+                        src_addr: [0; 16],
+                    })
+                    .unwrap();
+            }
+            let progress = jito_scheduler_bindings::JitoProgressMessage {
+                bam_generation: 0,
+                progress: agave_scheduler_bindings::ProgressMessage {
+                    leader_state: agave_scheduler_bindings::LEADER_READY,
+                    current_slot_progress: 1,
+                    epoch: bank.epoch(),
+                    current_slot: bank.slot(),
+                    next_leader_slot: bank.slot() + 1,
+                    leader_range_end: bank.slot() + 3,
+                    remaining_cost_units: 60_000_000,
+                    remaining_allocated_accounts_data_size: 100_000_000,
+                    latest_blockhash: bank.last_blockhash().to_bytes(),
+                    target_bank_time_ms: 400,
+                },
+                bank_id: bank.bank_id(),
+                atomic_batches_enabled: 1,
+                bam_connected: 1,
+            };
+            // Publish Connected before the client can dequeue either TPU message.
+            addon.progress.try_write(progress).unwrap();
+            let client_exit = exit.clone();
+            let handle = std::thread::spawn(move || {
+                jito_scheduler::run(
+                    client,
+                    client_exit,
+                    jito_scheduler::SchedulerConfig::default(),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut committed = false;
+            let mut subsequent_heartbeats = 0;
+            loop {
+                addon.progress.try_write(progress).ok();
+                checker.iterate(Duration::from_millis(1)).unwrap();
+                worker.iterate(&mut receiver, &mut false).unwrap();
+                if !committed && bank.has_signature(&vote.signatures[0]) {
+                    committed = true;
+                    // TPU completions are consumed inside the client. Discard earlier
+                    // heartbeats, then observe two later loop iterations so the worker
+                    // response is consumed before shutdown (heartbeat precedes responses).
+                    while addon.completion.try_read().is_some() {}
+                } else if committed {
+                    while let Some(message) = addon.completion.try_read() {
+                        assert_eq!(message.id, jito_scheduler_bindings::HEARTBEAT_ID);
+                        subsequent_heartbeats += 1;
+                    }
+                    if subsequent_heartbeats >= 2 {
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    exit.store(true, Ordering::Relaxed);
+                    let result = handle.join().unwrap();
+                    panic!("scheduler did not commit a real vote with BAM connected: {result:?}");
+                }
+            }
+            exit.store(true, Ordering::Relaxed);
+            let stats = handle.join().unwrap().unwrap();
+            assert!(stats.check_requests > 0);
+            assert_eq!(stats.submitted_batches, 1);
+            assert_eq!(stats.completed_batches, 1);
+            assert_eq!(stats.dropped_transactions, 1);
+            assert_eq!(bank.get_signature_status(&vote.signatures[0]), Some(Ok(())));
+            assert_eq!(bank.get_signature_status(&ordinary.signatures[0]), None);
+            assert_eq!(bank.get_balance(&recipient), 0);
+            let after = bank.get_account(&vote_pubkey).unwrap();
+            let vote_state = VoteStateV4::deserialize(after.data(), &vote_pubkey).unwrap();
+            assert_ne!(after.data(), before.data());
+            assert_eq!(vote_state.votes.len(), 1);
+            assert_eq!(vote_state.votes.back().unwrap().slot(), root_bank.slot());
+            let recorded = records.drain().collect::<Vec<_>>();
+            assert_eq!(recorded.len(), 1);
+            assert_eq!(
+                recorded[0].transactions,
+                vec![VersionedTransaction::from(vote)]
+            );
+            assert!(recorded[0].reschedule_on_sad_handover);
+        }
+
+        #[test_case::test_case(0)]
+        #[test_case::test_case(3)]
+        fn test_jito_bam_waits_for_parent_ready(flags: u8) {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.record_receiver.restart(frame.bank.bank_id());
+            frame.shared_leader_state.store(Arc::new(
+                LeaderState::new_with_atomic_batches_enabled(
+                    Some(frame.bank.clone()),
+                    frame.bank.tick_height(),
+                    None,
+                    None,
+                    false,
+                ),
+            ));
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transfer(
+                &frame.mint_keypair,
+                &recipient,
+                1,
+                frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            let request = frame.jito_request(&batch, flags);
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(
+                results[0].0.not_included_reason,
+                not_included_reasons::BANK_NOT_AVAILABLE
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+
+            frame.shared_leader_state.load().enable_atomic_batches();
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (response, results) = frame.recv_jito();
+            assert_eq!(
+                (response.execution_slot, response.bank_id),
+                (frame.bank.slot(), frame.bank.bank_id())
+            );
+            assert_eq!(results[0].0.not_included_reason, not_included_reasons::NONE);
+            assert_eq!(results[0].0.execution_success, 1);
+            assert!(results[0].0.executed_units > 0);
+            assert_eq!(
+                results[0].0.fee_payer_balance,
+                frame.bank.get_balance(&frame.mint_keypair.pubkey())
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 1);
+            let record = frame.record_receiver.drain().next().unwrap();
+            assert_eq!(record.reschedule_on_sad_handover, flags == 0);
+            frame.free_batch(batch);
+        }
+
+        #[test_case(0)]
+        #[test_case(3)]
+        fn test_jito_preserves_lookup_table_owner_error(flags: u8) {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.enable_execution();
+            let table = Pubkey::new_unique();
+            let recipient = Pubkey::new_unique();
+            frame.bank.store_account(
+                &table,
+                &solana_account::AccountSharedData::new(1, 0, &Pubkey::new_unique()),
+            );
+            let message = solana_message::v0::Message::try_compile(
+                &frame.mint_keypair.pubkey(),
+                &[solana_system_interface::instruction::transfer(
+                    &frame.mint_keypair.pubkey(),
+                    &recipient,
+                    1,
+                )],
+                &[solana_message::AddressLookupTableAccount {
+                    key: table,
+                    addresses: vec![recipient],
+                }],
+                frame.bank.confirmed_last_blockhash(),
+            )
+            .unwrap();
+            let transaction = solana_transaction::versioned::VersionedTransaction::try_new(
+                solana_message::VersionedMessage::V0(message),
+                &[&frame.mint_keypair],
+            )
+            .unwrap();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transaction).unwrap()]);
+            frame.send_jito(frame.jito_request(&batch, flags));
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_ne!(results[0].0.not_included_reason, not_included_reasons::NONE);
+            assert_eq!(
+                bincode::deserialize::<TransactionError>(&results[0].1).unwrap(),
+                TransactionError::InvalidAddressLookupTableOwner
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+            frame.free_batch(batch);
+        }
+
+        #[test_case(SOURCE_BAM, 0, BamConnectionState::Connected)]
+        #[test_case(SOURCE_LEGACY_BUNDLE, 3, BamConnectionState::DrainingBlockEngine)]
+        fn test_jito_rejects_inactive_source_then_executes(
+            source: u8,
+            flags: u8,
+            active: BamConnectionState,
+        ) {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.enable_execution();
+            let inactive = if source == SOURCE_BAM {
+                BamConnectionState::Connecting
+            } else {
+                BamConnectionState::BlockEngineDrained
+            };
+            let state = frame.enable_tip_dependencies(inactive);
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transfer(
+                &frame.mint_keypair,
+                &recipient,
+                1,
+                frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            let request = JitoExecutionRequest {
+                source,
+                ..frame.jito_request(&batch, flags)
+            };
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(
+                results[0].0.not_included_reason,
+                not_included_reasons::BANK_NOT_AVAILABLE
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+
+            state.store(active as u8, Ordering::Release);
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(results[0].0.not_included_reason, not_included_reasons::NONE);
+            assert_eq!(results[0].0.execution_success, 1);
+            assert_eq!(frame.bank.get_balance(&recipient), 1);
+            assert_eq!(
+                frame
+                    .record_receiver
+                    .drain()
+                    .next()
+                    .unwrap()
+                    .reschedule_on_sad_handover,
+                flags == 0
+            );
+            frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_jito_rejects_previous_bam_connection_generation() {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.enable_execution();
+            frame.enable_tip_dependencies(BamConnectionState::Connected);
+            let control = Arc::new(JitoSchedulerControl::default());
+            frame.worker.jito_control = Some(control.clone());
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transfer(
+                &frame.mint_keypair,
+                &recipient,
+                1,
+                frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            let request = frame.jito_request(&batch, 3);
+            control.bam_generation.store(1, Ordering::Release);
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(
+                results[0].0.not_included_reason,
+                not_included_reasons::BANK_NOT_AVAILABLE
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+
+            frame.send_jito(JitoExecutionRequest {
+                bam_generation: 1,
+                ..request
+            });
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(results[0].0.not_included_reason, not_included_reasons::NONE);
+            assert_eq!(frame.bank.get_balance(&recipient), 1);
+            assert!(
+                !frame
+                    .record_receiver
+                    .drain()
+                    .next()
+                    .unwrap()
+                    .reschedule_on_sad_handover
+            );
+            frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_jito_rejects_wrong_slot_and_replaced_bank() {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.enable_execution();
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transfer(
+                &frame.mint_keypair,
+                &recipient,
+                1,
+                frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            let request = frame.jito_request(&batch, 0);
+            for slot in [request.slot - 1, request.slot + 1] {
+                frame.send_jito(JitoExecutionRequest { slot, ..request });
+                frame.iterate().unwrap();
+                let (_, results) = frame.recv_jito();
+                assert_eq!(
+                    results[0].0.not_included_reason,
+                    not_included_reasons::BANK_NOT_AVAILABLE
+                );
+            }
+            let replacement = Arc::new(Bank::new_from_parent(
+                frame.bank.parent().unwrap(),
+                SlotLeader::new_unique(),
+                frame.bank.slot(),
+            ));
+            assert_ne!(replacement.bank_id(), request.bank_id);
+            frame.shared_leader_state.store(Arc::new(LeaderState::new(
+                Some(replacement.clone()),
+                replacement.tick_height(),
+                None,
+                None,
+            )));
+            frame.record_receiver.shutdown();
+            frame.record_receiver.restart(replacement.bank_id());
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(
+                results[0].0.not_included_reason,
+                not_included_reasons::BANK_NOT_AVAILABLE
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(replacement.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+            frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_jito_record_failure_does_not_commit_or_retry() {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.set_active_bank();
+            // The active bank exists but record intake has not been started.
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transfer(
+                &frame.mint_keypair,
+                &recipient,
+                1,
+                frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            let request = frame.jito_request(&batch, 0);
+            frame.send_jito(request);
+            frame.iterate().unwrap();
+            let (response, results) = frame.recv_jito();
+            assert_eq!(response.bank_id, request.bank_id);
+            assert_eq!(
+                results[0].0.not_included_reason,
+                not_included_reasons::BANK_NOT_AVAILABLE
+            );
+            assert!(results[0].1.is_empty());
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+            frame.record_receiver.restart(frame.bank.bank_id());
+            assert!(matches!(
+                frame
+                    .worker
+                    .iterate(&mut frame.receiver, &mut false)
+                    .unwrap(),
+                IterationResult::Idle
+            ));
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_jito_atomic_failure_rolls_back_valid_prefix() {
+            let mut frame = setup_external_test_frame_with_jito(&[], true);
+            frame.enable_execution();
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[
+                wincode::serialize(&transfer(
+                    &frame.mint_keypair,
+                    &recipient,
+                    1,
+                    frame.bank.confirmed_last_blockhash(),
+                ))
+                .unwrap(),
+                wincode::serialize(&transfer(
+                    &Keypair::new(),
+                    &Pubkey::new_unique(),
+                    1,
+                    frame.bank.confirmed_last_blockhash(),
+                ))
+                .unwrap(),
+            ]);
+            frame.send_jito(frame.jito_request(&batch, 3));
+            frame.iterate().unwrap();
+            let (_, results) = frame.recv_jito();
+            assert_eq!(results.len(), 2);
+            assert!(
+                results
+                    .iter()
+                    .all(|(result, _)| result.not_included_reason != not_included_reasons::NONE)
+            );
+            assert_eq!(
+                results[0].0.not_included_reason,
+                not_included_reasons::ALL_OR_NOTHING_BATCH_FAILURE
+            );
+            assert_eq!(
+                results[1].0.not_included_reason,
+                not_included_reasons::ACCOUNT_NOT_FOUND
+            );
+            assert_eq!(
+                bincode::deserialize::<TransactionError>(&results[1].1).unwrap(),
+                TransactionError::AccountNotFound
+            );
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert_eq!(frame.record_receiver.drain().count(), 0);
+            frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_external_all_or_nothing_without_drop_keeps_failed_execution() {
+            let mut frame = setup_external_test_frame();
+            frame.enable_execution();
+            let recipient = Pubkey::new_unique();
+            let batch = frame.allocate_batch(&[wincode::serialize(&transfer(
+                &frame.mint_keypair,
+                &recipient,
+                100_000,
+                frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            frame.send_message(PackToExecutionWorkerMessage {
+                flags: execution_message_flags::ALL_OR_NOTHING,
+                max_working_slot: frame.bank.slot(),
+                batch: batch.region,
+            });
+            frame.iterate().unwrap();
+            let response = frame.recv_response();
+            let results = frame.execution_responses(&response.responses);
+            assert_eq!(results[0].not_included_reason, not_included_reasons::NONE);
+            assert_eq!(frame.bank.get_balance(&recipient), 0);
+            assert!(
+                !frame
+                    .record_receiver
+                    .drain()
+                    .next()
+                    .unwrap()
+                    .reschedule_on_sad_handover
+            );
+            frame.free_batch(batch);
         }
 
         #[test]
@@ -2522,12 +3870,39 @@ mod tests {
         TestFrame,
         ConsumeWorker<RuntimeTransaction<SanitizedTransaction>>,
     ) {
+        setup_test_frame_with_tip_identity(default_rent, false)
+    }
+
+    fn setup_test_frame_with_tip_identity(
+        default_rent: bool,
+        matching_tip_identity: bool,
+    ) -> (
+        TestFrame,
+        ConsumeWorker<RuntimeTransaction<SanitizedTransaction>>,
+    ) {
         let GenesisConfigInfo {
             mut genesis_config,
             mint_keypair,
             voting_keypair,
             ..
         } = create_slow_genesis_config(10_000_000_000);
+        if matching_tip_identity {
+            use solana_vote_interface::state::{VoteStateV4, VoteStateVersions};
+            // Production signs upkeep with the validator identity registered in its vote
+            // account. The generic consume fixture otherwise signs with an unrelated mint.
+            let vote_account = genesis_config
+                .accounts
+                .get_mut(&voting_keypair.pubkey())
+                .unwrap();
+            let mut vote_state =
+                VoteStateV4::deserialize(&vote_account.data, &voting_keypair.pubkey()).unwrap();
+            vote_state.node_pubkey = mint_keypair.pubkey();
+            VoteStateV4::serialize(
+                &VoteStateVersions::V4(Box::new(vote_state)),
+                &mut vote_account.data,
+            )
+            .unwrap();
+        }
         if default_rent {
             // this is needed when you need to access accountsdb (0 lamports accounts don't get written to accountsdb)
             // if you don't have this, have fun debugging for a few hours :angry:
@@ -3169,6 +4544,124 @@ mod tests {
         let sleep_duration = Duration::from_micros(900);
         let sleep_duration = backoff(IDLE_SLEEP_THRESHOLD, &sleep_duration);
         assert_eq!(sleep_duration, MAX_SLEEP_DURATION);
+    }
+
+    #[test]
+    fn test_required_tip_upkeep_is_once_per_exact_bank() {
+        agave_logger::setup();
+        let (mut frame, worker) = setup_test_frame_with_tip_identity(true, true);
+        frame.record_receiver.restart(frame.bank.bank_id());
+        let dependencies = worker.tip_processing_dependencies.as_ref().unwrap();
+        assert!(run_tip_programs(
+            &worker.consumer,
+            dependencies,
+            &frame.bank,
+            true
+        ));
+        assert!(frame.record_receiver.drain().count() > 0);
+        assert_eq!(
+            *dependencies.last_tip_updated_bank.lock().unwrap(),
+            Some((frame.bank.slot(), frame.bank.bank_id()))
+        );
+        let config_address = JitoTipPaymentConfig::find_program_address(&jito_tip_payment::id()).0;
+        assert!(frame.bank.get_account(&config_address).is_some());
+
+        assert!(run_tip_programs(
+            &worker.consumer,
+            dependencies,
+            &frame.bank,
+            true
+        ));
+        assert_eq!(frame.record_receiver.drain().count(), 0);
+
+        // Account storage is indexed by slot; two live siblings sharing an AccountsDb
+        // would see the first bank's writes. Use the same genesis with independent
+        // storage to represent a replacement after the abandoned slot is purged.
+        let (replacement_parent, _replacement_forks) =
+            Bank::new_with_bank_forks_for_tests(&frame.genesis_config);
+        // Bank IDs belong to a bank tree. Advance this fresh tree past the original
+        // bank's ID to model the validator's monotonically assigned replacement ID.
+        let _prior_bank = Bank::new_from_parent(
+            replacement_parent.clone(),
+            SlotLeader::new_unique(),
+            frame.bank.slot() - 1,
+        );
+        let replacement = Arc::new(Bank::new_from_parent(
+            replacement_parent,
+            SlotLeader::new_unique(),
+            frame.bank.slot(),
+        ));
+        assert_ne!(replacement.bank_id(), frame.bank.bank_id());
+        assert!(replacement.get_account(&config_address).is_none());
+        frame.record_receiver.shutdown();
+        frame.record_receiver.restart(replacement.bank_id());
+        assert!(run_tip_programs(
+            &worker.consumer,
+            dependencies,
+            &replacement,
+            true
+        ));
+        assert!(replacement.get_account(&config_address).is_some());
+        assert!(frame.record_receiver.drain().count() > 0);
+        assert_eq!(
+            *dependencies.last_tip_updated_bank.lock().unwrap(),
+            Some((replacement.slot(), replacement.bank_id()))
+        );
+    }
+
+    #[test]
+    fn test_required_tip_upkeep_rejects_mismatched_vote_identity() {
+        let (mut frame, worker) = setup_test_frame(true);
+        frame.record_receiver.restart(frame.bank.bank_id());
+        let dependencies = worker.tip_processing_dependencies.as_ref().unwrap();
+        assert!(!run_tip_programs(
+            &worker.consumer,
+            dependencies,
+            &frame.bank,
+            true
+        ));
+        assert!(
+            frame
+                .bank
+                .get_account(&dependencies.tip_manager.tip_payment_config_pubkey())
+                .is_some()
+        );
+        assert!(
+            frame
+                .bank
+                .get_account(
+                    &dependencies
+                        .tip_manager
+                        .get_my_tip_distribution_pda(frame.bank.epoch())
+                )
+                .is_none()
+        );
+        assert_eq!(*dependencies.last_tip_updated_bank.lock().unwrap(), None);
+        let crank = dependencies
+            .tip_manager
+            .get_tip_programs_crank_bundle(
+                &frame.bank,
+                &dependencies.cluster_info.keypair(),
+                &dependencies.block_builder_fee_info.load(),
+            )
+            .unwrap();
+        let output = worker.consumer.process_and_record_transactions_with_policy(
+            &frame.bank,
+            &crank,
+            Some(&dependencies.bundle_account_locker),
+            true,
+        );
+        let results = output
+            .execute_and_commit_transactions_output
+            .commit_transactions_result
+            .unwrap();
+        assert!(matches!(
+            &results[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::InstructionError(
+                0,
+                solana_transaction::InstructionError::Custom(6014)
+            ))
+        ));
     }
 
     #[test]

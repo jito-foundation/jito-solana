@@ -352,6 +352,45 @@ impl BundleStage {
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
+        Self::new_with_jito(
+            cluster_info,
+            bank_forks,
+            poh_recorder,
+            transaction_recorder,
+            bundle_receiver,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            exit,
+            tip_manager,
+            bundle_account_locker,
+            block_builder_fee_info,
+            bam_enabled,
+            prioritization_fee_cache,
+            blacklisted_accounts,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_jito(
+        cluster_info: &Arc<ClusterInfo>,
+        bank_forks: Arc<RwLock<BankForks>>,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
+        bundle_receiver: Receiver<VerifiedPacketBundle>,
+        transaction_status_sender: Option<TransactionStatusSender>,
+        replay_vote_sender: ReplayVoteSender,
+        log_messages_bytes_limit: Option<usize>,
+        exit: Arc<AtomicBool>,
+        tip_manager: TipManager,
+        bundle_account_locker: BundleAccountLocker,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        bam_enabled: Arc<AtomicU8>,
+        prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        jito_control: Option<Arc<crate::jito_scheduler::JitoSchedulerControl>>,
+    ) -> Self {
         Self::start_bundle_thread(
             cluster_info,
             bank_forks,
@@ -368,6 +407,7 @@ impl BundleStage {
             bam_enabled,
             prioritization_fee_cache,
             blacklisted_accounts,
+            jito_control,
         )
     }
 
@@ -392,6 +432,7 @@ impl BundleStage {
         bam_enabled: Arc<AtomicU8>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
+        jito_control: Option<Arc<crate::jito_scheduler::JitoSchedulerControl>>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -420,6 +461,7 @@ impl BundleStage {
                     block_builder_fee_info,
                     bam_enabled,
                     cluster_info,
+                    jito_control,
                 );
             })
             .unwrap();
@@ -440,6 +482,7 @@ impl BundleStage {
         block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
         bam_enabled: Arc<AtomicU8>,
         cluster_info: Arc<ClusterInfo>,
+        jito_control: Option<Arc<crate::jito_scheduler::JitoSchedulerControl>>,
     ) {
         let mut last_metrics_update = Instant::now();
         let mut bundle_storage = BundleStorage::with_capacity(2_000);
@@ -449,6 +492,15 @@ impl BundleStage {
 
         let mut last_tip_update_slot = Slot::MAX;
         while !exit.load(Ordering::Relaxed) {
+            if let Some(control) = &jito_control {
+                if control.active.load(Ordering::Acquire) {
+                    bundle_storage.clear();
+                    control.bundle_stage_paused.store(true, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                control.bundle_stage_paused.store(false, Ordering::Release);
+            }
             let block_engine_processing =
                 Self::block_engine_processing_enabled(&bam_enabled, &mut bundle_storage);
 

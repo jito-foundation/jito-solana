@@ -441,7 +441,9 @@ fn main() {
     genesis.log_messages_bytes_limit = value_t!(matches, "log_messages_bytes_limit", usize).ok();
     genesis.transaction_account_lock_limit =
         value_t!(matches, "transaction_account_lock_limit", usize).ok();
-    genesis.enable_scheduler_bindings = matches.is_present("enable_scheduler_bindings");
+    genesis.enable_scheduler_bindings = matches.is_present("enable_scheduler_bindings")
+        || matches.is_present("jito_scheduler_bindings");
+    genesis.jito_scheduler_bindings = matches.is_present("jito_scheduler_bindings");
 
     let tower_storage = Arc::new(FileTowerStorage::new(ledger_path.clone()));
     let vote_history_storage = Arc::new(FileVoteHistoryStorage::new(ledger_path.clone()));
@@ -477,6 +479,7 @@ fn main() {
             vote_history_storage: vote_history_storage.clone(),
             rpc_to_plugin_manager_sender,
             enable_scheduler_bindings: genesis.enable_scheduler_bindings,
+            jito_scheduler_bindings: genesis.jito_scheduler_bindings,
             bam_url: genesis.bam_url.clone(),
         },
     );

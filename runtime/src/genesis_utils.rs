@@ -181,6 +181,27 @@ pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
     feature_set: &FeatureSet,
     is_alpenglow: bool,
 ) -> GenesisConfigInfo {
+    create_genesis_config_with_vote_accounts_and_cluster_type_and_rent(
+        mint_lamports,
+        voting_keypairs,
+        stakes,
+        cluster_type,
+        feature_set,
+        is_alpenglow,
+        Rent::free(),
+    )
+}
+
+/// Build vote and stake accounts using the same rent schedule installed in genesis.
+pub fn create_genesis_config_with_vote_accounts_and_cluster_type_and_rent(
+    mint_lamports: u64,
+    voting_keypairs: &[impl Borrow<ValidatorVoteKeypairs>],
+    stakes: Vec<u64>,
+    cluster_type: ClusterType,
+    feature_set: &FeatureSet,
+    is_alpenglow: bool,
+    rent: Rent,
+) -> GenesisConfigInfo {
     assert!(!voting_keypairs.is_empty());
     assert_eq!(voting_keypairs.len(), stakes.len());
 
@@ -206,7 +227,7 @@ pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
         stakes[0],
         VALIDATOR_LAMPORTS,
         FeeRateGovernor::new(0, 0), // most tests can't handle transaction fees
-        Rent::free(),               // most tests don't expect rent
+        rent,
         cluster_type,
         feature_set,
         vec![],

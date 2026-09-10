@@ -1,0 +1,19 @@
+[package]
+name = "jito-scheduler-bindings"
+description = "Opt-in Jito scheduler shared-memory protocol"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+agave-scheduler-bindings = { workspace = true }
+rts-alloc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

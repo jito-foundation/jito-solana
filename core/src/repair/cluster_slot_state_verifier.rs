@@ -489,8 +489,12 @@ fn on_dead_slot(slot: Slot, dead_state: DeadState) -> Vec<ResultingStateChange> 
                 );
             }
             ClusterConfirmedHash::EpochSlotsFrozen(epoch_slots_frozen_hash) => {
-                // Lower priority than having seen an actual duplicate confirmed hash in the
-                // match arm above.
+                // This sample already authorized repair of the dead slot. Requesting
+                // its ancestry again does not promote the sample to a stronger
+                // confirmation; it finds the next repair target after a failed attempt.
+                state_changes.push(ResultingStateChange::SendAncestorHashesReplayUpdate(
+                    AncestorHashesReplayUpdate::DeadDuplicateConfirmed(slot),
+                ));
                 let is_popular_pruned = false;
                 check_epoch_slots_hash_against_bank_status(
                     &mut state_changes,
@@ -638,14 +642,27 @@ fn on_epoch_slots_frozen(
     // replayed yet, and unlike 2) there is no upcoming `SlotStateUpdate::BankFrozen` or
     // `SlotStateUpdate::Dead`, as `slot` is pruned and will not be replayed.
     //
-    // Thus if we have a duplicate confirmation, but `slot` is pruned, we continue
-    // processing it as `epoch_slots_frozen`.
-    if !is_popular_pruned && let Some(duplicate_confirmed_hash) = duplicate_confirmed_hash {
+    // A dead slot can also be waiting for ancestor discovery after a failed repair.
+    // Only a sample agreeing with its stronger duplicate-confirmed hash can
+    // authorize another repair of this slot. A conflicting sample must be retried.
+    // Pruned slots continue through the existing epoch-slots handling below.
+    if (!is_popular_pruned || bank_status.is_dead())
+        && let Some(duplicate_confirmed_hash) = duplicate_confirmed_hash
+    {
         if epoch_slots_frozen_hash != duplicate_confirmed_hash {
             warn!(
                 "EpochSlots sample returned slot {slot} with hash {epoch_slots_frozen_hash}, but \
                  we already saw duplicate confirmation on hash: {duplicate_confirmed_hash:?}",
             );
+            if bank_status.is_dead() {
+                return vec![ResultingStateChange::SendAncestorHashesReplayUpdate(
+                    AncestorHashesReplayUpdate::DeadDuplicateConfirmed(slot),
+                )];
+            }
+        } else if bank_status.is_dead() {
+            return vec![ResultingStateChange::RepairDuplicateConfirmedVersion(
+                duplicate_confirmed_hash,
+            )];
         }
         return vec![];
     }
@@ -927,12 +944,62 @@ pub(crate) fn check_slot_agrees_with_cluster(
         && let Some(old_epoch_slots_frozen_hash) =
             epoch_slots_frozen_slots.insert(slot, epoch_slots_frozen_state.epoch_slots_frozen_hash)
         && old_epoch_slots_frozen_hash == epoch_slots_frozen_state.epoch_slots_frozen_hash
+        && !epoch_slots_frozen_state.bank_status.is_dead()
     {
-        // If EpochSlots has already told us this same hash was frozen, return
+        // A fresh sample for a still-dead slot can authorize another repair even
+        // when a previous sample returned the same hash.
         return;
     }
 
-    let state_changes = slot_state_update.into_state_changes(slot);
+    let wait_for_ancestors = purge_repair_slot_counter
+        .get(&slot)
+        .is_some_and(|attempts| *attempts > 0)
+        && matches!(
+            &slot_state_update,
+            SlotStateUpdate::Dead(DeadState {
+                cluster_confirmed_hash: Some(_),
+                ..
+            }) | SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState {
+                bank_status: BankStatus::Dead,
+                ..
+            })
+        );
+    if wait_for_ancestors {
+        let confirmed_hash = match &slot_state_update {
+            SlotStateUpdate::Dead(DeadState {
+                cluster_confirmed_hash: Some(ClusterConfirmedHash::DuplicateConfirmed(hash)),
+                ..
+            })
+            | SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState {
+                duplicate_confirmed_hash: hash,
+                ..
+            }) => Some(*hash),
+            _ => None,
+        };
+        if let Some(confirmed_hash) = confirmed_hash
+            && duplicate_slots_to_repair
+                .get(&slot)
+                .is_some_and(|hash| *hash != confirmed_hash)
+        {
+            // A stronger confirmation supersedes pending work authorized by a
+            // weaker sample, even while the next repair awaits ancestry.
+            duplicate_slots_to_repair.remove(&slot);
+        }
+    }
+    let mut state_changes = slot_state_update.into_state_changes(slot);
+    if wait_for_ancestors {
+        // A dead child may be correct while its parent is a duplicate. Preserve
+        // the first direct repair, but do not repeatedly repair that child while
+        // ancestor discovery is still finding the actual mismatching slot.
+        // These notifications already request ancestry; its response authorizes
+        // the next repair through EpochSlotsFrozen.
+        state_changes.retain(|change| {
+            !matches!(
+                change,
+                ResultingStateChange::RepairDuplicateConfirmedVersion(_)
+            )
+        });
+    }
     apply_state_changes(
         slot,
         fork_choice,
@@ -1244,6 +1311,7 @@ mod test {
             (
                 SlotStateUpdate::Dead(dead_state),
                 vec![
+                ResultingStateChange::SendAncestorHashesReplayUpdate(AncestorHashesReplayUpdate::DeadDuplicateConfirmed(10)),
                 ResultingStateChange::RepairDuplicateConfirmedVersion(epoch_slots_frozen_hash)],
             )
         },
@@ -1273,7 +1341,8 @@ mod test {
             );
             (
                 SlotStateUpdate::Dead(dead_state),
-                vec![ResultingStateChange::RepairDuplicateConfirmedVersion(epoch_slots_frozen_hash)],
+                vec![ResultingStateChange::SendAncestorHashesReplayUpdate(AncestorHashesReplayUpdate::DeadDuplicateConfirmed(10)),
+                ResultingStateChange::RepairDuplicateConfirmedVersion(epoch_slots_frozen_hash)],
             )
         },
         duplicate_state_update_0: {
@@ -1388,7 +1457,7 @@ mod test {
             let epoch_slots_frozen_state = EpochSlotsFrozenState::new(epoch_slots_frozen_hash, duplicate_confirmed_hash, bank_status, false);
             (
                 SlotStateUpdate::EpochSlotsFrozen(epoch_slots_frozen_state),
-                Vec::<ResultingStateChange>::new()
+                vec![ResultingStateChange::SendAncestorHashesReplayUpdate(AncestorHashesReplayUpdate::DeadDuplicateConfirmed(10))],
             )
         },
         epoch_slots_frozen_state_update_5: {
@@ -1398,7 +1467,7 @@ mod test {
             let epoch_slots_frozen_state = EpochSlotsFrozenState::new(epoch_slots_frozen_hash, duplicate_confirmed_hash, bank_status, false);
             (
                 SlotStateUpdate::EpochSlotsFrozen(epoch_slots_frozen_state),
-                Vec::<ResultingStateChange>::new()
+                vec![ResultingStateChange::RepairDuplicateConfirmedVersion(epoch_slots_frozen_hash)],
             )
         },
         epoch_slots_frozen_state_update_6: {
@@ -1501,7 +1570,7 @@ mod test {
             let epoch_slots_frozen_state = EpochSlotsFrozenState::new(epoch_slots_frozen_hash, duplicate_confirmed_hash, bank_status, true);
             (
                 SlotStateUpdate::EpochSlotsFrozen(epoch_slots_frozen_state),
-                vec![ResultingStateChange::RepairDuplicateConfirmedVersion(epoch_slots_frozen_hash)],
+                vec![ResultingStateChange::SendAncestorHashesReplayUpdate(AncestorHashesReplayUpdate::DeadDuplicateConfirmed(10))],
             )
         },
         epoch_slots_frozen_state_update_16: {
@@ -1584,6 +1653,174 @@ mod test {
             descendants,
             bank_forks: vote_simulator.bank_forks,
             blockstore,
+        }
+    }
+
+    #[test]
+    fn test_weak_dead_repair_samples_and_stronger_confirmation() {
+        let InitialState {
+            mut heaviest_subtree_fork_choice,
+            blockstore,
+            ..
+        } = setup();
+        let weak_hash = Hash::new_unique();
+        let newer_weak_hash = Hash::new_unique();
+        let strong_hash = Hash::new_unique();
+        let bank_hash_before = blockstore.get_bank_hash(3);
+        let confirmed_before = blockstore.is_duplicate_confirmed(3);
+        let mut tracker = DuplicateSlotsTracker::default();
+        let mut epochs = EpochSlotsFrozenSlots::from([(3, weak_hash)]);
+        let mut repairs = DuplicateSlotsToRepair::default();
+        let mut counter = PurgeRepairSlotCounter::from([(3, 1)]);
+        let (sender, receiver) = bounded(1024);
+        let dead = |hash| SlotStateUpdate::Dead(DeadState::new(Some(hash), false));
+        let sample = |hash, confirmed| {
+            SlotStateUpdate::EpochSlotsFrozen(EpochSlotsFrozenState::new(
+                hash,
+                confirmed,
+                BankStatus::Dead,
+                false,
+            ))
+        };
+        let steps = [
+            (
+                "repeated weak death waits for ancestry",
+                dead(ClusterConfirmedHash::EpochSlotsFrozen(weak_hash)),
+                None,
+                true,
+            ),
+            (
+                "a fresh identical sample authorizes repair",
+                sample(weak_hash, None),
+                Some(weak_hash),
+                false,
+            ),
+            (
+                "a changed weak sample replaces the old target",
+                sample(newer_weak_hash, None),
+                Some(newer_weak_hash),
+                false,
+            ),
+            (
+                "a stale weak death preserves the newer target",
+                dead(ClusterConfirmedHash::EpochSlotsFrozen(weak_hash)),
+                Some(newer_weak_hash),
+                true,
+            ),
+            (
+                "strong confirmation invalidates conflicting weak work",
+                SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState::new(
+                    strong_hash,
+                    BankStatus::Dead,
+                )),
+                None,
+                true,
+            ),
+            (
+                "a conflicting sample cannot replace strong confirmation",
+                sample(newer_weak_hash, Some(strong_hash)),
+                None,
+                true,
+            ),
+            (
+                "a matching sample authorizes the strongly confirmed target",
+                sample(strong_hash, Some(strong_hash)),
+                Some(strong_hash),
+                false,
+            ),
+            (
+                "a stale weak death cannot invalidate the strong target",
+                dead(ClusterConfirmedHash::EpochSlotsFrozen(weak_hash)),
+                Some(strong_hash),
+                true,
+            ),
+            (
+                "a repeated strong death preserves matching authorized work",
+                dead(ClusterConfirmedHash::DuplicateConfirmed(strong_hash)),
+                Some(strong_hash),
+                true,
+            ),
+        ];
+        for (name, state, expected_repair, request_ancestry) in steps {
+            check_slot_agrees_with_cluster(
+                3,
+                0,
+                &blockstore,
+                &mut tracker,
+                &mut epochs,
+                &mut heaviest_subtree_fork_choice,
+                &mut repairs,
+                &sender,
+                &mut counter,
+                state,
+            );
+            assert_eq!(repairs.get(&3).copied(), expected_repair, "{name}");
+            assert_eq!(counter.get(&3), Some(&1), "{name}");
+            assert_eq!(
+                receiver.try_iter().collect::<Vec<_>>(),
+                if request_ancestry {
+                    vec![AncestorHashesReplayUpdate::DeadDuplicateConfirmed(3)]
+                } else {
+                    vec![]
+                },
+                "{name}",
+            );
+            // Sampling/queueing alone must not accept a new frozen bank version.
+            assert_eq!(blockstore.get_bank_hash(3), bank_hash_before, "{name}");
+            assert_eq!(
+                blockstore.is_duplicate_confirmed(3),
+                confirmed_before,
+                "{name}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_deferred_dead_repair_preserves_only_confirmed_pending_hash() {
+        let InitialState {
+            mut heaviest_subtree_fork_choice,
+            blockstore,
+            ..
+        } = setup();
+        let confirmed_hash = Hash::new_unique();
+        for pending_hash in [confirmed_hash, Hash::new_unique()] {
+            for dead_notification in [false, true] {
+                let mut repairs = DuplicateSlotsToRepair::from([(3, pending_hash)]);
+                let mut counter = PurgeRepairSlotCounter::from([(3, 1)]);
+                let (sender, receiver) = bounded(1024);
+                let state = if dead_notification {
+                    SlotStateUpdate::Dead(DeadState::new(
+                        Some(ClusterConfirmedHash::DuplicateConfirmed(confirmed_hash)),
+                        false,
+                    ))
+                } else {
+                    SlotStateUpdate::DuplicateConfirmed(DuplicateConfirmedState::new(
+                        confirmed_hash,
+                        BankStatus::Dead,
+                    ))
+                };
+                check_slot_agrees_with_cluster(
+                    3,
+                    0,
+                    &blockstore,
+                    &mut DuplicateSlotsTracker::default(),
+                    &mut EpochSlotsFrozenSlots::default(),
+                    &mut heaviest_subtree_fork_choice,
+                    &mut repairs,
+                    &sender,
+                    &mut counter,
+                    state,
+                );
+                assert_eq!(
+                    repairs.get(&3).copied(),
+                    (pending_hash == confirmed_hash).then_some(confirmed_hash)
+                );
+                assert_eq!(counter.get(&3), Some(&1));
+                assert_eq!(
+                    receiver.try_recv().unwrap(),
+                    AncestorHashesReplayUpdate::DeadDuplicateConfirmed(3)
+                );
+            }
         }
     }
 

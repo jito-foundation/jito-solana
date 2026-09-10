@@ -162,6 +162,7 @@ pub struct TestValidatorGenesis {
     pub max_genesis_archive_unpacked_size: Option<u64>,
     pub geyser_plugin_config_files: Option<Vec<PathBuf>>,
     pub enable_scheduler_bindings: bool,
+    pub jito_scheduler_bindings: bool,
     deactivate_feature_set: HashSet<Pubkey>,
     compute_unit_limit: Option<u64>,
     pub log_messages_bytes_limit: Option<usize>,
@@ -198,6 +199,7 @@ impl Default for TestValidatorGenesis {
             max_genesis_archive_unpacked_size: Option::<u64>::default(),
             geyser_plugin_config_files: Option::<Vec<PathBuf>>::default(),
             enable_scheduler_bindings: false,
+            jito_scheduler_bindings: false,
             deactivate_feature_set,
             compute_unit_limit: Option::<u64>::default(),
             log_messages_bytes_limit: Option::<usize>::default(),
@@ -1209,6 +1211,7 @@ impl TestValidator {
             accounts_db_config,
             runtime_config,
             enable_scheduler_bindings: config.enable_scheduler_bindings,
+            jito_scheduler_bindings: config.jito_scheduler_bindings,
             tip_manager_config: TipManagerConfig {
                 tip_payment_program_id: jito_tip_payment::id(),
                 tip_distribution_program_id: jito_tip_distribution::id(),

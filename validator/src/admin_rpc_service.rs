@@ -72,6 +72,7 @@ pub struct AdminRpcRequestMetadata {
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
     pub enable_scheduler_bindings: bool,
+    pub jito_scheduler_bindings: bool,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
@@ -650,7 +651,7 @@ impl AdminRpc for AdminRpcImpl {
         let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
         let bam_url = bam_url.filter(|url| !url.trim().is_empty());
 
-        if meta.enable_scheduler_bindings && bam_url.is_some() {
+        if meta.enable_scheduler_bindings && !meta.jito_scheduler_bindings && bam_url.is_some() {
             let error = Error::invalid_params("BAM conflicts with external scheduler bindings");
             return Err(error);
         }
@@ -1479,6 +1480,7 @@ mod tests {
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
                 enable_scheduler_bindings: false,
+                jito_scheduler_bindings: false,
                 bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
             let mut io = MetaIoHandler::default();
@@ -1680,6 +1682,7 @@ mod tests {
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
                 enable_scheduler_bindings: false,
+                jito_scheduler_bindings: false,
                 bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
 
@@ -1771,6 +1774,7 @@ mod tests {
             staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
             rpc_to_plugin_manager_sender: None,
             enable_scheduler_bindings: false,
+            jito_scheduler_bindings: false,
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
         };
 
@@ -1869,6 +1873,7 @@ mod tests {
             staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
             rpc_to_plugin_manager_sender: None,
             enable_scheduler_bindings: false,
+            jito_scheduler_bindings: false,
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
         };
 
@@ -1946,5 +1951,8 @@ mod tests {
         test_validator.meta.enable_scheduler_bindings = true;
         let response = test_validator.handle_request(set_initial_bam_url_request);
         assert!(response.unwrap().contains("\"error\""));
+        test_validator.meta.jito_scheduler_bindings = true;
+        let response = test_validator.handle_request(set_initial_bam_url_request);
+        assert!(response.unwrap().contains("\"result\":null"));
     }
 }

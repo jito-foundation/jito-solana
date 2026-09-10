@@ -2,10 +2,14 @@
 //!
 
 use {
-    crate::banking_stage::consume_worker::ConsumeWorkerMetrics,
+    crate::{
+        bam_dependencies::BamConnectionState, banking_stage::consume_worker::ConsumeWorkerMetrics,
+        jito_scheduler::JitoSchedulerControl,
+    },
     agave_scheduler_bindings::ProgressMessage,
     agave_votor::slot_clock::SharedAlpenglowSlotClock,
     agave_votor_messages::migration::MigrationStatus,
+    jito_scheduler_bindings::JitoProgressMessage,
     solana_clock::{BankId, Slot},
     solana_cost_model::cost_tracker::{SharedAllocatedAccountsDataSize, SharedBlockCost},
     solana_poh::poh_recorder::SharedLeaderState,
@@ -13,13 +17,14 @@ use {
     std::{
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
         },
         thread::JoinHandle,
         time::{Duration, Instant},
     },
 };
 
+const JITO_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const ALPENGLOW_PROGRESS_STEP: u8 = 5;
 const ALPENGLOW_PROGRESS_SPIN_DURATION: Duration = Duration::from_millis(1);
 
@@ -32,6 +37,11 @@ pub fn spawn(
     ticks_per_slot: u64,
     migration_status: Arc<MigrationStatus>,
     alpenglow_slot_clock: SharedAlpenglowSlotClock,
+    mut jito: Option<(
+        shaq::spsc::Producer<JitoProgressMessage>,
+        Arc<AtomicU8>,
+        Arc<JitoSchedulerControl>,
+    )>,
 ) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("solProgTrker".to_string())
@@ -44,7 +54,7 @@ pub fn spawn(
                 migration_status,
                 alpenglow_slot_clock,
             )
-            .run(&mut producer);
+            .run(&mut producer, jito.as_mut());
         })
         .unwrap()
 }
@@ -58,6 +68,7 @@ struct ProgressTracker {
     alpenglow_slot_clock: SharedAlpenglowSlotClock,
 
     last_observed_bank_id: Option<BankId>,
+    last_jito_progress: Option<(JitoProgressMessage, u64)>,
     limit_and_shared_block_cost: Option<(u64, SharedBlockCost)>,
     limit_and_shared_allocated_accounts_data_size: Option<(u64, SharedAllocatedAccountsDataSize)>,
 }
@@ -80,13 +91,24 @@ impl ProgressTracker {
             alpenglow_slot_clock,
 
             last_observed_bank_id: None,
+            last_jito_progress: None,
             limit_and_shared_block_cost: None,
             limit_and_shared_allocated_accounts_data_size: None,
         }
     }
 
-    fn run(mut self, producer: &mut shaq::spsc::Producer<ProgressMessage>) {
+    fn run(
+        mut self,
+        producer: &mut shaq::spsc::Producer<ProgressMessage>,
+        mut jito: Option<&mut (
+            shaq::spsc::Producer<JitoProgressMessage>,
+            Arc<AtomicU8>,
+            Arc<JitoSchedulerControl>,
+        )>,
+    ) {
         let mut last_published_progress = None;
+        let mut last_published_jito_progress = None;
+        let mut last_jito_publish: Option<Instant> = None;
         while !self.exit.load(Ordering::Relaxed) {
             if let Some((message, tick_height)) = self.produce_progress_message() {
                 let progress = (
@@ -104,15 +126,46 @@ impl ProgressTracker {
                 }
             }
 
+            if let Some((jito_producer, bam_connected, control)) = jito.as_mut() {
+                let (mut message, tick_height) = self.last_jito_progress.unwrap();
+                message.bam_connected = u8::from(
+                    bam_connected.load(Ordering::Acquire) == BamConnectionState::Connected as u8,
+                );
+                message.bam_generation = control.bam_generation.load(Ordering::Acquire);
+                let progress = (
+                    tick_height,
+                    message.progress.leader_state,
+                    message.progress.current_slot,
+                    message.progress.current_slot_progress,
+                    message.bank_id,
+                    message.atomic_batches_enabled,
+                    message.bam_connected,
+                    message.bam_generation,
+                );
+                let now = Instant::now();
+                if Some(progress) != last_published_jito_progress
+                    || last_jito_publish
+                        .is_none_or(|last| now.duration_since(last) >= JITO_HEARTBEAT_INTERVAL)
+                {
+                    if jito_producer.try_write(message).is_err() {
+                        break;
+                    }
+                    last_published_jito_progress = Some(progress);
+                    last_jito_publish = Some(now);
+                }
+            }
+
             self.worker_metrics
                 .iter()
                 .for_each(|metrics| metrics.maybe_report_and_reset());
 
-            self.wait_for_next_progress_boundary();
+            self.wait_for_next_progress_boundary(
+                last_jito_publish.map(|last| last + JITO_HEARTBEAT_INTERVAL),
+            );
         }
     }
 
-    fn wait_for_next_progress_boundary(&self) {
+    fn wait_for_next_progress_boundary(&self, heartbeat_deadline: Option<Instant>) {
         let deadline = if self.migration_status.is_alpenglow_enabled() {
             self.alpenglow_slot_clock.load().and_then(|slot_info| {
                 next_alpenglow_progress_deadline(
@@ -124,11 +177,24 @@ impl ProgressTracker {
         } else {
             None
         };
+        let deadline = match (deadline, heartbeat_deadline) {
+            (Some(progress), Some(heartbeat)) => Some(progress.min(heartbeat)),
+            (None, heartbeat) => heartbeat,
+            (progress, None) => progress,
+        };
         let Some(deadline) = deadline else {
             std::thread::yield_now();
             return;
         };
 
+        // ParentReady and BAM connectivity can change without a tick/clock change.
+        // Bound polling latency while avoiding a busy loop between slot boundaries.
+        if heartbeat_deadline.is_some()
+            && deadline.saturating_duration_since(Instant::now()) > Duration::from_millis(1)
+        {
+            std::thread::sleep(Duration::from_millis(1));
+            return;
+        }
         let sleep_until = deadline
             .checked_sub(ALPENGLOW_PROGRESS_SPIN_DURATION)
             .unwrap_or(deadline);
@@ -156,6 +222,29 @@ impl ProgressTracker {
         let (next_leader_range_start, next_leader_range_end) = leader_state
             .next_leader_slot_range()
             .unwrap_or((u64::MAX, u64::MAX));
+        // Record a safe no-bank heartbeat even when Alpenglow has not supplied
+        // a clock yet. The ordinary progress stream retains its existing behavior.
+        self.last_jito_progress = Some((
+            JitoProgressMessage {
+                bam_generation: 0,
+                progress: ProgressMessage {
+                    leader_state: agave_scheduler_bindings::NOT_LEADER,
+                    current_slot_progress: 0,
+                    epoch: 0,
+                    current_slot: 0,
+                    next_leader_slot: next_leader_range_start,
+                    leader_range_end: next_leader_range_end,
+                    remaining_cost_units: 0,
+                    remaining_allocated_accounts_data_size: 0,
+                    latest_blockhash: [0; 32],
+                    target_bank_time_ms: 0,
+                },
+                bank_id: u64::MAX,
+                atomic_batches_enabled: 0,
+                bam_connected: 0,
+            },
+            tick_height,
+        ));
         let progress_message = if let Some(working_bank) = leader_state.working_bank() {
             let bank_id = working_bank.bank_id();
             // If new bank grab the cost tracker lock to get limits and shared costs.
@@ -244,6 +333,18 @@ impl ProgressTracker {
             }
         };
 
+        self.last_jito_progress = Some((
+            JitoProgressMessage {
+                bam_generation: 0,
+                progress: progress_message,
+                bank_id: self.last_observed_bank_id.unwrap_or(u64::MAX),
+                atomic_batches_enabled: u8::from(
+                    leader_state.working_bank().is_some() && leader_state.atomic_batches_enabled(),
+                ),
+                bam_connected: 0,
+            },
+            tick_height,
+        ));
         Some((progress_message, tick_height))
     }
 
@@ -703,6 +804,245 @@ mod tests {
         assert_eq!(message.current_slot_progress, 0);
         assert_eq!(message.next_leader_slot, 4);
         assert_eq!(message.leader_range_end, 7);
+    }
+
+    #[test]
+    fn test_jito_progress_captures_bank_identity_and_parent_readiness() {
+        let (parent, _bank_forks) =
+            Bank::new_for_tests(&solana_genesis_config::create_genesis_config(1).0)
+                .wrap_with_bank_forks_for_tests();
+        let first = Arc::new(Bank::new_from_parent(
+            parent.clone(),
+            SlotLeader::new_unique(),
+            1,
+        ));
+        let second = Arc::new(Bank::new_from_parent(parent, SlotLeader::new_unique(), 1));
+        assert_ne!(first.bank_id(), second.bank_id());
+        let mut shared = SharedLeaderState::new(0, None, None);
+        let mut tracker = ProgressTracker::new(
+            Arc::default(),
+            shared.clone(),
+            vec![],
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::default(),
+            SharedAlpenglowSlotClock::default(),
+        );
+        for bank in [first, second] {
+            shared.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+                Some(bank.clone()),
+                bank.tick_height(),
+                Some(DEFAULT_TICKS_PER_SLOT),
+                Some((1, 3)),
+                false,
+            )));
+            let (ordinary, _) = tracker.produce_progress_message().unwrap();
+            let (jito, _) = tracker.last_jito_progress.unwrap();
+            assert_eq!(jito.progress, ordinary);
+            assert_eq!(jito.progress.current_slot, bank.slot());
+            assert_eq!(jito.bank_id, bank.bank_id());
+            assert_eq!(jito.atomic_batches_enabled, 0);
+            shared.load().enable_atomic_batches();
+            tracker.produce_progress_message();
+            let (ready, _) = tracker.last_jito_progress.unwrap();
+            assert_eq!(ready.bank_id, bank.bank_id());
+            assert_eq!(ready.atomic_batches_enabled, 1);
+        }
+        shared.store(Arc::new(LeaderState::new(None, 0, None, None)));
+        tracker.produce_progress_message();
+        let (retired, _) = tracker.last_jito_progress.unwrap();
+        assert_eq!(retired.bank_id, u64::MAX);
+        assert_eq!(retired.atomic_batches_enabled, 0);
+    }
+
+    fn progress_queue<T>() -> (shaq::spsc::Producer<T>, shaq::spsc::Consumer<T>) {
+        let file = tempfile::tempfile().unwrap();
+        // Multiple of both 4 KiB and macOS 16 KiB pages.
+        let producer = unsafe { shaq::spsc::Producer::create(&file, 65536) }.unwrap();
+        let consumer = unsafe { shaq::spsc::Consumer::join(&file) }.unwrap();
+        (producer, consumer)
+    }
+    fn read_jito_progress_until(
+        consumer: &mut shaq::spsc::Consumer<JitoProgressMessage>,
+        predicate: impl Fn(&JitoProgressMessage) -> bool,
+        mut after_empty_read: impl FnMut(Instant),
+    ) -> JitoProgressMessage {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // A pause after an empty read must not turn that stale observation
+            // into a timeout while the producer publishes before the deadline.
+            let before_deadline = Instant::now() < deadline;
+            match consumer.try_read() {
+                Some(message) if predicate(&message) => return message,
+                Some(_) => {}
+                None => after_empty_read(deadline),
+            }
+            assert!(before_deadline, "Jito progress heartbeat timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn test_jito_progress_read_returns_timely_message_after_consumer_pause() {
+        let (mut producer, mut consumer) = progress_queue();
+        let mut tracker = ProgressTracker::new(
+            Arc::default(),
+            SharedLeaderState::new(0, None, Some((4, 7))),
+            vec![],
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::new(MigrationStatus::post_migration_status()),
+            SharedAlpenglowSlotClock::default(),
+        );
+        assert!(tracker.produce_progress_message().is_none());
+        let mut expected = tracker.last_jito_progress.unwrap().0;
+        expected.bam_generation = 17;
+        let (publish, wait_for_empty_read) = std::sync::mpsc::sync_channel(0);
+        let (published, publication_time) = std::sync::mpsc::sync_channel(0);
+        let (publisher_ready, wait_for_publisher) = std::sync::mpsc::sync_channel(0);
+        let origin = Instant::now();
+        let observed = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                publisher_ready.send(()).unwrap();
+                wait_for_empty_read.recv().unwrap();
+                producer.try_write(expected).unwrap();
+                published.send(Instant::now()).unwrap();
+            });
+            // Only the controlled witness waits for setup. The original tracker
+            // heartbeat test retains its existing worker startup deadline.
+            wait_for_publisher.recv().unwrap();
+            let mut pause_once = Some((publish, publication_time));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                read_jito_progress_until(
+                    &mut consumer,
+                    |_| true,
+                    |deadline| {
+                        if let Some((publish, publication_time)) = pause_once.take() {
+                            let empty_read_at = Instant::now();
+                            assert!(empty_read_at < deadline);
+                            publish.send(()).unwrap();
+                            let published_at = publication_time
+                                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                                .unwrap();
+                            assert!(
+                                published_at < deadline,
+                                "producer missed the original deadline"
+                            );
+                            // Reproduce a reader descheduled after an empty read while
+                            // the producer publishes before the unchanged deadline.
+                            while Instant::now() <= deadline {
+                                std::thread::sleep(
+                                    deadline.saturating_duration_since(Instant::now()),
+                                );
+                            }
+                            log::debug!(
+                                "deadline race witness: empty_read={:?} publication={:?} \
+                                 deadline={:?} reader_resumed={:?}",
+                                empty_read_at.duration_since(origin),
+                                published_at.duration_since(origin),
+                                deadline.duration_since(origin),
+                                origin.elapsed(),
+                            );
+                        }
+                    },
+                )
+            }));
+            match result {
+                Ok(message) => message,
+                Err(panic) => {
+                    let queued = consumer
+                        .try_read()
+                        .expect("timely message must remain queued");
+                    assert_eq!(queued.bam_generation, expected.bam_generation);
+                    assert_eq!(queued.progress, expected.progress);
+                    log::debug!("deadline race witness: timely message remained in the real queue");
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
+        assert_eq!(observed.bam_generation, expected.bam_generation);
+        assert_eq!(observed.progress, expected.progress);
+        assert_eq!(observed.bank_id, expected.bank_id);
+        assert!(consumer.try_read().is_none());
+    }
+
+    #[test]
+    fn test_jito_progress_read_preserves_empty_queue_timeout() {
+        let (_producer, mut consumer) = progress_queue::<JitoProgressMessage>();
+        let started = Instant::now();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_jito_progress_until(&mut consumer, |_| true, |_| {})
+        }))
+        .expect_err("an empty queue must time out");
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        let message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(message, Some("Jito progress heartbeat timed out"));
+        assert!(consumer.try_read().is_none());
+    }
+
+    #[test]
+    fn test_jito_progress_heartbeat_without_clock_and_during_long_boundary() {
+        fn read_until(
+            consumer: &mut shaq::spsc::Consumer<JitoProgressMessage>,
+            predicate: impl Fn(&JitoProgressMessage) -> bool,
+        ) -> JitoProgressMessage {
+            read_jito_progress_until(consumer, predicate, |_| {})
+        }
+        let (producer, mut ordinary) = progress_queue();
+        let (jito_producer, mut jito) = progress_queue();
+        let exit = Arc::new(AtomicBool::new(false));
+        let connected = Arc::new(AtomicU8::new(0));
+        let control = Arc::new(JitoSchedulerControl::default());
+        let clock = SharedAlpenglowSlotClock::default();
+        let handle = spawn(
+            exit.clone(),
+            producer,
+            SharedLeaderState::new(0, None, Some((4, 7))),
+            vec![],
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::new(MigrationStatus::post_migration_status()),
+            clock.clone(),
+            Some((jito_producer, connected.clone(), control.clone())),
+        );
+        let first = read_until(&mut jito, |_| true);
+        assert_eq!(
+            first.progress.leader_state,
+            agave_scheduler_bindings::NOT_LEADER
+        );
+        assert_eq!(first.bank_id, u64::MAX);
+        assert_eq!(first.atomic_batches_enabled, 0);
+        assert_eq!(first.bam_connected, 0);
+        assert!(ordinary.try_read().is_none());
+        let heartbeat = read_until(&mut jito, |_| true);
+        assert_eq!(heartbeat.progress, first.progress);
+        for state in [
+            BamConnectionState::Connecting,
+            BamConnectionState::DrainingBlockEngine,
+            BamConnectionState::BlockEngineDrained,
+        ] {
+            connected.store(state as u8, Ordering::Release);
+            let heartbeat = read_until(&mut jito, |_| true);
+            assert_eq!(heartbeat.bam_connected, 0, "intermediate state {state:?}");
+        }
+        connected.store(BamConnectionState::Connected as u8, Ordering::Release);
+        read_until(&mut jito, |message| message.bam_connected == 1);
+        control.bam_generation.store(7, Ordering::Release);
+        let refreshed = read_until(&mut jito, |message| message.bam_generation == 7);
+        assert_eq!(refreshed.bam_connected, 1);
+
+        // The next ordinary progress boundary is five seconds away. The addon
+        // must still publish its heartbeat within the two-second test deadline.
+        clock.update(4, Instant::now(), Duration::from_secs(100));
+        read_until(&mut jito, |message| message.progress.current_slot == 4);
+        let heartbeat = read_until(&mut jito, |message| message.progress.current_slot == 4);
+        assert_eq!(
+            heartbeat.progress.leader_state,
+            agave_scheduler_bindings::LEADER_STARTING
+        );
+        assert_eq!(heartbeat.bam_connected, 1);
+        exit.store(true, Ordering::Release);
+        handle.join().unwrap();
     }
 
     #[test]

@@ -80,6 +80,7 @@ struct MockBamNode {
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
     reject_scheduler_stream: bool,
     outbound_result_batch_size: Arc<AtomicU64>,
+    outbound_results: Arc<Mutex<Vec<(u64, AtomicTxnBatchResult)>>>,
 }
 
 impl MockBamNode {
@@ -99,6 +100,7 @@ impl MockBamNode {
             batch_to_send: Arc::new(Mutex::new(None)),
             reject_scheduler_stream,
             outbound_result_batch_size: Arc::new(AtomicU64::new(0)),
+            outbound_results: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -166,16 +168,21 @@ impl BamNodeApi for MockBamNode {
         let batch_to_send = self.batch_to_send.clone();
         let reject_scheduler_stream = self.reject_scheduler_stream;
         let outbound_result_batch_size = self.outbound_result_batch_size.clone();
+        let outbound_results = self.outbound_results.clone();
 
         tokio::spawn(async move {
             let mut authenticated = false;
+            let mut stream_id = 0;
 
             while let Ok(Some(msg)) = inbound.message().await {
                 if let Some(VersionedMsg::V0(v0)) = msg.versioned_msg
                     && let Some(Msg::AuthProof(_)) = v0.msg
                 {
                     authenticated = true;
-                    auth_proofs_received.fetch_add(1, Ordering::Relaxed);
+                    stream_id = auth_proofs_received
+                        .fetch_add(1, Ordering::Relaxed)
+                        .checked_add(1)
+                        .expect("mock stream counter overflow");
                     break;
                 }
             }
@@ -215,6 +222,9 @@ impl BamNodeApi for MockBamNode {
                         {
                             outbound_result_batch_size
                                 .store(results.results.len() as u64, Ordering::Relaxed);
+                            outbound_results.lock().unwrap().extend(
+                                results.results.into_iter().map(|result| (stream_id, result)),
+                            );
                         }
                     }
                     _ = heartbeat_interval.tick() => {
@@ -253,6 +263,7 @@ struct MockServerHandle {
     config_response_delay_ms: Arc<AtomicU64>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
     outbound_result_batch_size: Arc<AtomicU64>,
+    outbound_results: Arc<Mutex<Vec<(u64, AtomicTxnBatchResult)>>>,
 }
 
 async fn start_mock_server(
@@ -278,6 +289,7 @@ async fn start_mock_server(
         config_response_delay_ms: Arc::clone(&mock.config_response_delay_ms),
         batch_to_send: Arc::clone(&mock.batch_to_send),
         outbound_result_batch_size: Arc::clone(&mock.outbound_result_batch_size),
+        outbound_results: Arc::clone(&mock.outbound_results),
     };
 
     let server_started = Arc::new(AtomicBool::new(false));
@@ -540,6 +552,165 @@ mod bam_connection_tests {
             shutdown_start.elapsed() < Duration::from_millis(100),
             "shutdown should cancel refresh_config before the abort grace timeout"
         );
+    }
+
+    #[tokio::test]
+    async fn test_jito_stream_generations_survive_reconnect_and_mode_fallback() {
+        use {
+            jito_protos::proto::bam_types::{Committed, atomic_txn_batch_result},
+            solana_core::jito_scheduler::JitoSchedulerControl,
+        };
+        async fn receive_batch<T>(receiver: &crossbeam_channel::Receiver<T>) -> T {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if let Ok(batch) = receiver.try_recv() {
+                        return batch;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("network batch should arrive")
+        }
+        async fn receive_results(server: &MockServerHandle, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while server.outbound_results.lock().unwrap().len() < expected {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("network results should arrive");
+        }
+        fn batch(seq_id: u32) -> AtomicTxnBatch {
+            AtomicTxnBatch {
+                seq_id,
+                max_schedule_slot: 100,
+                packets: vec![],
+            }
+        }
+        let server = start_mock_server(
+            Arc::new(AtomicBool::new(true)),
+            Duration::from_millis(25),
+            false,
+        )
+        .await;
+        let control = Arc::new(JitoSchedulerControl::default());
+        control.active.store(true, Ordering::Release);
+        control.bam_generation.store(1, Ordering::Release);
+        let (batch_tx, raw_batches, outbound_tx, mut outbound_rx) = create_channels();
+        let url = format!("http://{}", server.addr);
+        let cluster_info = create_test_cluster_info();
+        let first = BamConnection::try_init_with_jito(
+            url.clone(),
+            cluster_info.clone(),
+            batch_tx.clone(),
+            &mut outbound_rx,
+            Some(control.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(wait_until_healthy(&first, Duration::from_secs(3)).await);
+        *server.batch_to_send.lock().unwrap() = Some(batch(42));
+        let old_batch = receive_batch(&control.bam_batches.1).await;
+        assert_eq!(old_batch.generation, 1);
+        assert_eq!(old_batch.batches.batches[0].seq_id, 42);
+        assert!(raw_batches.is_empty());
+        outbound_rx = Some(first.shutdown().await);
+
+        // Model a completion racing with the manager's queue drain. It arrives
+        // after shutdown, and the next stream reuses the same sequence ID.
+        control.bam_generation.store(2, Ordering::Release);
+        outbound_tx
+            .try_send(BamOutboundMessage::GenerationBoundAtomicTxnBatchResult {
+                generation: old_batch.generation,
+                result: AtomicTxnBatchResult {
+                    seq_id: 42,
+                    result: None,
+                },
+            })
+            .unwrap();
+        // Untagged results also cannot enter an external stream.
+        outbound_tx
+            .try_send(BamOutboundMessage::AtomicTxnBatchResult(
+                AtomicTxnBatchResult {
+                    seq_id: 42,
+                    result: None,
+                },
+            ))
+            .unwrap();
+        let second = BamConnection::try_init_with_jito(
+            url.clone(),
+            cluster_info.clone(),
+            batch_tx.clone(),
+            &mut outbound_rx,
+            Some(control.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(wait_until_healthy(&second, Duration::from_secs(3)).await);
+        *server.batch_to_send.lock().unwrap() = Some(batch(42));
+        let new_batch = receive_batch(&control.bam_batches.1).await;
+        assert_eq!(new_batch.generation, 2);
+        assert_eq!(new_batch.batches.batches[0].seq_id, 42);
+        let current_result = AtomicTxnBatchResult {
+            seq_id: 42,
+            result: Some(atomic_txn_batch_result::Result::Committed(Committed {
+                transaction_results: vec![],
+            })),
+        };
+        outbound_tx
+            .try_send(BamOutboundMessage::GenerationBoundAtomicTxnBatchResult {
+                generation: 2,
+                result: current_result.clone(),
+            })
+            .unwrap();
+        receive_results(&server, 1).await;
+        assert_eq!(
+            *server.outbound_results.lock().unwrap(),
+            vec![(2, current_result.clone())]
+        );
+
+        // Ownership changes do not retarget an already authenticated stream.
+        control.active.store(false, Ordering::Release);
+        *server.batch_to_send.lock().unwrap() = Some(batch(43));
+        assert_eq!(receive_batch(&control.bam_batches.1).await.generation, 2);
+        assert!(raw_batches.is_empty());
+        outbound_rx = Some(second.shutdown().await);
+        control.bam_generation.store(3, Ordering::Release);
+        outbound_tx
+            .try_send(BamOutboundMessage::GenerationBoundAtomicTxnBatchResult {
+                generation: 2,
+                result: current_result.clone(),
+            })
+            .unwrap();
+        let fallback_result = AtomicTxnBatchResult {
+            seq_id: 44,
+            result: None,
+        };
+        outbound_tx
+            .try_send(BamOutboundMessage::AtomicTxnBatchResult(
+                fallback_result.clone(),
+            ))
+            .unwrap();
+        let fallback = BamConnection::try_init_with_jito(
+            url,
+            cluster_info,
+            batch_tx,
+            &mut outbound_rx,
+            Some(control.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(wait_until_healthy(&fallback, Duration::from_secs(3)).await);
+        *server.batch_to_send.lock().unwrap() = Some(batch(44));
+        assert_eq!(receive_batch(&raw_batches).await.batches[0].seq_id, 44);
+        assert!(control.bam_batches.1.is_empty());
+        receive_results(&server, 2).await;
+        assert_eq!(
+            *server.outbound_results.lock().unwrap(),
+            vec![(2, current_result), (3, fallback_result)],
+        );
+        fallback.shutdown().await;
     }
 
     #[tokio::test]

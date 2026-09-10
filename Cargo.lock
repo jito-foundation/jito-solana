@@ -301,23 +301,18 @@ checksum = "dadd1abed9cc620c70f5ff2f517317426a57f77c405e9de8bf09a2b29e629ad6"
 name = "agave-scheduling-utils"
 version = "4.4.0-alpha.2"
 dependencies = [
- "agave-feature-set",
  "agave-scheduler-bindings",
  "agave-transaction-view",
  "ahash 0.8.12",
+ "jito-scheduler-bindings",
  "libc",
  "nix",
  "rts-alloc",
  "shaq",
- "slotmap",
- "solana-fee",
  "solana-pubkey 4.3.0",
- "solana-runtime-transaction",
- "solana-transaction",
  "solana-transaction-error",
  "tempfile",
  "thiserror 2.0.20",
- "wincode",
 ]
 
 [[package]]
@@ -4111,6 +4106,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-scheduler"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-logger",
+ "agave-scheduler-bindings",
+ "agave-scheduling-utils",
+ "agave-transaction-view",
+ "arc-swap",
+ "crossbeam-channel",
+ "jito-protos",
+ "jito-scheduler-bindings",
+ "rts-alloc",
+ "solana-commitment-config",
+ "solana-core",
+ "solana-hash 4.6.0",
+ "solana-keypair",
+ "solana-local-cluster",
+ "solana-message",
+ "solana-net-utils",
+ "solana-pubkey 4.3.0",
+ "solana-rent",
+ "solana-signature",
+ "solana-signer",
+ "solana-system-transaction",
+ "solana-transaction",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "wincode",
+]
+
+[[package]]
+name = "jito-scheduler-bindings"
+version = "4.4.0-alpha.2"
+dependencies = [
+ "agave-scheduler-bindings",
+ "rts-alloc",
+ "tempfile",
+]
+
+[[package]]
 name = "jito-stake-meta-types"
 version = "0.0.1"
 source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
@@ -6994,15 +7032,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slotmap"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
-dependencies = [
- "version_check",
-]
-
-[[package]]
 name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8156,6 +8185,8 @@ dependencies = [
  "histogram",
  "itertools 0.15.0",
  "jito-protos",
+ "jito-scheduler",
+ "jito-scheduler-bindings",
  "lazy-lru",
  "libc",
  "log",
@@ -9316,6 +9347,8 @@ version = "4.4.0-alpha.2"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
+ "agave-scheduler-bindings",
+ "agave-scheduling-utils",
  "agave-snapshots",
  "agave-votor",
  "agave-votor-messages",
@@ -9326,6 +9359,9 @@ dependencies = [
  "fs_extra",
  "gag",
  "itertools 0.15.0",
+ "jito-protos",
+ "jito-scheduler",
+ "jito-scheduler-bindings",
  "log",
  "rand 0.9.4",
  "rayon",
@@ -9367,6 +9403,7 @@ dependencies = [
  "solana-runtime",
  "solana-sdk-ids",
  "solana-shred-version",
+ "solana-signature",
  "solana-signer",
  "solana-slot-hashes",
  "solana-stake-interface",
@@ -9387,7 +9424,9 @@ dependencies = [
  "strum",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tokio-util 0.7.19",
+ "tonic",
  "wincode",
 ]
 

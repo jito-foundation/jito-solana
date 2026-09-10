@@ -79,6 +79,7 @@ futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
+jito-scheduler-bindings = { workspace = true }
 lazy-lru = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
@@ -205,6 +206,7 @@ agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["
 bencher = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
+jito-scheduler = { workspace = true }
 rcgen = { workspace = true }
 serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["bincode", "wincode"] }

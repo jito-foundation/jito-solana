@@ -25,7 +25,7 @@ use {
         },
     },
     agave_transaction_view::{
-        resolved_transaction_view::ResolvedTransactionView,
+        resolved_transaction_view::ResolvedTransactionView, sanitize::SanitizeConfig,
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
     ahash::HashSet,
@@ -34,8 +34,8 @@ use {
     histogram::Histogram,
     itertools::Itertools,
     jito_protos::proto::bam_types::{
-        DeserializationErrorReason, MultipleAtomicTxnBatch, Packet, SchedulingError,
-        TransactionErrorReason, atomic_txn_batch_result, not_committed::Reason,
+        AtomicTxnBatch, DeserializationErrorReason, MultipleAtomicTxnBatch, Packet,
+        SchedulingError, TransactionErrorReason, atomic_txn_batch_result, not_committed::Reason,
     },
     rayon::prelude::*,
     smallvec::SmallVec,
@@ -153,6 +153,82 @@ impl BamReceiveAndBuffer {
             #[cfg(test)]
             replacement_wait_receiver,
         }
+    }
+
+    /// Apply the same BAM ingress validation before handing bytes to a bindings client.
+    /// This retains the original error category and transaction index. Execution still
+    /// checks the current bank again after the scheduler returns the batch.
+    pub(crate) fn validate_for_bindings(
+        batch: &AtomicTxnBatch,
+        (root_bank, working_bank): (&Bank, &Bank),
+        bank_checks_enabled: bool,
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> Result<bool, Reason> {
+        let current_slot = working_bank.slot();
+        let enable_tx_v1 = working_bank.feature_set.snapshot().enable_tx_v1;
+        let mut prevalidated = Vec::with_capacity(1);
+        Self::prevalidate_batches(
+            &[MultipleAtomicTxnBatch {
+                batches: vec![batch.clone()],
+            }],
+            current_slot,
+            &mut prevalidated,
+        );
+        let (_, revert, seq_id, max_slot) =
+            prevalidated.pop().unwrap().map_err(|(reason, _)| reason)?;
+        let config = solana_runtime_transaction::sanitize_config::sanitize_config();
+        // A batch is bounded by MAX_PACKETS_PER_BUNDLE; reuse verification without
+        // constructing a new Rayon pool on every ingress message.
+        let mut verified: Vec<_> = batch
+            .packets
+            .iter()
+            .map(|packet| Self::verify_packet(packet.data.clone(), enable_tx_v1, &config))
+            .collect();
+        if let Some(index) = verified.iter().position(Result::is_err) {
+            return Err(Reason::DeserializationError(
+                jito_protos::proto::bam_types::DeserializationError {
+                    index: index as u32,
+                    reason: DeserializationErrorReason::SanitizeError as i32,
+                },
+            ));
+        }
+        Self::parse_batch(
+            &mut verified,
+            seq_id,
+            revert,
+            max_slot,
+            (root_bank, working_bank),
+            blacklisted_accounts,
+            bank_checks_enabled,
+            &mut BamReceiveAndBufferMetrics::default(),
+        )
+        .0
+        .map(|parsed| parsed.revert_on_error)
+    }
+
+    fn verify_packet(
+        data: Bytes,
+        enable_tx_v1: bool,
+        sanitize_config: &SanitizeConfig,
+    ) -> PacketVerificationResult {
+        let is_v1 = data.first() == Some(&V1_PREFIX);
+        let packet_data_size_limit = match (is_v1, enable_tx_v1) {
+            (true, false) => return Err(PacketVerificationError::TxV1Disabled),
+            (true, true) => MAX_TRANSACTION_SIZE,
+            (false, _) => PACKET_DATA_SIZE,
+        };
+        if data.len() > packet_data_size_limit {
+            return Err(PacketVerificationError::Oversized);
+        }
+        let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, sanitize_config) else {
+            return Err(PacketVerificationError::Failed);
+        };
+        let (is_simple_vote_transaction, is_valid) =
+            verify_transaction_view(&view, false, enable_tx_v1);
+        if !is_valid {
+            return Err(PacketVerificationError::Failed);
+        }
+        Ok((view, is_simple_vote_transaction))
     }
 
     #[cfg_attr(test, allow(clippy::too_many_arguments))]
@@ -769,28 +845,7 @@ impl BamReceiveAndBuffer {
             packet_data
                 .par_iter_mut()
                 .map(|data| {
-                    let data = core::mem::take(data);
-                    let is_v1 = data.first() == Some(&V1_PREFIX);
-                    let packet_data_size_limit = match (is_v1, enable_tx_v1) {
-                        (true, false) => return Err(PacketVerificationError::TxV1Disabled),
-                        (true, true) => MAX_TRANSACTION_SIZE,
-                        (false, _) => PACKET_DATA_SIZE,
-                    };
-                    if data.len() > packet_data_size_limit {
-                        return Err(PacketVerificationError::Oversized);
-                    }
-                    let Ok(view) =
-                        SanitizedTransactionView::try_new_sanitized(data, &sanitize_config)
-                    else {
-                        return Err(PacketVerificationError::Failed);
-                    };
-                    let (is_simple_vote_transaction, is_valid) =
-                        verify_transaction_view(&view, false, enable_tx_v1);
-                    if !is_valid {
-                        return Err(PacketVerificationError::Failed);
-                    }
-
-                    Ok((view, is_simple_vote_transaction))
+                    Self::verify_packet(core::mem::take(data), enable_tx_v1, &sanitize_config)
                 })
                 .collect_into_vec(verification_results);
         });
@@ -1379,6 +1434,171 @@ pub(super) mod tests {
             })
             .collect();
         (results, stats)
+    }
+
+    #[test]
+    fn test_bindings_validation_preserves_bam_error_category_and_index() {
+        use {
+            solana_compute_budget_interface::ComputeBudgetInstruction,
+            solana_message::AddressLookupTableAccount, solana_transaction_error::TransactionError,
+        };
+        let (forks, payer) = test_bank_forks();
+        let blockhash = forks.read().unwrap().root_bank().last_blockhash();
+        let destination = Pubkey::new_unique();
+        let packet = |transaction: &Transaction| Packet {
+            data: wincode::serialize(transaction).unwrap().into(),
+            meta: None,
+        };
+        let first = packet(&transfer(&payer, &Pubkey::new_unique(), 1, blockhash));
+        let second = packet(&transfer(&payer, &destination, 1, blockhash));
+        let batch = |second: Packet| AtomicTxnBatch {
+            seq_id: 42,
+            max_schedule_slot: Slot::MAX,
+            packets: vec![first.clone(), second],
+        };
+        let txn_error = |index, error| {
+            Reason::TransactionError(jito_protos::proto::bam_types::TransactionError {
+                index,
+                reason: convert_txn_error_to_proto(error) as i32,
+            })
+        };
+        let sanitize_error =
+            Reason::DeserializationError(jito_protos::proto::bam_types::DeserializationError {
+                index: 1,
+                reason: DeserializationErrorReason::SanitizeError as i32,
+            });
+        let duplicate_budget = Transaction::new_signed_with_payer(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_price(1),
+                ComputeBudgetInstruction::set_compute_unit_price(2),
+            ],
+            Some(&payer.pubkey()),
+            &[&payer],
+            blockhash,
+        );
+        let lookup_message = solana_message::v0::Message::try_compile(
+            &payer.pubkey(),
+            &[solana_system_interface::instruction::transfer(
+                &payer.pubkey(),
+                &destination,
+                1,
+            )],
+            &[AddressLookupTableAccount {
+                key: Pubkey::new_unique(),
+                addresses: vec![destination],
+            }],
+            blockhash,
+        )
+        .unwrap();
+        let lookup =
+            VersionedTransaction::try_new(VersionedMessage::V0(lookup_message), &[&payer]).unwrap();
+        let lookup_packet = Packet {
+            data: wincode::serialize(&lookup).unwrap().into(),
+            meta: None,
+        };
+        let mut bad_signature = second.clone();
+        let mut data = bad_signature.data.to_vec();
+        data[1] ^= 1;
+        bad_signature.data = data.into();
+        let cases = [
+            (
+                batch(second),
+                HashSet::from_iter([destination]),
+                txn_error(1, TransactionError::SanitizeFailure),
+            ),
+            (
+                batch(packet(&transfer(
+                    &payer,
+                    &destination,
+                    1,
+                    Hash::new_unique(),
+                ))),
+                HashSet::new(),
+                txn_error(1, TransactionError::BlockhashNotFound),
+            ),
+            (
+                batch(packet(&duplicate_budget)),
+                HashSet::new(),
+                // Duplicate compute-budget instructions fail view sanitization,
+                // before the runtime configuration error conversion is reached.
+                sanitize_error.clone(),
+            ),
+            (batch(lookup_packet), HashSet::new(), sanitize_error.clone()),
+            (batch(bad_signature), HashSet::new(), sanitize_error),
+        ];
+        for (batch, blacklist, expected) in cases {
+            let bindings = BamReceiveAndBuffer::validate_for_bindings(
+                &batch,
+                (
+                    &forks.read().unwrap().root_bank(),
+                    &forks.read().unwrap().working_bank(),
+                ),
+                true,
+                &blacklist,
+            );
+            assert_eq!(bindings, Err(expected.clone()));
+            // Run the original parsing path as a separate observable contract.
+            let mut metrics = BamReceiveAndBufferMetrics::default();
+            let (mut verified, _) = run_batch_verify(vec![batch], 0, &mut metrics);
+            let original = match verified.pop().unwrap() {
+                Err((reason, _)) => Err(reason),
+                Ok((mut packets, revert, seq, max_slot)) => BamReceiveAndBuffer::parse_batch(
+                    &mut packets,
+                    seq,
+                    revert,
+                    max_slot,
+                    (
+                        &forks.read().unwrap().root_bank(),
+                        &forks.read().unwrap().working_bank(),
+                    ),
+                    &blacklist,
+                    true,
+                    &mut metrics,
+                )
+                .0
+                .map(|parsed| parsed.revert_on_error),
+            };
+            assert_eq!(bindings, original);
+        }
+    }
+
+    #[test]
+    fn test_bindings_validation_allows_downstream_fee_payer_funding() {
+        let (forks, payer) = test_bank_forks();
+        let blockhash = forks.read().unwrap().root_bank().last_blockhash();
+        let downstream = Keypair::new();
+        let batch = AtomicTxnBatch {
+            seq_id: 42,
+            max_schedule_slot: Slot::MAX,
+            packets: [
+                transfer(&payer, &downstream.pubkey(), 100_000, blockhash),
+                transfer(&downstream, &Pubkey::new_unique(), 1, blockhash),
+            ]
+            .iter()
+            .map(|transaction| Packet {
+                data: wincode::serialize(transaction).unwrap().into(),
+                meta: Some(jito_protos::proto::bam_types::Meta {
+                    flags: Some(jito_protos::proto::bam_types::PacketFlags {
+                        revert_on_error: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .collect(),
+        };
+        assert_eq!(
+            BamReceiveAndBuffer::validate_for_bindings(
+                &batch,
+                (
+                    &forks.read().unwrap().root_bank(),
+                    &forks.read().unwrap().working_bank()
+                ),
+                true,
+                &HashSet::new()
+            ),
+            Ok(true)
+        );
     }
 
     #[test]

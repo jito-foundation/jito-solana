@@ -18,7 +18,18 @@ use {
 
 pub enum BamOutboundMessage {
     AtomicTxnBatchResult(bam_types::AtomicTxnBatchResult),
+    /// Results are meaningful only within the authenticated stream that supplied the batch.
+    GenerationBoundAtomicTxnBatchResult {
+        generation: u64,
+        result: bam_types::AtomicTxnBatchResult,
+    },
     LeaderState(bam_types::LeaderState),
+}
+
+/// Tagged at the network connection, before entering an asynchronous queue.
+pub struct GenerationBoundBamBatch {
+    pub generation: u64,
+    pub batches: bam_types::MultipleAtomicTxnBatch,
 }
 
 #[repr(u8)]

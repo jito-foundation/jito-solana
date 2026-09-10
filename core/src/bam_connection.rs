@@ -3,7 +3,8 @@
 
 use {
     crate::{
-        bam_dependencies::{BamOutboundMessage, v0_to_versioned_proto},
+        bam_dependencies::{BamOutboundMessage, GenerationBoundBamBatch, v0_to_versioned_proto},
+        jito_scheduler::JitoSchedulerControl,
         tonic_endpoint,
     },
     jito_protos::proto::{
@@ -14,8 +15,8 @@ use {
             scheduler_response::VersionedMsg, scheduler_response_v0::Resp,
         },
         bam_types::{
-            AuthProof, MultipleAtomicTxnBatch, MultipleAtomicTxnBatchResult, Pong,
-            ValidatorHeartBeat,
+            AtomicTxnBatchResult, AuthProof, LeaderState, MultipleAtomicTxnBatch,
+            MultipleAtomicTxnBatchResult, Pong, ValidatorHeartBeat,
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -23,7 +24,10 @@ use {
     std::{
         sync::{
             Arc, Mutex,
-            atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+            atomic::{
+                AtomicBool, AtomicU64,
+                Ordering::{Acquire, Relaxed},
+            },
         },
         time::{Duration, Instant, SystemTime},
     },
@@ -43,6 +47,27 @@ pub struct BamConnection {
     is_healthy: Arc<AtomicBool>,
     url: String,
     connection_exit: Arc<AtomicBool>,
+}
+
+enum ConnectionOutbound {
+    AtomicTxnBatchResult(AtomicTxnBatchResult),
+    LeaderState(LeaderState),
+}
+
+impl ConnectionOutbound {
+    fn for_generation(outbound: BamOutboundMessage, generation: Option<u64>) -> Option<Self> {
+        match outbound {
+            BamOutboundMessage::LeaderState(state) => Some(Self::LeaderState(state)),
+            BamOutboundMessage::AtomicTxnBatchResult(result) if generation.is_none() => {
+                Some(Self::AtomicTxnBatchResult(result))
+            }
+            BamOutboundMessage::GenerationBoundAtomicTxnBatchResult {
+                generation: result_generation,
+                result,
+            } if generation == Some(result_generation) => Some(Self::AtomicTxnBatchResult(result)),
+            _ => None,
+        }
+    }
 }
 
 const AUTH_LABEL: &[u8] = b"X_OFF_CHAIN_JITO_BAM_V1\0";
@@ -68,6 +93,25 @@ impl BamConnection {
         batch_sender: crossbeam_channel::Sender<MultipleAtomicTxnBatch>,
         outbound_receiver: &mut Option<mpsc::Receiver<BamOutboundMessage>>,
     ) -> Result<Self, TryInitError> {
+        Self::try_init_with_jito(url, cluster_info, batch_sender, outbound_receiver, None).await
+    }
+
+    /// Initialize a stream with an immutable generation and separate tagged ingress.
+    pub async fn try_init_with_jito(
+        url: String,
+        cluster_info: Arc<ClusterInfo>,
+        batch_sender: crossbeam_channel::Sender<MultipleAtomicTxnBatch>,
+        outbound_receiver: &mut Option<mpsc::Receiver<BamOutboundMessage>>,
+        jito_control: Option<Arc<JitoSchedulerControl>>,
+    ) -> Result<Self, TryInitError> {
+        // Routing belongs to the authenticated stream. Ownership transitions
+        // request a reconnect; never change an existing stream's ingress target.
+        let jito = jito_control
+            .filter(|control| control.active.load(Acquire))
+            .map(|control| {
+                let generation = control.bam_generation.load(Acquire);
+                (generation, control)
+            });
         // Create connection and inbound and outbound streams
         let backend_endpoint = Self::endpoint_from_url(&url)?
             .connect_timeout(CONNECTION_TIMEOUT)
@@ -110,6 +154,7 @@ impl BamConnection {
             cluster_info,
             is_healthy.clone(),
             outbound_receiver,
+            jito,
         ));
 
         Ok(Self {
@@ -134,6 +179,7 @@ impl BamConnection {
         cluster_info: Arc<ClusterInfo>,
         is_healthy: Arc<AtomicBool>,
         mut outbound_receiver: mpsc::Receiver<BamOutboundMessage>,
+        jito: Option<(u64, Arc<JitoSchedulerControl>)>,
     ) -> mpsc::Receiver<BamOutboundMessage> {
         let mut metrics = BamConnectionMetrics::default();
         let mut last_heartbeat = None;
@@ -257,8 +303,18 @@ impl BamConnection {
                         SchedulerResponseV0 { resp: Some(Resp::MultipleAtomicTxnBatch(batches)), .. } => {
                             let num_batches = batches.batches.len() as u64;
                             metrics.bundle_received += num_batches;
-                            if num_batches > 0 && batch_sender.try_send(batches).is_err() {
-                                metrics.bundle_forward_to_scheduler_fail += num_batches;
+                            if num_batches > 0 {
+                                let failed = if let Some((generation, control)) = &jito {
+                                    control.bam_batches.0.try_send(GenerationBoundBamBatch {
+                                        generation: *generation,
+                                        batches,
+                                    }).is_err()
+                                } else {
+                                    batch_sender.try_send(batches).is_err()
+                                };
+                                if failed {
+                                    metrics.bundle_forward_to_scheduler_fail += num_batches;
+                                }
                             }
                         }
                         SchedulerResponseV0 { resp: Some(Resp::Ping(ping)), .. } => {
@@ -279,23 +335,28 @@ impl BamConnection {
                         error!("BAM outbound channel closed");
                         break;
                     };
+                    let generation = jito.as_ref().map(|(generation, _)| *generation);
+                    let Some(outbound) = ConnectionOutbound::for_generation(outbound, generation) else {
+                        continue;
+                    };
                     let leader_state_to_send = match outbound {
-                        BamOutboundMessage::LeaderState(leader_state) => Some(leader_state),
-                        BamOutboundMessage::AtomicTxnBatchResult(result) => {
+                        ConnectionOutbound::LeaderState(leader_state) => Some(leader_state),
+                        ConnectionOutbound::AtomicTxnBatchResult(result) => {
                             let mut results = Vec::with_capacity(MAX_OUTBOUND_RESULT_BATCH_SIZE);
                             results.push(result);
                             let mut leader_state_to_send = None;
 
-                            while results.len() < MAX_OUTBOUND_RESULT_BATCH_SIZE {
-                                match outbound_receiver.try_recv() {
-                                    Ok(BamOutboundMessage::AtomicTxnBatchResult(result)) => {
+                            for _ in 1..MAX_OUTBOUND_RESULT_BATCH_SIZE {
+                                let Ok(outbound) = outbound_receiver.try_recv() else { break; };
+                                match ConnectionOutbound::for_generation(outbound, generation) {
+                                    Some(ConnectionOutbound::AtomicTxnBatchResult(result)) => {
                                         results.push(result);
                                     }
-                                    Ok(BamOutboundMessage::LeaderState(leader_state)) => {
+                                    Some(ConnectionOutbound::LeaderState(leader_state)) => {
                                         leader_state_to_send = Some(leader_state);
                                         break;
                                     }
-                                    Err(_) => break,
+                                    None => {}
                                 }
                             }
 

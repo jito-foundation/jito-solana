@@ -876,6 +876,15 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 .help("Enables external processes to connect and manage block production"),
         )
         .arg(
+            Arg::with_name("jito_scheduler_bindings")
+                .long("jito-scheduler-bindings")
+                .takes_value(false)
+                .conflicts_with("enable_scheduler_bindings")
+                .help(
+                    "Enable the Jito external scheduler for BAM, bundles, transactions and votes",
+                ),
+        )
+        .arg(
             Arg::with_name("alpenglow")
                 .long("alpenglow")
                 .takes_value(false)

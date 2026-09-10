@@ -49,7 +49,7 @@ use {
         bank_forks::BankForks,
         genesis_utils::{
             GenesisConfigInfo, ValidatorVoteKeypairs,
-            create_genesis_config_with_vote_accounts_and_cluster_type,
+            create_genesis_config_with_vote_accounts_and_cluster_type_and_rent,
         },
     },
     solana_shred_version::compute_shred_version,
@@ -83,6 +83,25 @@ use {
 pub const DEFAULT_MINT_LAMPORTS: u64 = 10_000_000 * LAMPORTS_PER_SOL;
 const DUMMY_SNAPSHOT_CONFIG_PATH_MARKER: &str = "dummy";
 
+/// Source-location ledger names exceed Unix socket pathname limits. External scheduler tests
+/// need an actual short ledger path because the validator binds its IPC socket inside it.
+fn create_jito_scheduler_ledger(genesis_config: &GenesisConfig) -> (PathBuf, solana_hash::Hash) {
+    let directory = tempfile::Builder::new()
+        .prefix("jito-ledger-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let blockhash = solana_ledger::blockstore::create_new_ledger(
+        directory.path(),
+        genesis_config,
+        solana_ledger::macro_reexports::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
+        solana_ledger::blockstore_options::LedgerColumnOptions::default(),
+    )
+    .unwrap();
+    // Match the normal fixture lifecycle: LocalCluster stops validators on Drop and keeps
+    // their ledger directories available for inspection and restart tests.
+    (directory.keep(), blockhash)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlpenglowMode {
     /// No alpenglow
@@ -115,6 +134,8 @@ pub struct ClusterConfig {
     pub skip_warmup_slots: bool,
     pub cluster_type: ClusterType,
     pub poh_config: PohConfig,
+    /// Rent used to construct genesis vote/stake accounts and initialize the bank.
+    pub rent: Rent,
     pub additional_accounts: Vec<(Pubkey, AccountSharedData)>,
     pub vote_use_quic: bool,
 }
@@ -151,6 +172,7 @@ impl Default for ClusterConfig {
             stakers_slot_offset: DEFAULT_DEV_SLOTS_PER_EPOCH,
             cluster_type: ClusterType::Development,
             poh_config: PohConfig::default(),
+            rent: Rent::free(),
             skip_warmup_slots: false,
             additional_accounts: vec![],
             vote_use_quic: DEFAULT_VOTE_USE_QUIC,
@@ -312,13 +334,14 @@ impl LocalCluster {
             mut genesis_config,
             mint_keypair,
             ..
-        } = create_genesis_config_with_vote_accounts_and_cluster_type(
+        } = create_genesis_config_with_vote_accounts_and_cluster_type_and_rent(
             config.mint_lamports,
             &keys_in_genesis,
             stakes_in_genesis,
             config.cluster_type,
             &feature_set,
             matches!(alpenglow_mode, AlpenglowMode::Enabled), /* is_alpenglow */
+            config.rent.clone(),
         );
 
         // In-genesis validators only receive the generic validator account funding from the
@@ -366,7 +389,11 @@ impl LocalCluster {
         genesis_config.poh_config = config.poh_config.clone();
 
         let mut leader_config = safe_clone_config(&config.validator_configs[0]);
-        let (leader_ledger_path, _blockhash) = create_new_tmp_ledger!(&genesis_config);
+        let (leader_ledger_path, _blockhash) = if leader_config.jito_scheduler_bindings {
+            create_jito_scheduler_ledger(&genesis_config)
+        } else {
+            create_new_tmp_ledger!(&genesis_config)
+        };
 
         leader_config.rpc_addrs = Some((
             leader_node.info.rpc().unwrap(),
@@ -613,7 +640,11 @@ impl LocalCluster {
         let validator_pubkey = validator_keypair.pubkey();
         let validator_node = Node::new_localhost_with_pubkey(&validator_pubkey);
         let contact_info = validator_node.info.clone();
-        let (ledger_path, _blockhash) = create_new_tmp_ledger!(&self.genesis_config);
+        let (ledger_path, _blockhash) = if validator_config.jito_scheduler_bindings {
+            create_jito_scheduler_ledger(&self.genesis_config)
+        } else {
+            create_new_tmp_ledger!(&self.genesis_config)
+        };
 
         // Give the validator some lamports to setup vote accounts
         if is_listener {
@@ -775,7 +806,11 @@ impl LocalCluster {
 
                 let validator_node = Node::new_localhost_with_pubkey(&validator_keypair.pubkey());
                 let contact_info = validator_node.info.clone();
-                let (ledger_path, _blockhash) = create_new_tmp_ledger!(&genesis_config);
+                let (ledger_path, _blockhash) = if validator_config.jito_scheduler_bindings {
+                    create_jito_scheduler_ledger(&genesis_config)
+                } else {
+                    create_new_tmp_ledger!(&genesis_config)
+                };
 
                 let mut config = validator_config;
                 config.rpc_addrs = Some((

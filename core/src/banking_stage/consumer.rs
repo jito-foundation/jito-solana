@@ -549,7 +549,7 @@ impl Consumer {
             self.transaction_recorder.record_transactions(
                 bank.bank_id(),
                 processed_transactions,
-                !revert_on_error,
+                !(revert_on_error || flags.all_or_nothing),
             )
         }));
         execute_and_commit_timings.record_us = record_us;

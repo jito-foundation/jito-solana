@@ -119,6 +119,9 @@ impl AncestorRequestType {
 }
 
 pub struct AncestorDuplicateSlotToRepair {
+    // Original slot whose ancestry was sampled. It may still need another
+    // request if the selected ancestor was repaired before replay gets this reply.
+    pub requested_slot: Slot,
     // Slot that `ancestor_hashes_service` found that needs to be repaired
     pub slot_to_repair: (Slot, Hash),
     // Condition that initiated this request
@@ -138,13 +141,14 @@ pub struct AncestorRequestDecision {
 impl AncestorRequestDecision {
     pub fn slot_to_repair(self) -> Option<AncestorDuplicateSlotToRepair> {
         let Self {
+            slot,
             request_type,
             mut decision,
-            ..
         } = self;
         decision
             .repair_status_mut()
             .map(|status| AncestorDuplicateSlotToRepair {
+                requested_slot: slot,
                 slot_to_repair: std::mem::take(&mut status.correct_ancestor_to_repair),
                 request_type,
             })

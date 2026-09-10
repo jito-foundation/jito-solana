@@ -962,7 +962,9 @@ pub fn execute(
             ),
         },
         enable_block_production_forwarding: staked_nodes_overrides_path.is_some(),
-        enable_scheduler_bindings: matches.is_present("enable_scheduler_bindings"),
+        enable_scheduler_bindings: matches.is_present("enable_scheduler_bindings")
+            || matches.is_present("jito_scheduler_bindings"),
+        jito_scheduler_bindings: matches.is_present("jito_scheduler_bindings"),
         banking_trace_dir_byte_limit: value_t_or_exit!(
             matches,
             "banking_trace_dir_byte_limit",
@@ -1052,6 +1054,7 @@ pub fn execute(
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
             enable_scheduler_bindings: validator_config.enable_scheduler_bindings,
+            jito_scheduler_bindings: validator_config.jito_scheduler_bindings,
             bam_url: validator_config.bam_url.clone(),
         },
     );
