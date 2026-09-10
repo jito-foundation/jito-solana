@@ -1046,6 +1046,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    admission: None,
                 },
                 retryable_indexes: vec![],
                 extra_info: None,
@@ -1456,6 +1457,7 @@ mod tests {
             finished_work_receiver,
             response_sender,
             shared_leader_state.clone(),
+            None,
         );
 
         let mut controller = SchedulerController::new(
