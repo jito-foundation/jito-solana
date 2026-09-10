@@ -1840,7 +1840,6 @@ fn main() {
                             process_options,
                             None,
                         );
-
                     println!(
                         "{}",
                         compute_shred_version(
@@ -2803,6 +2802,7 @@ fn main() {
                             process_options,
                             None,
                         );
+
                     let bank_forks = bank_forks.read().unwrap();
                     let slot = bank_forks.working_bank().slot();
                     let bank = bank_forks.get(slot).unwrap_or_else(|| {
