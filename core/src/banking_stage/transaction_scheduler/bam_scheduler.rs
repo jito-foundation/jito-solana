@@ -995,7 +995,7 @@ mod tests {
             )
             .unwrap();
 
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         assert_eq!(container.queue_size(), 2);
         assert!(test.consume_work_receivers[0].try_recv().is_err());
         assert!(test.response_receiver.try_recv().is_err());
@@ -1004,7 +1004,7 @@ mod tests {
         shared_leader_state.set_bank_replacement();
         assert_eq!(
             test.scheduler
-                .schedule(&mut container, 0, 0)
+                .schedule(&mut container, 0)
                 .unwrap()
                 .num_scheduled,
             0
@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(test.scheduler.slot, Some(bank.slot()));
         assert_eq!(container.queue_size(), 2);
 
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         assert_eq!(container.queue_size(), 0);
         let atomic_work = test.consume_work_receivers[0].try_recv().unwrap();
         let non_atomic_work = test.consume_work_receivers[0].try_recv().unwrap();
@@ -1072,7 +1072,7 @@ mod tests {
         );
         assert_eq!(
             test.scheduler
-                .schedule(&mut container, 0, 0)
+                .schedule(&mut container, 0)
                 .unwrap()
                 .num_scheduled,
             1
@@ -1081,8 +1081,8 @@ mod tests {
             test.consume_work_receivers[0]
                 .try_recv()
                 .unwrap()
-                .target_slot,
-            bank.slot()
+                .max_schedule_slot,
+            Some(bank.slot())
         );
         assert!(test.response_receiver.try_recv().is_err());
     }

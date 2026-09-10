@@ -2005,17 +2005,10 @@ mod tests {
         );
         let optimistic_leader_state = shared_leader_state.load();
 
-<<<<<<< HEAD
-        // Both atomic transactions are valid on the optimistic fork, while the second transaction's
-        // blockhash exists only there. The scheduler must hold them until ParentReady resolves the
-        // fork.
-=======
-        // Both batch types are valid on the optimistic fork: they reference its
-        // unique recent blockhash, which the replacement fork does not know. (Account state
-        // cannot distinguish the forks in the same-parent-slot variant because same-slot
-        // banks share accounts-db storage.) The scheduler must hold them until ParentReady
-        // resolves the fork.
->>>>>>> 8a55bca55b (MEV-12682: gate BAM work until leader bank resolution (#1617))
+        // Both batch types are valid on the optimistic fork. The atomic batch's second
+        // transaction and the ordinary batch use its unique blockhash, so the replacement
+        // must reject both without committing the valid prefix. Hold both batches until
+        // ParentReady resolves the fork.
         let first_recipient = Pubkey::new_unique();
         let recent_blockhash = root_bank.last_blockhash();
         let runtime_transfer = |payer, recipient, recent_blockhash| {
@@ -2044,7 +2037,11 @@ mod tests {
         container
             .insert_new_batch(
                 [(
-                    runtime_transfer(&ordinary_payer, Pubkey::new_unique(), optimistic_blockhash),
+                    runtime_transfer(
+                        &ordinary_payer,
+                        Pubkey::new_unique(),
+                        optimistic_only_blockhash,
+                    ),
                     MaxAge::MAX,
                 )]
                 .into_iter()
@@ -2069,15 +2066,9 @@ mod tests {
         bam_scheduler
             .receive_completed(&mut container, &optimistic_decision)
             .unwrap();
-<<<<<<< HEAD
         bam_scheduler.schedule(&mut container, u64::MAX).unwrap();
-        assert_eq!(container.queue_size(), 1);
-        assert!(!consume_work_receiver.try_recv().unwrap().revert_on_error);
-=======
-        bam_scheduler.schedule(&mut container, 0, u64::MAX).unwrap();
         assert_eq!(container.queue_size(), 2);
         assert!(consume_work_receiver.try_recv().is_err());
->>>>>>> 8a55bca55b (MEV-12682: gate BAM work until leader bank resolution (#1617))
         assert!(response_receiver.try_recv().is_err());
 
         let accumulated_tx = versioned_transfer(1);
