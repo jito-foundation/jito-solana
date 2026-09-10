@@ -25,9 +25,10 @@ not compete with BAM. Ordered batches use their complete account sets to prevent
 conflicting batches from overtaking one another.
 
 Atomic batches preserve all-or-nothing execution and rollback behavior. Execution
-requests identify both slot and BankId. Atomic work waits until ParentReady;
-existing non-atomic BAM behavior on a provisional bank is preserved. The validator
-keeps tip-program upkeep under its existing signing and account-lock controls.
+requests identify both slot and BankId. All BAM work waits until ParentReady,
+including non-atomic batches. Checks from a replaced bank are retried against the
+resolved bank. The validator keeps tip-program upkeep under its existing signing
+and account-lock controls.
 
 BAM ingress and replies carry a connection generation. An old generation cannot
 be reused after a reconnect. Switching between internal and external scheduling
