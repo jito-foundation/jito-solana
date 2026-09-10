@@ -39,6 +39,7 @@ use {
     solana_transaction::sanitized::MessageHash,
     solana_transaction_error::TransactionError,
     std::{
+        collections::VecDeque,
         sync::{
             Arc, RwLock,
             atomic::{AtomicBool, Ordering},
@@ -190,12 +191,13 @@ impl VoteWorker {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
     ) {
+        let restored_vote_count = self.storage.restore_taken_votes_for_bank(bank);
         if self.storage.is_empty() {
             return;
         }
 
         let mut consumed_buffered_packets_count = 0;
-        let mut rebuffered_packet_count = 0;
+        let mut rebuffered_packet_count = restored_vote_count;
         let mut proc_start = Measure::start("consume_buffered_process");
         let num_packets_to_process = self.storage.len();
 
@@ -244,14 +246,21 @@ impl VoteWorker {
         // Based on the stake distribution present in the supplied bank, drain the unprocessed votes
         // from each validator using a weighted random ordering. Votes from validators with
         // 0 stake are ignored.
-        let mut all_vote_packets = self.storage.drain_unprocessed(bank).into_iter();
+        let (all_vote_packets, deferred_restore_count) =
+            self.storage.drain_unprocessed_with_deferred_restores(bank);
+        *rebuffered_packet_count += deferred_restore_count;
+        let mut all_vote_packets = VecDeque::from(all_vote_packets);
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
         // Process one vote at a time to avoid over-reserving block CUs during packing.
         // This also keeps each recorded vote batch small, which favors entry/FEC-set packing.
-        while let Some(packet) = all_vote_packets.next() {
+        while let Some((vote_pubkey, packet)) = all_vote_packets.pop_front() {
             let Some(sanitized_transaction) =
                 consume_scan_should_process_packet(bank, packet, &mut error_counters)
             else {
+                if let Some(retained_vote) = self.storage.take_deferred_retained_vote(vote_pubkey) {
+                    *rebuffered_packet_count += 1;
+                    all_vote_packets.push_front(retained_vote);
+                }
                 continue;
             };
 
@@ -267,27 +276,49 @@ impl VoteWorker {
 
             let ProcessTransactionsSummary {
                 reached_max_poh_height,
+                transaction_counts,
                 retryable_transaction_indexes: retryable_vote_indices,
                 ..
             } = process_transactions_summary;
 
             let retryable_vote_count = retryable_vote_indices.len();
+            let vote_succeeded = transaction_counts
+                .committed_transactions_with_successful_result_count
+                .0
+                == 1
+                || (retryable_vote_count == 0
+                    && bank.get_signature_status(&sanitized_transaction.signatures()[0])
+                        == Some(Ok(())));
             *consumed_buffered_packets_count += usize::from(retryable_vote_count == 0);
             *rebuffered_packet_count += retryable_vote_count;
 
             slot_metrics_tracker.increment_retryable_packets_count(retryable_vote_count as u64);
 
-            if retryable_vote_count != 0 {
+            if vote_succeeded {
+                self.storage.retain_processed_vote(
+                    vote_pubkey,
+                    sanitized_transaction
+                        .into_inner_transaction()
+                        .into_view()
+                        .into_inner_data(),
+                );
+            } else if retryable_vote_count != 0 {
                 // vote is processed one at a time, so the only valid retryable index is 0
                 assert_eq!(retryable_vote_indices.as_slice(), &[0]);
 
                 self.storage.reinsert_packets(std::iter::once(
                     sanitized_transaction.into_inner_transaction().into_view(),
                 ));
+            } else if let Some(retained_vote) =
+                self.storage.take_deferred_retained_vote(vote_pubkey)
+            {
+                *rebuffered_packet_count += 1;
+                all_vote_packets.push_front(retained_vote);
             }
 
             if has_reached_end_of_slot(reached_max_poh_height, bank) {
-                self.storage.reinsert_packets(all_vote_packets);
+                self.storage
+                    .reinsert_packets(all_vote_packets.into_iter().map(|(_, vote)| vote));
                 return true;
             }
         }
@@ -512,12 +543,21 @@ mod tests {
         crate::banking_stage::{
             committer::Committer,
             tests::{create_slow_genesis_config, sanitize_transactions},
+            vote_storage::tests::to_sanitized_view,
         },
-        crossbeam_channel::bounded,
+        crossbeam_channel::{bounded, never},
+        solana_hash::Hash,
+        solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::GenesisConfigInfo,
-        solana_poh::record_channels::record_channels,
+        solana_perf::packet::BytesPacket,
+        solana_poh::{
+            poh_recorder::{LeaderState, SharedLeaderState},
+            record_channels::record_channels,
+        },
         solana_svm::account_loader::CheckedTransactionDetails,
         solana_system_transaction as system_transaction,
+        solana_vote::vote_transaction::new_tower_sync_transaction,
+        solana_vote_program::vote_state::TowerSync,
     };
 
     #[test]
@@ -632,5 +672,98 @@ mod tests {
 
         // Assert - We have not yet reached max_poh_height.
         assert!(!summary.reached_max_poh_height);
+    }
+
+    #[test]
+    fn test_retained_vote_after_direct_bank_replacement() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            voting_keypair,
+            ..
+        } = create_slow_genesis_config(10_000);
+        let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let bank_a = Arc::new(Bank::new_from_parent(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            1,
+        ));
+        let bank_b = Arc::new(Bank::new_from_parent(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            1,
+        ));
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(bank_a.bank_id());
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank_a.clone()),
+            bank_a.tick_height(),
+            None,
+            None,
+        )));
+        let mut worker = VoteWorker::new(
+            Arc::new(AtomicBool::new(false)),
+            CancellationToken::new(),
+            DecisionMaker::new(shared_leader_state.clone()),
+            VotePacketReceiver::new(never(), Arc::default()),
+            VotePacketReceiver::new(never(), Arc::default()),
+            VoteStorage::new(&bank_a),
+            bank_forks,
+            Consumer::new(
+                Committer::new(None, bounded(1).0, None),
+                solana_poh::transaction_recorder::TransactionRecorder::new(record_sender),
+                None,
+            ),
+            BundleAccountLocker::default(),
+        );
+        let mut tower_sync = TowerSync::from(vec![(0, 1)]);
+        tower_sync.hash = root_bank.hash();
+        let vote_a = new_tower_sync_transaction(
+            tower_sync.clone(),
+            root_bank.last_blockhash(),
+            &mint_keypair,
+            &voting_keypair,
+            &voting_keypair,
+            None,
+        );
+        let vote_a_signature = vote_a.signatures[0];
+        worker.storage.insert_packet(
+            VoteSource::Tpu,
+            to_sanitized_view(BytesPacket::from_data(vote_a).unwrap()),
+        );
+        let mut banking_stage_stats = BankingStageStats::new();
+        let mut slot_metrics_tracker = LeaderSlotMetricsTracker::default();
+
+        worker.process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker);
+        assert_eq!(record_receiver.drain().count(), 1);
+
+        tower_sync.timestamp = Some(1);
+        let vote_b = new_tower_sync_transaction(
+            tower_sync,
+            Hash::new_unique(),
+            &mint_keypair,
+            &voting_keypair,
+            &voting_keypair,
+            None,
+        );
+        worker.storage.insert_packet(
+            VoteSource::Tpu,
+            to_sanitized_view(BytesPacket::from_data(vote_b).unwrap()),
+        );
+
+        // Mirror BankForks::clear_bank() for the replaced bank.
+        root_bank.remove_unrooted_slots(&[(bank_a.slot(), bank_a.bank_id())]);
+        root_bank.clear_slot_signatures(bank_a.slot());
+        record_receiver.restart(bank_b.bank_id());
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank_b.clone()),
+            bank_b.tick_height(),
+            None,
+            None,
+        )));
+        worker.process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker);
+
+        assert_eq!(bank_b.get_signature_status(&vote_a_signature), Some(Ok(())));
     }
 }

@@ -447,7 +447,13 @@ impl Scheduler {
             .jobs
             .iter()
             .filter(|(_, job)| {
-                job.state == State::PendingCheck && job.check_after <= Instant::now()
+                job.state == State::PendingCheck
+                    && job.check_after <= Instant::now()
+                    && (job.ingress.source != SOURCE_BAM
+                        || self.progress.as_ref().is_some_and(|progress| {
+                            progress.progress.leader_state == LEADER_READY
+                                && progress.atomic_batches_enabled != 0
+                        }))
             })
             .map(|(key, job)| (*key, job.order))
             .collect();
@@ -581,6 +587,19 @@ impl Scheduler {
         }
         if self.jobs[&key].cancelled {
             return self.reject(key, reason::BANK_NOT_AVAILABLE);
+        }
+        // A completed check may describe the bank that was just replaced. Its
+        // negative results are stale too; retain BAM work for the resolved bank.
+        let job = self.jobs.get_mut(&key).unwrap();
+        if job.ingress.source == SOURCE_BAM
+            && self.progress.as_ref().is_none_or(|progress| {
+                progress.bank_id != job.checked_bank
+                    || progress.progress.leader_state != LEADER_READY
+                    || progress.atomic_batches_enabled == 0
+            })
+        {
+            job.state = State::PendingCheck;
+            return Ok(());
         }
         if errors.iter().any(|error| *error != reason::NONE) {
             // All client-created TPU jobs contain one transaction; Jito ingress is a logical group.
@@ -767,7 +786,7 @@ impl Scheduler {
                     }
                     continue;
                 }
-                if (job.atomic() && !atomic_ready)
+                if ((job.atomic() || job.ingress.source == SOURCE_BAM) && !atomic_ready)
                     || (job.ingress.source == SOURCE_BAM && !bam)
                     || (job.ingress.source == SOURCE_LEGACY_BUNDLE && bam)
                     || (!job.is_vote && !job.return_to_validator && bam)

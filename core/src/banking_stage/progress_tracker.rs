@@ -933,7 +933,7 @@ mod tests {
                                     deadline.saturating_duration_since(Instant::now()),
                                 );
                             }
-                            eprintln!(
+                            log::debug!(
                                 "deadline race witness: empty_read={:?} publication={:?} \
                                  deadline={:?} reader_resumed={:?}",
                                 empty_read_at.duration_since(origin),
@@ -953,7 +953,7 @@ mod tests {
                         .expect("timely message must remain queued");
                     assert_eq!(queued.bam_generation, expected.bam_generation);
                     assert_eq!(queued.progress, expected.progress);
-                    eprintln!("deadline race witness: timely message remained in the real queue");
+                    log::debug!("deadline race witness: timely message remained in the real queue");
                     std::panic::resume_unwind(panic);
                 }
             }

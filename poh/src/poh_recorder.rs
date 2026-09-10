@@ -207,7 +207,7 @@ pub struct PohRecorder {
     tick_cache: Vec<(Entry, u64)>, // cache of entry and its tick_height
     /// This stores the current working bank + scheduler and other metadata,
     /// if they exist.
-    /// This field MUST be kept consistent with the `shared_leader_state` field.
+    /// This field MUST match `shared_leader_state` outside bank replacement.
     working_bank: Option<WorkingBank>,
     shared_leader_state: SharedLeaderState,
     working_bank_sender: Sender<WorkingBankEntryOrMarker>,
@@ -308,6 +308,25 @@ impl PohRecorder {
 
     // synchronize PoH with a bank
     pub fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
+        self.reset_internal(reset_bank, next_leader_slot, None);
+    }
+
+    /// Reset PoH while preserving the slot of a bank being replaced.
+    pub fn reset_for_bank_replacement(
+        &mut self,
+        reset_bank: Arc<Bank>,
+        next_leader_slot: Option<(Slot, Slot)>,
+    ) {
+        let bank_slot = self.shared_leader_state.load().bank_slot();
+        self.reset_internal(reset_bank, next_leader_slot, bank_slot);
+    }
+
+    fn reset_internal(
+        &mut self,
+        reset_bank: Arc<Bank>,
+        next_leader_slot: Option<(Slot, Slot)>,
+        bank_slot: Option<Slot>,
+    ) {
         self.clear_bank(false);
         let tick_height = self.reset_poh(reset_bank, true);
 
@@ -318,12 +337,15 @@ impl PohRecorder {
         // Above call to `clear_bank` did not set the shared state,
         // nor did `reset_poh` update the tick_height.
         // Do the atomic swap of state here to reflect the reset.
-        self.shared_leader_state.store(Arc::new(LeaderState::new(
+        let mut leader_state = LeaderState::new_with_atomic_batches_enabled(
             None,
             tick_height,
             leader_first_tick_height,
             next_leader_slot,
-        )));
+            bank_slot.is_none(),
+        );
+        leader_state.bank_slot = bank_slot;
+        self.shared_leader_state.store(Arc::new(leader_state));
 
         self.leader_last_tick_height = leader_last_tick_height;
     }
@@ -560,6 +582,10 @@ impl PohRecorder {
         }
 
         self.notify_replay_wakeup();
+    }
+
+    pub fn set_bank_replacement(&mut self) {
+        self.shared_leader_state.set_bank_replacement();
     }
 
     /// Returns tick_height - does not update the internal state for tick_height.
@@ -1192,13 +1218,12 @@ impl SharedLeaderState {
         leader_first_tick_height: Option<u64>,
         next_leader_slot_range: Option<(Slot, Slot)>,
     ) -> Self {
-        let inner = LeaderState {
-            working_bank: None,
-            atomic_batches_enabled: AtomicBool::new(true),
-            tick_height: AtomicU64::new(tick_height),
+        let inner = LeaderState::new(
+            None,
+            tick_height,
             leader_first_tick_height,
             next_leader_slot_range,
-        };
+        );
         Self(Arc::new(ArcSwap::from_pointee(inner)))
     }
 
@@ -1211,6 +1236,20 @@ impl SharedLeaderState {
         self.0.store(state)
     }
 
+    /// Marks a same-slot bank replacement.
+    #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
+    fn set_bank_replacement(&self) {
+        let state = self.load();
+        self.0.store(Arc::new(LeaderState {
+            working_bank: None,
+            bank_slot: state.bank_slot(),
+            atomic_batches_enabled: AtomicBool::new(false),
+            tick_height: AtomicU64::new(state.tick_height()),
+            leader_first_tick_height: state.leader_first_tick_height(),
+            next_leader_slot_range: state.next_leader_slot_range(),
+        }));
+    }
+
     #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
     fn increment_tick_height(&self) {
         let inner = self.0.load();
@@ -1220,6 +1259,7 @@ impl SharedLeaderState {
 
 pub struct LeaderState {
     working_bank: Option<Arc<Bank>>,
+    bank_slot: Option<Slot>,
     atomic_batches_enabled: AtomicBool,
     tick_height: AtomicU64,
     leader_first_tick_height: Option<u64>,
@@ -1252,6 +1292,7 @@ impl LeaderState {
         atomic_batches_enabled: bool,
     ) -> Self {
         Self {
+            bank_slot: working_bank.as_ref().map(|bank| bank.slot()),
             working_bank,
             atomic_batches_enabled: AtomicBool::new(atomic_batches_enabled),
             tick_height: AtomicU64::new(tick_height),
@@ -1262,6 +1303,10 @@ impl LeaderState {
 
     pub fn working_bank(&self) -> Option<&Arc<Bank>> {
         self.working_bank.as_ref()
+    }
+
+    pub fn bank_slot(&self) -> Option<Slot> {
+        self.bank_slot
     }
 
     pub fn atomic_batches_enabled(&self) -> bool {
@@ -2098,8 +2143,33 @@ mod tests {
 
         poh_recorder.set_bank_for_test(bank.clone());
         assert_eq!(bank.slot(), 0);
+        let shared_leader_state = poh_recorder.shared_leader_state();
+        let old_state = shared_leader_state.load();
+        poh_recorder.set_bank_replacement();
+        assert!(Arc::ptr_eq(old_state.working_bank().unwrap(), &bank));
+        assert!(old_state.atomic_batches_enabled());
+        let replacement_state = shared_leader_state.load();
+        assert!(replacement_state.working_bank().is_none());
+        assert_eq!(replacement_state.bank_slot(), Some(0));
+        assert!(!replacement_state.atomic_batches_enabled());
+        assert_eq!(replacement_state.tick_height(), old_state.tick_height());
+        assert_eq!(
+            replacement_state.leader_first_tick_height(),
+            old_state.leader_first_tick_height()
+        );
+        assert_eq!(
+            replacement_state.next_leader_slot_range(),
+            old_state.next_leader_slot_range()
+        );
+        poh_recorder.reset_for_bank_replacement(bank.clone(), Some((4, 4)));
+        let reconstructed_state = shared_leader_state.load();
+        assert!(reconstructed_state.working_bank().is_none());
+        assert_eq!(reconstructed_state.bank_slot(), Some(0));
+        assert!(!reconstructed_state.atomic_batches_enabled());
         poh_recorder.reset(bank, Some((4, 4)));
         assert!(poh_recorder.working_bank.is_none());
+        assert_eq!(shared_leader_state.load().bank_slot(), None);
+        assert!(shared_leader_state.load().atomic_batches_enabled());
     }
 
     #[test]

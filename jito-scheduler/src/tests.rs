@@ -541,7 +541,40 @@ fn disconnect_cancellation_survives_reconnect_before_check_returns() {
 }
 
 #[test]
-fn non_atomic_bam_runs_on_provisional_bank() {
+fn replaced_bank_check_failure_does_not_discard_bam_work() {
+    let mut frame = Frame::new(1);
+    frame.progress(10, 20, true, true);
+    frame.submit(
+        1,
+        SOURCE_BAM,
+        false,
+        10,
+        &[transfer(&Keypair::new(), &Pubkey::new_unique())],
+    );
+    frame.scheduler.step().unwrap();
+    let old_check = frame.check_requests().pop().unwrap();
+    frame.progress(10, 21, false, true);
+    frame.respond_check(old_check, Some(0));
+    frame.scheduler.step().unwrap();
+    assert!(frame.check_requests().is_empty());
+    assert!(frame.requests().is_empty());
+    assert_eq!(frame.scheduler.jobs.len(), 1);
+    assert_eq!(
+        frame.scheduler.jobs.values().next().unwrap().state,
+        State::PendingCheck
+    );
+    frame.progress(10, 21, true, true);
+    frame.check_all();
+    let (worker, request) = frame.requests().pop().unwrap();
+    assert_eq!((request.id, request.bank_id), (1, 21));
+    frame.finish(worker, request, reason::NONE);
+    frame.scheduler.step().unwrap();
+    let completion = frame.completion();
+    frame.free_completion(completion);
+}
+
+#[test]
+fn non_atomic_bam_waits_for_resolved_bank() {
     let mut frame = Frame::new(1);
     frame.progress(10, 20, false, true);
     frame.submit(
@@ -551,9 +584,14 @@ fn non_atomic_bam_runs_on_provisional_bank() {
         10,
         &[transfer(&Keypair::new(), &Pubkey::new_unique())],
     );
+    frame.scheduler.step().unwrap();
+    assert!(frame.check_requests().is_empty());
+    assert!(frame.requests().is_empty());
+    frame.progress(10, 21, true, true);
     frame.check_all();
     let (worker, request) = frame.requests().pop().unwrap();
     assert_eq!(request.flags, 0);
+    assert_eq!(request.bank_id, 21);
     frame.finish(worker, request, reason::NONE);
     frame.scheduler.step().unwrap();
     let completion = frame.completion();

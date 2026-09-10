@@ -289,8 +289,26 @@ impl BundleConsumer {
 
         let mut error_counters = TransactionErrorMetrics::default();
 
+        let Some(tx_execution_guard) = bank.try_enter_transaction_execution() else {
+            return ExecuteAndCommitTransactionsOutput {
+                transaction_counts: LeaderProcessedTransactionCounts {
+                    attempted_processing_count: batch.sanitized_transactions().len() as u64,
+                    ..LeaderProcessedTransactionCounts::default()
+                },
+                retryable_transaction_indexes: (0..batch.sanitized_transactions().len())
+                    .map(|index| RetryableIndex {
+                        index,
+                        immediately_retryable: true,
+                    })
+                    .collect(),
+                commit_transactions_result: Err(PohRecorderError::MaxHeightReached),
+                execute_and_commit_timings,
+                error_counters,
+            };
+        };
+
         let (load_and_execute_transactions_output, load_execute_us) =
-            measure_us!(bank.load_and_execute_transactions(
+            measure_us!(tx_execution_guard.load_and_execute_transactions(
                 batch,
                 MAX_PROCESSING_AGE,
                 &mut execute_and_commit_timings.execute_timings,
@@ -371,6 +389,9 @@ impl BundleConsumer {
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
+        // Hand off from execution admission to the record/commit barrier. Bank retirement takes
+        // these write locks in the same order, so it cannot pass between execution and commit.
+        drop(tx_execution_guard);
 
         let reservation = bank
             .entry_bytes_budget()
@@ -480,10 +501,13 @@ mod tests {
         crate::{
             banking_stage::{
                 committer::{CommitTransactionDetails, Committer},
-                consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
+                consumer::{
+                    ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
+                    ProcessTransactionBatchOutput,
+                },
                 scheduler_messages::MaxAge,
             },
-            bundle_stage::bundle_consumer::BundleConsumer,
+            bundle_stage::{BundleExecutionError, BundleStage, bundle_consumer::BundleConsumer},
         },
         crossbeam_channel::unbounded,
         solana_cost_model::cost_model::CostModel,
@@ -618,6 +642,75 @@ mod tests {
             commit_transactions_result[0],
             CommitTransactionDetails::Committed { result: Ok(_), .. }
         );
+    }
+
+    #[test]
+    fn test_quiesced_bank_bundle_is_retryable() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let recipients = [Pubkey::new_unique(), Pubkey::new_unique()];
+        let transactions = sanitize_transactions(
+            recipients
+                .iter()
+                .map(|recipient| transfer(&mint_keypair, recipient, 1, genesis_config.hash()))
+                .collect(),
+        );
+        let mint_balance = bank.get_balance(&mint_keypair.pubkey());
+        let block_cost = bank.read_cost_tracker().unwrap().block_cost();
+        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+
+        bank.quiesce_transaction_execution();
+        let output = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX; 2],
+            Duration::from_millis(20),
+        );
+
+        let execute_output = &output.execute_and_commit_transactions_output;
+        assert_matches!(
+            &execute_output.commit_transactions_result,
+            Err(PohRecorderError::MaxHeightReached)
+        );
+        assert_eq!(
+            execute_output.transaction_counts,
+            LeaderProcessedTransactionCounts {
+                attempted_processing_count: transactions.len() as u64,
+                ..LeaderProcessedTransactionCounts::default()
+            }
+        );
+        assert!(
+            execute_output
+                .retryable_transaction_indexes
+                .iter()
+                .enumerate()
+                .all(|(index, retryable)| retryable.index == index
+                    && retryable.immediately_retryable)
+        );
+        assert_eq!(
+            execute_output.retryable_transaction_indexes.len(),
+            transactions.len()
+        );
+        assert_matches!(
+            BundleStage::to_bundle_result(&output),
+            Err(BundleExecutionError::ErrorRetryable)
+        );
+        assert!(record_receiver.try_recv().is_err());
+        assert_eq!(bank.get_balance(&mint_keypair.pubkey()), mint_balance);
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| bank.get_balance(recipient) == 0)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), block_cost);
     }
 
     #[test]

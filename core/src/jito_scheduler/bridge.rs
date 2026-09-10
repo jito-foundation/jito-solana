@@ -198,6 +198,10 @@ impl Bridge {
                     if self.pending.len() + self.responses.len() >= MAX_PENDING {
                         break;
                     }
+                    let leader = self.leader.load();
+                    if leader.bank_slot().is_some() && leader.working_bank().is_none() {
+                        break;
+                    }
                     let Some((generation, batch)) = self.incoming.pop_front() else {
                         break;
                     };
@@ -250,12 +254,11 @@ impl Bridge {
             .working_bank()
             .cloned()
             .unwrap_or_else(|| self.bam.bank_forks.read().unwrap().working_bank());
-        let enable_tx_v1 = bank.feature_set.snapshot().enable_tx_v1;
+        let root_bank = self.bam.bank_forks.read().unwrap().root_bank();
         let validated = BamReceiveAndBuffer::validate_for_bindings(
             &batch,
-            bank.slot(),
-            enable_tx_v1,
-            &self.bam.bank_forks,
+            (&root_bank, &bank),
+            leader.working_bank().is_some() && leader.atomic_batches_enabled(),
             &self.filter_keys,
         );
         let revert_on_error = match validated {

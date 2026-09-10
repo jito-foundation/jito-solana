@@ -860,7 +860,7 @@ pub(crate) mod external {
                 return self.reject_jito_request(request, 0, 0, "target bank changed");
             }
             let atomic = request.flags & execution_message_flags::ALL_OR_NOTHING as u8 != 0;
-            if atomic && !leader_state.atomic_batches_enabled() {
+            if (atomic || request.source == SOURCE_BAM) && !leader_state.atomic_batches_enabled() {
                 return self.reject_jito_request(request, 0, 0, "waiting for ParentReady");
             }
 
@@ -2189,8 +2189,9 @@ pub(crate) mod external {
             assert!(recorded[0].reschedule_on_sad_handover);
         }
 
-        #[test]
-        fn test_jito_atomic_waits_for_parent_ready() {
+        #[test_case::test_case(0)]
+        #[test_case::test_case(3)]
+        fn test_jito_bam_waits_for_parent_ready(flags: u8) {
             let mut frame = setup_external_test_frame_with_jito(&[], true);
             frame.record_receiver.restart(frame.bank.bank_id());
             frame.shared_leader_state.store(Arc::new(
@@ -2210,7 +2211,7 @@ pub(crate) mod external {
                 frame.bank.confirmed_last_blockhash(),
             ))
             .unwrap()]);
-            let request = frame.jito_request(&batch, 3);
+            let request = frame.jito_request(&batch, flags);
             frame.send_jito(request);
             frame.iterate().unwrap();
             let (_, results) = frame.recv_jito();
@@ -2238,7 +2239,7 @@ pub(crate) mod external {
             );
             assert_eq!(frame.bank.get_balance(&recipient), 1);
             let record = frame.record_receiver.drain().next().unwrap();
-            assert!(!record.reschedule_on_sad_handover);
+            assert_eq!(record.reschedule_on_sad_handover, flags == 0);
             frame.free_batch(batch);
         }
 
