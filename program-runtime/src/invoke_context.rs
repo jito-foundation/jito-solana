@@ -1160,6 +1160,7 @@ mod tests {
         solana_svm_feature_set::SVMFeatureSet,
         solana_transaction::{Transaction, sanitized::SanitizedTransaction},
         solana_transaction_context::{MAX_ACCOUNTS_PER_INSTRUCTION, MAX_ACCOUNTS_PER_TRANSACTION},
+        std::collections::HashSet,
         test_case::test_case,
     };
 
