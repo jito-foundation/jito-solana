@@ -436,13 +436,10 @@ impl Tpu {
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
-        // Discovery only makes sense where BamManager will actually run, so it
-        // reuses the same exclusion above.
+        // Discovery is BAM-specific. Reuse the same exclusion as above.
         let bam_discovery = match (&bam_dependencies, &bam_registry_url) {
             (Some(_), Some(registry_url)) => {
-                // An explicit --bam-url wins outright, since the operator has
-                // already named the node to use. Say so rather than leaving
-                // them to wonder why discovery never ran.
+                // An explicit --bam-url overrides connecting via the registry. Maybe change in the future?
                 if bam_url.load().is_some() {
                     warn!("BAM node discovery disabled: --bam-url overrides --bam-registry-url");
                     None
