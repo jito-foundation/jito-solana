@@ -43,6 +43,7 @@ AGAVE_BINS_DEPRECATED=(
 DCOU_TAINTED_PACKAGES=(
   agave-conformance
   agave-ledger-tool
+  bam-local-cluster
   agave-store-histogram
   agave-store-tool
   solana-accounts-cluster-bench

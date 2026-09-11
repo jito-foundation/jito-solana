@@ -122,7 +122,8 @@ fn bench_record_transactions(c: &mut Criterion) {
 
                 let start = Instant::now();
                 for txs in tx_batches {
-                    let summary = transaction_recorder.record_transactions(bank.bank_id(), txs);
+                    let summary =
+                        transaction_recorder.record_transactions(bank.bank_id(), txs, true);
                     assert!(summary.result.is_ok());
                 }
                 let elapsed = start.elapsed();
