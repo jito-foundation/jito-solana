@@ -429,6 +429,8 @@ pub struct ValidatorConfig {
     pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
+    /// URL of the BAM Registry node list. `None` disables node discovery.
+    pub bam_registry_url: Option<String>,
     /// Skips automatic multicast route detection and multicast receiver updates.
     pub disable_multicast_shred_check: bool,
 }
@@ -527,6 +529,7 @@ impl ValidatorConfig {
             multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
+            bam_registry_url: None,
             disable_multicast_shred_check: false,
         }
     }
@@ -1891,6 +1894,7 @@ impl Validator {
             bam_shred_receiver_addresses,
             config.multicast_receiver_address.clone(),
             config.bam_url.clone(),
+            config.bam_registry_url.clone(),
         );
 
         datapoint_info!(

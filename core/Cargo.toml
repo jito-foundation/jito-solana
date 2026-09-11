@@ -90,11 +90,13 @@ qualifier_attr = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rolling-file = { workspace = true }
 rts-alloc = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
+serde_json = { workspace = true }
 shaq = { workspace = true }
 signal-hook = { workspace = true }
 slab = { workspace = true }

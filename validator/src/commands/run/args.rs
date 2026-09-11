@@ -1244,6 +1244,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .help(DefaultSchedulerPool::cli_message()),
     )
     .arg(bam::argument())
+    .arg(bam::registry_argument())
     .arg(jito_args::block_engine_url())
     .arg(jito_args::relayer_url())
     .arg(jito_args::relayer_expected_heartbeat_interval_ms(
