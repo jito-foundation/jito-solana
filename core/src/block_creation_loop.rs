@@ -2004,7 +2004,7 @@ mod tests {
         );
         let optimistic_leader_state = shared_leader_state.load();
 
-        // Both atomic transactions are valid on the optimistic fork: they reference its
+        // Both batch types are valid on the optimistic fork: they reference its
         // unique recent blockhash, which the replacement fork does not know. (Account state
         // cannot distinguish the forks in the same-parent-slot variant because same-slot
         // banks share accounts-db storage.) The scheduler must hold them until ParentReady
@@ -2034,7 +2034,7 @@ mod tests {
         container
             .insert_new_batch(
                 [(
-                    runtime_transfer(&ordinary_payer, Pubkey::new_unique(), recent_blockhash),
+                    runtime_transfer(&ordinary_payer, Pubkey::new_unique(), optimistic_blockhash),
                     MaxAge::MAX,
                 )]
                 .into_iter()
@@ -2048,21 +2048,21 @@ mod tests {
 
         let (consume_work_sender, consume_work_receiver) = unbounded();
         let (finished_work_sender, finished_work_receiver) = unbounded();
-        let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel(1);
+        let (response_sender, mut response_receiver) = tokio::sync::mpsc::channel(2);
         let mut bam_scheduler = BamScheduler::new(
             consume_work_sender,
             finished_work_receiver,
             response_sender,
-            ctx.bank_forks.clone(),
             shared_leader_state.clone(),
+            None,
         );
         let optimistic_decision = BufferedPacketsDecision::Consume(optimistic_bank);
         bam_scheduler
             .receive_completed(&mut container, &optimistic_decision)
             .unwrap();
         bam_scheduler.schedule(&mut container, 0, u64::MAX).unwrap();
-        assert_eq!(container.queue_size(), 1);
-        assert!(!consume_work_receiver.try_recv().unwrap().revert_on_error);
+        assert_eq!(container.queue_size(), 2);
+        assert!(consume_work_receiver.try_recv().is_err());
         assert!(response_receiver.try_recv().is_err());
 
         let accumulated_tx = versioned_transfer(1);
@@ -2144,7 +2144,7 @@ mod tests {
                 .atomic_batches_enabled()
         );
 
-        // Reject the provisional batch on the replacement fork, then verify a valid control
+        // Reject both provisional batches on the replacement fork, then verify a valid control
         // transaction commits through the real consume worker.
         let (replay_vote_sender, _replay_vote_receiver) = bounded(1);
         let worker_exit = Arc::new(AtomicBool::default());
@@ -2170,7 +2170,7 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        for (seq_id, batch) in [(71, None), (73, Some(control))] {
+        for (seq_id, batch) in [(71, None), (72, None), (73, Some(control))] {
             if let Some(batch) = batch {
                 container
                     .insert_new_batch(batch, u64::MAX, true, leader_slot, seq_id)
@@ -2208,7 +2208,7 @@ mod tests {
                 panic!("expected atomic transaction batch result");
             };
             assert_eq!(result.seq_id, seq_id);
-            if seq_id == 71 {
+            if seq_id != 73 {
                 assert!(matches!(result.result, Some(NotCommitted(_))));
                 assert_eq!(
                     new_bank.entry_bytes_budget().consumed(),

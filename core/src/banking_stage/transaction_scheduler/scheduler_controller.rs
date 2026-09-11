@@ -1109,6 +1109,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    admission: None,
                 },
                 retryable_indexes: vec![],
                 extra_info: None,
@@ -1504,8 +1505,8 @@ mod tests {
             consume_work_sender,
             finished_work_receiver,
             response_sender,
-            bank_forks.clone(),
             shared_leader_state.clone(),
+            None,
         );
 
         let mut controller = SchedulerController::new(
