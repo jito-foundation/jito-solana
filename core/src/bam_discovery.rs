@@ -35,15 +35,7 @@ const RESYNC_INTERVAL_EMPTY: Duration = Duration::from_secs(60);
 /// treated as bad and the ranking advances.
 const CONNECT_GRACE: Duration = Duration::from_secs(10);
 
-/// A probe round is one pass over a sample of the published list: every node in
-/// the sample is dialled, timed `PROBE_SAMPLES` times, and the survivors are
-/// sorted into a fresh ranking. A round runs on startup, whenever the published
-/// list changes, and whenever the ranking is exhausted.
-///
-/// Most nodes probed in one round. A random sample is taken when the published
-/// list is longer, which keeps probe load spread across the fleet. The sample is
-/// what makes the shuffle meaningful: without a cap every validator would probe
-/// the same prefix of the list.
+/// A probe round is one pass over a sample of the published.
 const PROBE_CAP: usize = 32;
 
 /// Most probes in flight at once.
@@ -79,16 +71,10 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The node list published by the registry.
-///
-/// Nothing health-derived appears in the object: a node's presence *is* the
-/// health assertion. The registry publishes no schema version, so unknown
-/// fields must be ignored rather than rejected - a field added on the registry
-/// side cannot be allowed to take the fleet offline.
+/// By appearing in the list, a node asserts its liveness and health.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ServedNodes {
-    /// When the registry built this list. An absolute time rather than an
-    /// `Instant`, which is process-local and monotonic and so cannot represent
-    /// a clock reading taken on another machine.
+    /// When the registry built this list.
     #[serde(default, deserialize_with = "lenient_rfc3339")]
     pub generated_at: Option<DateTime<Utc>>,
     pub nodes: Vec<ServedNode>,
@@ -106,9 +92,8 @@ where
         .map(|parsed| parsed.with_timezone(&Utc)))
 }
 
-/// A node the registry lists as a candidate. Nothing has been measured about it
-/// yet - see `RankedNode`. `region` is descriptive only and never verified by
-/// the registry.
+/// A node the registry lists as a candidate.
+/// When its measured, it will be a `RankedNode`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ServedNode {
     pub ip: IpAddr,
@@ -136,11 +121,9 @@ struct RankedNode {
 }
 
 /// Keeps the shared BAM url pointed at a live node from the registry's list.
-///
 /// `BamManager` already reconnects whenever that url changes, so discovery only
-/// has to decide what belongs there. It never moves a healthy connection: the
-/// pick advances only while the connection is disconnected, which is what
-/// removes any need for a switching margin or a leader-window rule.
+/// has to decide what belongs there. The pick advances only while the connection
+/// is disconnected.
 pub struct BamDiscovery {
     /// Background worker that fetches, probes and publishes.
     thread_hdl: JoinHandle<()>,
@@ -189,15 +172,11 @@ impl BamDiscovery {
             }
         };
 
-        // The full published list, kept across fetch failures: a stale list is
-        // better than no list, and it is what carries failover while the
-        // registry is unreachable.
+        // The full published list, kept across fetch failures.
         let mut nodes: Vec<ServedNode> = Vec::new();
         let mut ranked: Vec<RankedNode> = Vec::new();
         let mut cursor = 0usize;
 
-        // Countdowns rather than deadlines, matching MulticastShredCheckService:
-        // `Instant + Duration` is denied by clippy `arithmetic_side_effects`.
         let mut time_until_resync = Duration::ZERO;
         let mut time_until_probe = Duration::ZERO;
         let mut time_in_state = Duration::ZERO;
@@ -244,14 +223,12 @@ impl BamDiscovery {
                 cursor = 0;
             }
 
-            // A node can answer the probe and still refuse the scheduler stream
-            // - its RTT gate, an auth failure, a drain in progress. Walking the
-            // ranking is what keeps such a node from being a permanent sink.
+            // A node can answer the probe and still refuse the scheduler stream,
+            // so walking the ranking keeps it from being a sink.
             if stuck && !ranked.is_empty() {
                 cursor = Self::advance(cursor, ranked.len());
                 if cursor == 0 {
-                    // A full lap means every candidate refused us, so the
-                    // ranking is stale. Drop it and re-probe after the cooldown.
+                    // Ranking is stale, so clear and re-probe.
                     ranked.clear();
                 }
                 // Let the new pick have a grace window of its own.
@@ -299,7 +276,7 @@ impl BamDiscovery {
     }
 
     /// Read the published list. `None` leaves the caller holding whatever it
-    /// already has, which is the correct response to every failure here.
+    /// already has. Better to have a stale list than no list at all.
     async fn fetch(http_client: &reqwest::Client, registry_url: &str) -> Option<ServedNodes> {
         let response = async {
             http_client
@@ -324,19 +301,11 @@ impl BamDiscovery {
             }
         };
 
-        // The registry withholds a snapshot whose active set shrank by more than
-        // half, so an empty list is the fleet actually being gone rather than a
-        // publish glitch. Either way there is nothing here to switch to.
         if served.nodes.is_empty() {
             datapoint_warn!("bam_discovery-empty_node_list", ("count", 1, i64));
             return None;
         }
 
-        // The published object is served with `stale-if-error`, so a wedged
-        // registry answers 200 with day-old data. Age is the only signal that
-        // this has happened, and it deliberately drives nothing: a stale list is
-        // still the best list available. `-1` means the registry sent no
-        // parseable timestamp.
         let age_secs = served.generated_at.map_or(-1, |generated_at| {
             Utc::now().signed_duration_since(generated_at).num_seconds()
         });
@@ -350,8 +319,7 @@ impl BamDiscovery {
     }
 
     /// Probe a sample of the published nodes and order them by round-trip time.
-    /// Nodes that do not answer are dropped, so this is the liveness filter as
-    /// well as the ranking.
+    /// Nodes that do not answer are dropped.
     async fn probe_and_rank(nodes: &[ServedNode]) -> Vec<RankedNode> {
         let mut pool = nodes.to_vec();
         pool.shuffle(&mut rng());
@@ -384,10 +352,7 @@ impl BamDiscovery {
         ranked
     }
 
-    /// Time `GetBuilderConfig` against one node. The call is unauthenticated and
-    /// allocates nothing on the node, and is already the RPC the registry uses
-    /// to admit one, so probing asks nothing new of it.
-    ///
+    /// Time `GetBuilderConfig` against one node.
     /// All samples share a single channel, so the ranking reflects round trips
     /// rather than TLS handshakes.
     async fn probe(node: &ServedNode) -> Option<RankedNode> {
@@ -500,16 +465,12 @@ mod tests {
         }
     }
 
-    // Walking the ranking
-
     #[test]
     fn test_advance_steps_through_the_ranking() {
         assert_eq!(BamDiscovery::advance(0, 3), 1);
         assert_eq!(BamDiscovery::advance(1, 3), 2);
     }
 
-    /// Landing exactly on zero is what tells the loop it has tried every
-    /// candidate and should drop the ranking, so the wrap is load-bearing.
     #[test]
     fn test_advance_wraps_at_the_end_of_the_ranking() {
         assert_eq!(BamDiscovery::advance(2, 3), 0);
@@ -520,8 +481,6 @@ mod tests {
     fn test_advance_on_an_empty_ranking_does_not_panic() {
         assert_eq!(BamDiscovery::advance(0, 0), 0);
     }
-
-    // Publishing the pick
 
     #[test]
     fn test_publish_stores_the_selected_url() {
@@ -543,8 +502,6 @@ mod tests {
         );
     }
 
-    /// Re-storing the same url would make `BamManager` see a change it has to
-    /// act on, so an unchanged pick must leave the cell entirely alone.
     #[test]
     fn test_publish_leaves_an_unchanged_url_untouched() {
         let bam_url = ArcSwap::from_pointee(Some("https://203.0.113.1:50056".to_string()));
@@ -552,8 +509,6 @@ mod tests {
         BamDiscovery::publish(&bam_url, &ranked_node("203.0.113.1"));
         assert!(Arc::ptr_eq(&before, &bam_url.load_full()));
     }
-
-    // Connection state and resync pacing
 
     #[test]
     fn test_connection_state_reads_the_shared_atomic() {
@@ -569,10 +524,6 @@ mod tests {
         );
     }
 
-    // Probing
-
-    /// The probe doubles as the liveness filter, so a node that cannot be
-    /// reached must be dropped rather than ranked last.
     #[tokio::test]
     async fn test_probe_drops_a_node_that_does_not_answer() {
         let node = ServedNode {
