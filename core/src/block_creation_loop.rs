@@ -1419,7 +1419,6 @@ fn create_and_insert_leader_bank(
         .unwrap()
         .set_bank_with_atomic_batches_enabled(tpu_bank, atomic_batches_enabled);
 
-    // ponytail: experiment-only switch; production activation and fast handover are separate work.
     if experiment_open_header_enabled() {
         assert!(
             atomic_batches_enabled && entry_bytes_consumed == 0,
