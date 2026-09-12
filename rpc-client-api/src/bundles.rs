@@ -43,6 +43,9 @@ pub enum RpcBundleExecutionError {
     #[error("Invalid pre or post accounts")]
     InvalidPreOrPostAccounts,
 
+    #[error("A transaction in the bundle loads a blacklisted account")]
+    BundleLoadedBlacklistedAccount,
+
     #[error("PoH record error: {0}")]
     PohRecordError(String),
 
