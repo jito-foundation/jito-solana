@@ -428,7 +428,20 @@ impl StandardBroadcastRun {
             .saturating_add(bank.ticks_per_slot())
             .saturating_sub(bank.max_tick_height());
 
+        let explicit_header = matches!(
+            component.as_marker(),
+            Some(VersionedBlockMarker::V1(
+                solana_entry::block_component::BlockMarkerV1::BlockHeader(_)
+            ))
+        );
+        if explicit_header {
+            assert!(
+                maybe_send_header,
+                "opening header must be the first component"
+            );
+        }
         let mut header_shreds = if maybe_send_header
+            && !explicit_header
             && self
                 .migration_status
                 .should_allow_block_markers(bank.slot())
@@ -886,6 +899,89 @@ mod test {
             standard_broadcast_run.max_data_shreds_per_slot,
             standard_broadcast_run.max_code_shreds_per_slot,
         )
+    }
+
+    #[test]
+    fn test_explicit_open_header_then_entries_and_footer() {
+        let (blockstore, genesis, cluster_info, parent, keypair, socket, forks) =
+            setup(DATA_SHREDS_PER_FEC_BLOCK as u64);
+        let bank = new_child_bank(&parent, 1);
+        let (events, _rx) = bounded(1024);
+        let mut run = StandardBroadcastRun::new(
+            0,
+            Arc::new(MigrationStatus::post_migration_status()),
+            events,
+            test_leader_schedule_cache(&parent),
+        );
+        run.test_process_receive_results(
+            &keypair,
+            &cluster_info,
+            &socket,
+            &blockstore,
+            ReceiveResults {
+                component: BlockComponent::new_block_header(
+                    parent.slot(),
+                    parent.block_id().unwrap(),
+                ),
+                bank: bank.clone(),
+                last_tick_height: bank.tick_height(),
+            },
+            &forks,
+        )
+        .unwrap();
+        let header_end = run.next_shred_index;
+        assert_eq!(header_end, DATA_SHREDS_PER_FEC_BLOCK as u32); // Exactly one header FEC set.
+        let meta = blockstore.meta(1).unwrap().unwrap();
+        assert_eq!(meta.parent_slot, Some(parent.slot()));
+        assert_eq!(meta.parent_block_id, parent.block_id().unwrap());
+        assert!(!blockstore.is_full(1));
+        let ticks = create_ticks(1, 0, genesis.hash());
+        run.test_process_receive_results(
+            &keypair,
+            &cluster_info,
+            &socket,
+            &blockstore,
+            ReceiveResults {
+                component: BlockComponent::EntryBatch(ticks.clone()),
+                bank: bank.clone(),
+                last_tick_height: bank.tick_height() + 1,
+            },
+            &forks,
+        )
+        .unwrap();
+        assert_eq!(
+            blockstore
+                .get_slot_entries(1, u64::from(header_end))
+                .unwrap(),
+            ticks
+        );
+        assert_eq!(run.next_shred_index, header_end * 2); // No second opening header.
+        let footer = solana_entry::block_component::BlockFooterV1 {
+            bank_hash: Hash::default(),
+            block_producer_time_nanos: 0,
+            block_user_agent: vec![],
+            block_final_cert: None,
+            skip_reward_cert: None,
+            notar_reward_cert: None,
+        };
+        run.test_process_receive_results(
+            &keypair,
+            &cluster_info,
+            &socket,
+            &blockstore,
+            ReceiveResults {
+                component: BlockComponent::new_block_marker(
+                    VersionedBlockMarker::from_block_footer(footer),
+                ),
+                bank: bank.clone(),
+                last_tick_height: bank.max_tick_height(),
+            },
+            &forks,
+        )
+        .unwrap();
+        assert!(blockstore.is_full(1));
+        assert!(run.completed);
+        assert_eq!(run.next_shred_index, header_end * 3);
     }
 
     #[test]
