@@ -22,7 +22,7 @@ use {
     crossbeam_channel::{Receiver, Sender, select_biased},
     solana_clock::Slot,
     solana_entry::block_component::{
-        BlockFooterV1, GenesisCertBlockMarker, UpdateParentV1, VersionedBlockMarker,
+        BlockFooterV1, BlockHeaderV1, GenesisCertBlockMarker, UpdateParentV1, VersionedBlockMarker,
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
@@ -1260,6 +1260,11 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
     Err(StartLeaderError::ReplayIsBehind(parent_slot, slot))
 }
 
+fn experiment_open_header_enabled() -> bool {
+    static OPEN_HEADER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OPEN_HEADER.get_or_init(|| std::env::var_os("BAM_EXPERIMENT_OPEN_HEADER").is_some())
+}
+
 /// Checks if we are set to produce a leader block for `slot`:
 /// - Is the highest notarization/finalized slot from `consensus_pool` frozen
 /// - Startup verification is complete
@@ -1287,7 +1292,11 @@ fn maybe_start_leader(
         return Err(StartLeaderError::ReplayIsBehind(parent_slot, slot));
     };
 
-    if !parent_bank.is_frozen() {
+    // A locally produced parent freezes before broadcast publishes its block ID.
+    // Reuse the existing bounded parent wait before installing the child.
+    if !parent_bank.is_frozen()
+        || (experiment_open_header_enabled() && parent_bank.block_id().is_none())
+    {
         ctx.slot_metrics.replay_is_behind_count += 1;
         return Err(StartLeaderError::ReplayIsBehind(parent_slot, slot));
     }
@@ -1409,6 +1418,23 @@ fn create_and_insert_leader_bank(
         .write()
         .unwrap()
         .set_bank_with_atomic_batches_enabled(tpu_bank, atomic_batches_enabled);
+
+    // ponytail: experiment-only switch; production activation and fast handover are separate work.
+    if experiment_open_header_enabled() {
+        assert!(
+            atomic_batches_enabled && entry_bytes_consumed == 0,
+            "opening-header experiment requires resolved, unreplaced leader banks"
+        );
+        let marker = VersionedBlockMarker::from_block_header(BlockHeaderV1 {
+            parent_slot,
+            parent_block_id: parent_bank.block_id().expect("parent block ID"),
+        });
+        let result = ctx.poh_recorder.write().unwrap().send_marker(marker);
+        if let Err(err) = result {
+            abort_working_bank(ctx, slot)?;
+            return Err(StartLeaderError::PohRecorder(err));
+        }
+    }
 
     // If this is the first alpenglow block, emit the genesis certificate marker.
     // This happens before record intake restarts, so a send failure can be
