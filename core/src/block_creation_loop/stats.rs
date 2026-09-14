@@ -108,13 +108,15 @@ pub(super) struct SlotMetrics {
     slot: Slot,
     pub(super) attempt_start_leader_count: u64,
     /// Indicates we have attempted fast leader handover
-    leader_handover_fast: bool,
+    pub(super) leader_handover_fast: bool,
     /// Indicates we had to switch parent.
     pub(super) leader_handover_sad: bool,
     pub(super) already_have_bank_count: u64,
 
     pub(super) slot_delay_us: u64,
     pub(super) replay_is_behind_us: u64,
+    pub(super) parent_block_id_wait_us: u64,
+    pub(super) opening_header_sent: bool,
 }
 
 impl SlotMetrics {
@@ -127,6 +129,8 @@ impl SlotMetrics {
             already_have_bank_count: 0,
             slot_delay_us: 0,
             replay_is_behind_us: 0,
+            parent_block_id_wait_us: 0,
+            opening_header_sent: false,
         }
     }
 
@@ -139,6 +143,8 @@ impl SlotMetrics {
             already_have_bank_count,
             slot_delay_us,
             replay_is_behind_us,
+            parent_block_id_wait_us,
+            opening_header_sent,
         } = self;
         datapoint_info!(
             "slot-metrics",
@@ -149,6 +155,8 @@ impl SlotMetrics {
             ("already_have_bank_count", already_have_bank_count, i64),
             ("slot_delay_us", slot_delay_us, i64),
             ("replay_is_behind_us", replay_is_behind_us, i64),
+            ("parent_block_id_wait_us", parent_block_id_wait_us, i64),
+            ("opening_header_sent", opening_header_sent, i64),
         );
     }
 }

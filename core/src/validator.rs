@@ -1672,6 +1672,7 @@ impl Validator {
             highest_finalized: highest_finalized.clone(),
             banking_stage_sender: banking_stage_sender_for_bcl,
             sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            bam_url: config.bam_url.clone(),
         };
         let (block_creation_loop, reward_aggregates_sender) =
             BlockCreationLoop::new(block_creation_loop_config);
