@@ -118,6 +118,8 @@ pub(crate) struct SlotMetrics {
     pub(crate) slot_delay_hist: Histogram,
     pub(crate) replay_is_behind_cumulative_wait_elapsed: u64,
     pub(crate) replay_is_behind_wait_elapsed_hist: Histogram,
+    pub(crate) parent_block_id_wait_us: u64,
+    pub(crate) opening_header_sent: bool,
 }
 
 impl SlotMetrics {
@@ -181,6 +183,8 @@ impl SlotMetrics {
                     .unwrap_or(0),
                 i64
             ),
+            ("parent_block_id_wait_us", self.parent_block_id_wait_us, i64),
+            ("opening_header_sent", self.opening_header_sent, i64),
         );
     }
 
@@ -196,9 +200,15 @@ impl SlotMetrics {
         let same_slot = self.slot == slot;
         let leader_handover_fast = same_slot && self.leader_handover_fast;
         let leader_handover_sad = same_slot && self.leader_handover_sad;
+        let parent_block_id_wait_us = if same_slot {
+            self.parent_block_id_wait_us
+        } else {
+            0
+        };
         *self = Self::default();
         self.leader_handover_fast = leader_handover_fast;
         self.leader_handover_sad = leader_handover_sad;
+        self.parent_block_id_wait_us = parent_block_id_wait_us;
         self.slot = slot;
     }
 }
