@@ -19,9 +19,7 @@
 name: "Rebase jito-solana from upstream anza-xyz/agave"
 
 on:
-  #  push:
-  schedule:
-    - cron: "00 19 * * 1-5"
+  workflow_dispatch:
 
 jobs:
   rebase:
