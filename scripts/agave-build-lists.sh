@@ -40,14 +40,12 @@ AGAVE_BINS_DEPRECATED=(
   agave-install-init
 )
 
+# Root-workspace packages that pull in dev-context-only-utils. Packages that
+# live in the dev-bins/ workspace (ledger-tool, store-tool, conformance, ...)
+# are built separately and must not be listed here: cargo warns about
+# --exclude names that are not workspace members.
 DCOU_TAINTED_PACKAGES=(
-  agave-conformance
-  agave-ledger-tool
-  bam-local-cluster
   agave-store-histogram
-  agave-store-tool
   solana-accounts-cluster-bench
-  solana-banking-bench
   solana-local-cluster
-  solana-svm-conformance
 )
