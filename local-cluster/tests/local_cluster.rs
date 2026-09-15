@@ -6275,7 +6275,7 @@ fn test_alpenglow_migration_with_bam(
     });
     if bam {
         validator_config.bam_url = Arc::new(ArcSwap::from_pointee(Some(
-            "http://127.0.0.1:50055".to_string(),
+            "http://127.0.0.1:50056".to_string(),
         )));
     }
     let node_stakes = vec![DEFAULT_NODE_STAKE; num_nodes];
@@ -6463,6 +6463,7 @@ fn test_bam_header_genesis_first_rotation() {
         .collect::<Vec<_>>();
     let schedule = create_custom_leader_schedule(keys.iter().map(|key| (SlotLeader::from(key), 4)));
     let mut validator = ValidatorConfig::default_for_test();
+    validator.rpc_config.enable_rpc_transaction_history = true;
     validator.wait_for_supermajority = Some(0);
     validator.fixed_leader_schedule = Some(FixedSchedule {
         leader_schedule: Arc::new(schedule),
@@ -6470,7 +6471,7 @@ fn test_bam_header_genesis_first_rotation() {
     let mut validators = make_identical_validator_configs(&validator, 4);
     for validator in validators.iter_mut().take(3) {
         validator.bam_url = Arc::new(ArcSwap::from_pointee(Some(
-            "http://127.0.0.1:50055".to_string(),
+            "http://127.0.0.1:50056".to_string(),
         )));
     }
     let mut config = ClusterConfig {
@@ -6480,6 +6481,8 @@ fn test_bam_header_genesis_first_rotation() {
         slots_per_epoch: MINIMUM_SLOTS_PER_EPOCH * 4,
         stakers_slot_offset: MINIMUM_SLOTS_PER_EPOCH * 4,
         poh_config: PohConfig {
+            // Give every validator time to initialize votor before slots 1-3 close.
+            target_tick_duration: Duration::from_millis(32),
             hashes_per_tick: None,
             ..PohConfig::default()
         },
