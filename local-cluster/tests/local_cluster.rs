@@ -6242,6 +6242,20 @@ fn test_alpenglow_migration(
     Vec<ValidatorKeys>,
     /* migration slot */ Slot,
 ) {
+    test_alpenglow_migration_with_bam(num_nodes, num_listeners, test_name, leader_schedule, false)
+}
+
+fn test_alpenglow_migration_with_bam(
+    num_nodes: usize,
+    num_listeners: u64,
+    test_name: &str,
+    leader_schedule: &[usize],
+    bam: bool,
+) -> (
+    LocalCluster,
+    Vec<ValidatorKeys>,
+    /* migration slot */ Slot,
+) {
     agave_logger::setup_with_default(AG_DEBUG_LOG_FILTER);
 
     let listener_keypair = Keypair::new();
@@ -6259,6 +6273,11 @@ fn test_alpenglow_migration(
     validator_config.fixed_leader_schedule = Some(FixedSchedule {
         leader_schedule: Arc::new(leader_schedule),
     });
+    if bam {
+        validator_config.bam_url = Arc::new(ArcSwap::from_pointee(Some(
+            "http://127.0.0.1:50055".to_string(),
+        )));
+    }
     let node_stakes = vec![DEFAULT_NODE_STAKE; num_nodes];
 
     // We want the epochs to be as short as possible to reduce test time without being flaky.
@@ -6428,4 +6447,78 @@ fn test_alpenglow_missed_migration_entirely() {
     info!("Restarting node to a pre migration state");
     cluster.restart_node(&node_pubkey, exit_info, SocketAddrSpace::Unspecified);
     cluster.check_for_new_roots(8, test_name, SocketAddrSpace::Unspecified);
+}
+
+/// Run explicitly: this starts four validators and retains logs in the test runner.
+#[test]
+#[ignore = "four-validator BAM header experiment"]
+#[serial]
+fn test_bam_header_genesis_first_rotation() {
+    agave_logger::setup_with_default(AG_DEBUG_LOG_FILTER);
+    let keys = (0..4)
+        .map(|i| ValidatorKeys {
+            node_keypair: Arc::new(keypair_from_seed(&[40 + i; 32]).unwrap()),
+            vote_keypair: Arc::new(keypair_from_seed(&[80 + i; 32]).unwrap()),
+        })
+        .collect::<Vec<_>>();
+    let schedule = create_custom_leader_schedule(keys.iter().map(|key| (SlotLeader::from(key), 4)));
+    let mut validator = ValidatorConfig::default_for_test();
+    validator.wait_for_supermajority = Some(0);
+    validator.fixed_leader_schedule = Some(FixedSchedule {
+        leader_schedule: Arc::new(schedule),
+    });
+    let mut validators = make_identical_validator_configs(&validator, 4);
+    for validator in validators.iter_mut().take(3) {
+        validator.bam_url = Arc::new(ArcSwap::from_pointee(Some(
+            "http://127.0.0.1:50055".to_string(),
+        )));
+    }
+    let mut config = ClusterConfig {
+        validator_configs: validators,
+        validator_keys: Some(keys.iter().cloned().map(|key| (key, true)).collect()),
+        node_stakes: vec![DEFAULT_NODE_STAKE; 4],
+        slots_per_epoch: MINIMUM_SLOTS_PER_EPOCH * 4,
+        stakers_slot_offset: MINIMUM_SLOTS_PER_EPOCH * 4,
+        poh_config: PohConfig {
+            hashes_per_tick: None,
+            ..PohConfig::default()
+        },
+        ..ClusterConfig::default()
+    };
+    let cluster = LocalCluster::new_alpenglow(&mut config, SocketAddrSpace::Unspecified);
+    cluster.check_for_new_roots(20, "bam_header_genesis", SocketAddrSpace::Unspecified);
+    let mut common = None;
+    for key in &keys {
+        let client = cluster
+            .build_rpc_client_with_commitment(
+                &key.node_keypair.pubkey(),
+                CommitmentConfig::finalized(),
+            )
+            .unwrap();
+        let mut hashes = Vec::new();
+        for slot in 1..=3 {
+            let block = client.get_block(slot).unwrap();
+            assert_eq!(block.parent_slot, slot - 1);
+            hashes.push(block.blockhash);
+        }
+        if let Some(expected) = &common {
+            assert_eq!(&hashes, expected);
+        } else {
+            common = Some(hashes);
+        }
+    }
+}
+
+#[test]
+#[ignore = "four-validator BAM migration experiment"]
+#[serial]
+fn test_bam_header_live_migration() {
+    let (cluster, _, migration_slot) =
+        test_alpenglow_migration_with_bam(4, 0, "bam_header_live_migration", &[4, 4, 4, 4], true);
+    info!("BAM experiment migration slot: {migration_slot}");
+    cluster.check_for_new_roots(
+        16,
+        "bam_header_post_migration",
+        SocketAddrSpace::Unspecified,
+    );
 }

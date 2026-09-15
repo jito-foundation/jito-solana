@@ -6,6 +6,14 @@ use {
 #[derive(Debug, Deserialize, Clone)]
 pub struct LocalClusterConfig {
     pub bam_url: String,
+    /// Explicit consensus setup for local experiments.
+    #[serde(default)]
+    pub consensus_mode: ConsensusMode,
+    /// Frozen feature IDs. None preserves the existing mainnet lookup.
+    #[serde(default)]
+    pub genesis_features: Option<Vec<String>>,
+    #[serde(default)]
+    pub fast_handover: Option<bool>,
     pub tip_payment_program_id: String,
     pub tip_distribution_program_id: String,
     pub faucet_address: String,
@@ -30,9 +38,20 @@ pub struct LocalClusterConfig {
     pub limit_ledger_size: Option<u64>,
 }
 
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConsensusMode {
+    #[default]
+    Legacy,
+    Alpenglow,
+    Transition,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CustomValidatorConfig {
     pub geyser_config: Option<PathBuf>,
+    #[serde(default = "default_bam_enabled")]
+    pub bam_enabled: bool,
     pub node_keypair: PathBuf,
     pub node_pubkey: String,
     pub vote_keypair: PathBuf,
@@ -44,6 +63,10 @@ pub struct CustomValidatorConfig {
 pub struct ClusterInfo {
     pub rpc_endpoint: String,
     pub bootstrap_gossip: String,
+}
+
+fn default_bam_enabled() -> bool {
+    true
 }
 
 impl LocalClusterConfig {

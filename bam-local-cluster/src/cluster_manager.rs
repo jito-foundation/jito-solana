@@ -123,8 +123,6 @@ impl BamValidator {
         .arg("25")
         .arg("--expected-shred-version")
         .arg(compute_shred_version(&genesis_config.hash(), None).to_string())
-        .arg("--bam-url")
-        .arg(&cluster_config.bam_url)
         .arg("--tip-distribution-program-pubkey")
         .arg(&cluster_config.tip_distribution_program_id)
         .arg("--tip-payment-program-pubkey")
@@ -134,6 +132,9 @@ impl BamValidator {
         .arg("--commission-bps")
         .arg("100");
 
+        if config.bam_enabled {
+            cmd.arg("--bam-url").arg(&cluster_config.bam_url);
+        }
         if let Some(expected_bank_hash) = expected_bank_hash {
             cmd.arg("--expected-bank-hash").arg(expected_bank_hash);
         }
@@ -446,17 +447,62 @@ impl BamLocalCluster {
             })
             .transpose()?
             .unwrap_or(solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS);
-        let genesis_config_info = Self::create_genesis_config_with_vote_accounts_and_cluster_type(
-            mint_lamports,
-            &vote_keypairs,
-            stakes,
-            // Don't use mainnet, since we de-dupe local TVU IP addresses and every validator
-            // has TVU IP of 127.0.0.1. See:
-            // https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
-            ClusterType::Development,
-            config.hashes_per_tick,
-            config.slot_time_ms,
-            config.enable_tx_v1,
+        let mut genesis_config_info =
+            Self::create_genesis_config_with_vote_accounts_and_cluster_type(
+                mint_lamports,
+                &vote_keypairs,
+                stakes,
+                // Don't use mainnet, since we de-dupe local TVU IP addresses and every validator
+                // has TVU IP of 127.0.0.1. See:
+                // https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
+                ClusterType::Development,
+                config.hashes_per_tick,
+                config.slot_time_ms,
+                config.enable_tx_v1,
+                config.genesis_features.as_deref(),
+            )?;
+
+        use crate::config::ConsensusMode;
+        let genesis = &mut genesis_config_info.genesis_config;
+        match config.consensus_mode {
+            ConsensusMode::Legacy => {}
+            ConsensusMode::Alpenglow => {
+                if config.hashes_per_tick.is_some() {
+                    return Err(anyhow::anyhow!("Alpenglow genesis requires low-power PoH").into());
+                }
+                solana_runtime::genesis_utils::activate_alpenglow_at_genesis(genesis);
+            }
+            ConsensusMode::Transition => {
+                genesis.accounts.insert(
+                    agave_feature_set::alpenglow::id(),
+                    Account::from(solana_feature_gate_interface::create_account(
+                        &solana_feature_gate_interface::Feature::default(),
+                        1,
+                    )),
+                );
+            }
+        }
+        if let Some(enabled) = config.fast_handover {
+            let id = agave_feature_set::alpenglow_fast_leader_handover::id();
+            if enabled {
+                activate_feature(genesis, id);
+            } else {
+                deactivate_features(genesis, &vec![id]);
+            }
+        }
+        std::fs::create_dir_all(&config.ledger_base_directory)?;
+        std::fs::write(
+            Path::new(&config.ledger_base_directory).join("genesis-features.json"),
+            serde_json::to_vec_pretty(
+                &genesis
+                    .accounts
+                    .iter()
+                    .filter_map(|(key, account)| {
+                        feature::from_account(account)
+                            .map(|feature| (key.to_string(), feature.activated_at))
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )?,
         )?;
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
@@ -591,6 +637,7 @@ impl BamLocalCluster {
         hashes_per_tick: Option<u64>,
         slot_time_ms: Option<u64>,
         enable_tx_v1: bool,
+        genesis_features: Option<&[String]>,
     ) -> Result<GenesisConfigInfo> {
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
@@ -627,25 +674,37 @@ impl BamLocalCluster {
             genesis_config.poh_config.hashes_per_tick = Some(hashes_per_tick);
         }
 
-        // copy features from mainnet-beta
-        let rpc_client = RpcClient::new_with_commitment(
-            "https://api.mainnet-beta.solana.com",
-            CommitmentConfig::confirmed(),
-        );
-        let feature_set_keys = FEATURE_NAMES.keys().cloned().collect::<Vec<_>>();
-        let feature_set_keys_chunks = feature_set_keys.chunks(100);
-        for chunk in feature_set_keys_chunks {
-            info!("Getting features from mainnet-beta...");
-            let response = rpc_client
-                .get_multiple_accounts(chunk)
-                .expect("Failed to get features from mainnet-beta");
-            for (pubkey, account) in chunk.iter().zip(response) {
-                if let Some(account) = account
-                    && let Some(feature) = feature::from_account(&account)
-                    && feature.activated_at.is_some()
-                {
-                    info!("Activating feature: {:?}", FEATURE_NAMES.get(pubkey));
-                    activate_feature(&mut genesis_config, *pubkey);
+        if let Some(features) = genesis_features {
+            deactivate_features(
+                &mut genesis_config,
+                &FEATURE_NAMES.keys().copied().collect::<Vec<_>>(),
+            );
+            for feature in features {
+                let id = Pubkey::from_str(feature)?;
+                anyhow::ensure!(FEATURE_NAMES.contains_key(&id), "unknown feature {id}");
+                activate_feature(&mut genesis_config, id);
+            }
+        } else {
+            // copy features from mainnet-beta
+            let rpc_client = RpcClient::new_with_commitment(
+                "https://api.mainnet-beta.solana.com",
+                CommitmentConfig::confirmed(),
+            );
+            let feature_set_keys = FEATURE_NAMES.keys().cloned().collect::<Vec<_>>();
+            let feature_set_keys_chunks = feature_set_keys.chunks(100);
+            for chunk in feature_set_keys_chunks {
+                info!("Getting features from mainnet-beta...");
+                let response = rpc_client
+                    .get_multiple_accounts(chunk)
+                    .expect("Failed to get features from mainnet-beta");
+                for (pubkey, account) in chunk.iter().zip(response) {
+                    if let Some(account) = account
+                        && let Some(feature) = feature::from_account(&account)
+                        && feature.activated_at.is_some()
+                    {
+                        info!("Activating feature: {:?}", FEATURE_NAMES.get(pubkey));
+                        activate_feature(&mut genesis_config, *pubkey);
+                    }
                 }
             }
         }
