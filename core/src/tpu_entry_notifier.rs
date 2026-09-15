@@ -91,6 +91,23 @@ impl TpuEntryNotifier {
         let (bank, (entry_or_marker, tick_height)) =
             entry_receiver.recv_timeout(Duration::from_secs(1))?;
         let slot = bank.slot();
+
+        // StartBank is an internal BroadcastStage control event. Forward it without changing
+        // Geyser bookkeeping; a delayed or same-slot replacement event must not reset indexes.
+        if matches!(entry_or_marker, EntryOrMarker::StartBank) {
+            if let Err(err) = send_broadcast_entry(
+                broadcast_entry_sender,
+                (bank, (entry_or_marker, tick_height)),
+            ) {
+                warn!(
+                    "Failed to send StartBank for slot {slot:?} from Tpu to BroadcastStage, error \
+                     {err:?}",
+                );
+                exit.store(true, Ordering::Relaxed);
+            }
+            return Ok(());
+        }
+
         let bank_id = bank.bank_id();
         if slot != *current_slot || bank_id != *current_bank_id {
             *current_index = 0;
@@ -101,6 +118,7 @@ impl TpuEntryNotifier {
         let index = *current_index;
 
         match &entry_or_marker {
+            EntryOrMarker::StartBank => unreachable!("handled before Geyser bookkeeping"),
             EntryOrMarker::Entry(entry) => {
                 let entry_summary = EntrySummary {
                     num_hashes: entry.num_hashes,
@@ -178,7 +196,7 @@ mod tests {
     };
 
     #[test]
-    fn test_block_footer_notification_and_forwarding() {
+    fn test_notifications_and_start_bank_forwarding() {
         let (parent, _bank_forks) = Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
         let bank = Arc::new(Bank::new_from_parent(parent, SlotLeader::default(), 42));
         let slot = bank.slot();
@@ -242,6 +260,36 @@ mod tests {
             panic!("expected forwarded block footer marker");
         };
         assert_eq!(forwarded_marker, marker);
+        assert!(broadcast_entry_receiver.try_recv().is_err());
+
+        current_index = 7;
+        current_transaction_index = 11;
+        let start_bank = Arc::new(Bank::new_from_parent(bank, SlotLeader::default(), 43));
+        entry_sender
+            .send((start_bank.clone(), (EntryOrMarker::StartBank, tick_height)))
+            .unwrap();
+        TpuEntryNotifier::send_entry_notification(
+            Arc::new(AtomicBool::new(false)),
+            &entry_receiver,
+            &entry_notification_sender,
+            &broadcast_entry_sender,
+            &mut current_slot,
+            &mut current_bank_id,
+            &mut current_index,
+            &mut current_transaction_index,
+        )
+        .unwrap();
+
+        assert_eq!(current_slot, slot);
+        assert_eq!(current_bank_id, bank_id);
+        assert_eq!(current_index, 7);
+        assert_eq!(current_transaction_index, 11);
+        assert!(entry_notification_receiver.try_recv().is_err());
+        let (forwarded_bank, (forwarded_payload, forwarded_tick_height)) =
+            broadcast_entry_receiver.try_recv().unwrap();
+        assert!(Arc::ptr_eq(&forwarded_bank, &start_bank));
+        assert!(matches!(forwarded_payload, EntryOrMarker::StartBank));
+        assert_eq!(forwarded_tick_height, tick_height);
         assert!(broadcast_entry_receiver.try_recv().is_err());
     }
 }

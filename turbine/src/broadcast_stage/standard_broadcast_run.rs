@@ -2,7 +2,7 @@
 
 use {
     super::{
-        broadcast_utils::{self, ReceiveResults},
+        broadcast_utils::{self, ReceivePayload, ReceiveResults},
         *,
     },
     crate::{ShredReceiverAddresses, cluster_nodes::ClusterNodesCache},
@@ -130,6 +130,19 @@ impl StandardBroadcastRun {
         }
     }
 
+    fn report_rejected_start_bank(bank: &Bank, last_tick_height: u64, reason: &str) {
+        warn!(
+            "Dropping StartBank for slot {} at tick height {last_tick_height}: {reason}",
+            bank.slot()
+        );
+        datapoint_warn!(
+            "broadcast-rejected-start-bank",
+            ("count", 1, i64),
+            ("slot", bank.slot(), i64),
+            ("reason", reason, String),
+        );
+    }
+
     /// Upon receipt of shreds from a new bank (bank.slot() != self.slot)
     /// reinitialize any necessary state and stats.
     fn reinitialize_state(
@@ -137,18 +150,26 @@ impl StandardBroadcastRun {
         blockstore: &Blockstore,
         bank: &Bank,
         process_stats: &mut ProcessShredsStats,
+        prevalidated_parent: Option<(Arc<Bank>, Hash)>,
     ) -> Result<()> {
         debug_assert_ne!(bank.slot(), self.slot);
 
-        let Some(parent_bank) = bank.parent() else {
-            // If our broadcast is quite backed up, the parent bank could have already been
-            // pruned from BankForks by a newer window getting rooted
-            return Err(Error::WindowSkipped(bank.slot()));
+        let (parent_bank, parent_block_id) = match prevalidated_parent {
+            Some(parent) => parent,
+            None => {
+                let Some(parent_bank) = bank.parent() else {
+                    // If our broadcast is quite backed up, the parent bank could have already been
+                    // pruned from BankForks by a newer window getting rooted
+                    return Err(Error::WindowSkipped(bank.slot()));
+                };
+                debug_assert!(parent_bank.is_frozen());
+                let parent_block_id = parent_bank
+                    .block_id()
+                    .expect("All banks frozen (including snapshot banks) must have a block id");
+                (parent_bank, parent_block_id)
+            }
         };
-        debug_assert!(parent_bank.is_frozen());
-        let parent_block_id = parent_bank
-            .block_id()
-            .expect("All banks frozen (including snapshot banks) must have a block id");
+        debug_assert_eq!(parent_bank.slot(), bank.parent_slot());
 
         let chained_merkle_root = if self.slot == bank.parent_slot() {
             self.chained_merkle_root
@@ -363,10 +384,73 @@ impl StandardBroadcastRun {
         process_stats: &mut ProcessShredsStats,
     ) -> Result<()> {
         let ReceiveResults {
-            component,
+            payload,
             bank,
             last_tick_height,
         } = receive_results;
+
+        let is_start_bank = match &payload {
+            ReceivePayload::StartBank => true,
+            ReceivePayload::Component(BlockComponent::BlockMarker(marker))
+                if broadcast_utils::is_block_header(marker) =>
+            {
+                warn!(
+                    "Dropping upstream block header for slot {}; Standard Broadcast is the only \
+                     local block-header producer",
+                    bank.slot()
+                );
+                datapoint_warn!(
+                    "broadcast-rejected-upstream-block-header",
+                    ("count", 1, i64),
+                    ("slot", bank.slot(), i64),
+                );
+                return Ok(());
+            }
+            ReceivePayload::Component(_) => false,
+        };
+
+        let prevalidated_parent = if is_start_bank {
+            let reject_reason = if !self
+                .migration_status
+                .should_allow_block_markers(bank.slot())
+            {
+                Some("block markers are disabled")
+            } else if last_tick_height >= bank.max_tick_height() {
+                Some("the bank has reached its final tick")
+            } else if self.slot != Slot::MAX && bank.slot() <= self.slot {
+                Some("the bank slot is duplicate or stale")
+            } else {
+                None
+            };
+            if let Some(reason) = reject_reason {
+                Self::report_rejected_start_bank(&bank, last_tick_height, reason);
+                return Ok(());
+            }
+
+            let Some(parent_bank) = bank.parent() else {
+                Self::report_rejected_start_bank(&bank, last_tick_height, "parent is unavailable");
+                return Ok(());
+            };
+            if parent_bank.slot() != bank.parent_slot() {
+                Self::report_rejected_start_bank(
+                    &bank,
+                    last_tick_height,
+                    "parent slot does not match the bank",
+                );
+                return Ok(());
+            }
+            if !parent_bank.is_frozen() {
+                Self::report_rejected_start_bank(&bank, last_tick_height, "parent is not frozen");
+                return Ok(());
+            }
+            let Some(parent_block_id) = parent_bank.block_id() else {
+                Self::report_rejected_start_bank(&bank, last_tick_height, "parent has no block ID");
+                return Ok(());
+            };
+            Some((parent_bank, parent_block_id))
+        } else {
+            None
+        };
 
         if self.is_broadcast_blacklisted(bank.slot()) {
             return Ok(());
@@ -413,7 +497,7 @@ impl StandardBroadcastRun {
             }
 
             // Reinitialize state for this slot.
-            self.reinitialize_state(blockstore, &bank, process_stats)?;
+            self.reinitialize_state(blockstore, &bank, process_stats, prevalidated_parent)?;
             true
         } else {
             false
@@ -427,14 +511,15 @@ impl StandardBroadcastRun {
             .saturating_add(bank.ticks_per_slot())
             .saturating_sub(bank.max_tick_height());
 
-        let explicit_header = component
-            .as_marker()
-            .is_some_and(|VersionedBlockMarker::V1(marker)| marker.as_block_header().is_some());
-        // An explicit header must be the first component of its slot; a second
-        // header makes replayers reject the block and the slot is skipped.
-        debug_assert!(maybe_send_header || !explicit_header);
+        let component = match payload {
+            ReceivePayload::StartBank => {
+                debug_assert!(maybe_send_header);
+                BlockComponent::new_block_header(self.parent, self.parent_block_id)
+            }
+            ReceivePayload::Component(component) => component,
+        };
         let mut header_shreds = if maybe_send_header
-            && !explicit_header
+            && !is_start_bank
             && self
                 .migration_status
                 .should_allow_block_markers(bank.slot())
@@ -457,7 +542,7 @@ impl StandardBroadcastRun {
             .unwrap();
         self.maybe_update_parent_from_component(&component);
 
-        let shreds = if maybe_send_header {
+        let shreds = if !header_shreds.is_empty() {
             header_shreds.extend(shreds);
             header_shreds
         } else {
@@ -512,7 +597,7 @@ impl StandardBroadcastRun {
 
         self.process_shreds_stats += *process_stats;
 
-        if last_tick_height == bank.max_tick_height() {
+        if is_last_in_slot {
             self.report_and_reset_stats(false);
             self.completed = true;
 
@@ -749,7 +834,11 @@ mod test {
         super::*,
         assert_matches::assert_matches,
         rand::Rng,
-        solana_entry::{block_component::GenesisCertBlockMarker, entry::create_ticks},
+        solana_entry::{
+            block_component::ParsedBlockComponent,
+            entry::{Entry, create_ticks},
+            entry_or_marker::EntryOrMarker,
+        },
         solana_genesis_config::GenesisConfig,
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_hash::Hash,
@@ -762,9 +851,11 @@ mod test {
             shred::{DATA_SHREDS_PER_FEC_BLOCK, max_ticks_per_n_shreds},
         },
         solana_net_utils::{SocketAddrSpace, sockets::bind_to_localhost_unique},
+        solana_poh::poh_recorder::WORKING_BANK_CHANNEL_CAPACITY,
         solana_pubkey::Pubkey,
         solana_runtime::{
             bank::{Bank, SlotLeader},
+            block_component_processor::BlockComponentProcessor,
             genesis_utils::{activate_feature, deactivate_features},
             slot_params::{slot_time_feature_gates, slot_time_feature_ids},
         },
@@ -827,6 +918,54 @@ mod test {
         ))
     }
 
+    fn broadcast_state(
+        run: &StandardBroadcastRun,
+    ) -> (Slot, Slot, Hash, u32, u32, bool, u32, u32, VecDeque<Slot>) {
+        (
+            run.slot,
+            run.parent,
+            run.parent_block_id,
+            run.next_shred_index,
+            run.next_code_index,
+            run.completed,
+            run.max_data_shreds_per_slot,
+            run.max_code_shreds_per_slot,
+            run.broadcast_blacklist.clone(),
+        )
+    }
+
+    fn process_without_outputs(
+        run: &mut StandardBroadcastRun,
+        keypair: &Keypair,
+        blockstore: &Blockstore,
+        receive_results: ReceiveResults,
+    ) -> Result<()> {
+        let slot = receive_results.bank.slot();
+        let (socket_sender, socket_receiver) = bounded(BROADCAST_CHANNEL_CAPACITY);
+        let (blockstore_sender, blockstore_receiver) = bounded(BROADCAST_CHANNEL_CAPACITY);
+        let mut pinnable_slice = blockstore.new_pinnable_slice();
+        let mut write_batch = blockstore.get_write_batch();
+        let result = run.process_receive_results(
+            keypair,
+            blockstore,
+            &mut pinnable_slice,
+            &mut write_batch,
+            &socket_sender,
+            &blockstore_sender,
+            receive_results,
+            &mut ProcessShredsStats::default(),
+        );
+        assert!(
+            socket_receiver.is_empty(),
+            "unexpected socket output for rejected slot {slot}"
+        );
+        assert!(
+            blockstore_receiver.is_empty(),
+            "unexpected blockstore output for rejected slot {slot}"
+        );
+        result
+    }
+
     fn test_leader_schedule_cache(bank: &Bank) -> Arc<LeaderScheduleCache> {
         Arc::new(LeaderScheduleCache::new_from_bank(bank))
     }
@@ -859,7 +998,7 @@ mod test {
         );
         let ticks = create_ticks(1, 0, genesis_config.hash());
         let receive_results = ReceiveResults {
-            component: BlockComponent::EntryBatch(ticks.clone()),
+            payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks.clone())),
             bank: bank.clone(),
             last_tick_height: bank.tick_height() + ticks.len() as u64,
         };
@@ -894,20 +1033,65 @@ mod test {
         )
     }
 
-    // Slot 1 is the first Alpenglow block (genesis slot 0), so the leader emits
-    // header, genesis certificate, entries, footer in that order.
     #[test]
-    fn test_explicit_open_header_then_entries_and_footer() {
+    fn test_rejected_start_bank_events_do_not_change_broadcast_state() {
+        let (blockstore, _genesis, _cluster_info, parent, keypair, _socket, _forks) =
+            setup(DATA_SHREDS_PER_FEC_BLOCK as u64);
+        let valid_bank = new_child_bank(&parent, 1);
+        assert!(parent.parent().is_none());
+
+        let cases = [
+            (
+                Arc::new(MigrationStatus::default()),
+                valid_bank.clone(),
+                valid_bank.tick_height(),
+            ),
+            (
+                Arc::new(MigrationStatus::post_migration_status()),
+                valid_bank.clone(),
+                valid_bank.max_tick_height(),
+            ),
+            (
+                Arc::new(MigrationStatus::post_migration_status()),
+                parent.clone(),
+                0,
+            ),
+        ];
+
+        for (migration_status, bank, last_tick_height) in cases {
+            let (events, _rx) = bounded(1024);
+            let mut run = StandardBroadcastRun::new(
+                0,
+                migration_status,
+                events,
+                test_leader_schedule_cache(&parent),
+            );
+            let state = broadcast_state(&run);
+            process_without_outputs(
+                &mut run,
+                &keypair,
+                &blockstore,
+                ReceiveResults {
+                    payload: ReceivePayload::StartBank,
+                    bank,
+                    last_tick_height,
+                },
+            )
+            .unwrap();
+            assert_eq!(broadcast_state(&run), state);
+        }
+    }
+
+    #[test]
+    fn test_rejected_controls_preserve_current_slot_and_lazy_header_fallback() {
         let (blockstore, genesis, cluster_info, parent, keypair, socket, forks) =
             setup(DATA_SHREDS_PER_FEC_BLOCK as u64);
-        let bank = new_child_bank(&parent, 1);
+        let bank1 = new_child_bank(&parent, 1);
         let (events, _rx) = bounded(1024);
         let migration_status = Arc::new(MigrationStatus::post_migration_status());
-        let genesis_cert = migration_status.genesis_certificate().unwrap();
-        assert_eq!(genesis_cert.block.slot, parent.slot());
         let mut run = StandardBroadcastRun::new(
             0,
-            migration_status.clone(),
+            migration_status,
             events,
             test_leader_schedule_cache(&parent),
         );
@@ -917,39 +1101,69 @@ mod test {
             &socket,
             &blockstore,
             ReceiveResults {
-                component: BlockComponent::new_block_header(
-                    parent.slot(),
-                    parent.block_id().unwrap(),
-                ),
-                bank: bank.clone(),
-                last_tick_height: bank.tick_height(),
+                payload: ReceivePayload::StartBank,
+                bank: bank1.clone(),
+                last_tick_height: bank1.tick_height(),
             },
             &forks,
         )
         .unwrap();
-        let header_end = run.next_shred_index;
-        assert_eq!(header_end, DATA_SHREDS_PER_FEC_BLOCK as u32); // Exactly one header FEC set.
-        let meta = blockstore.meta(1).unwrap().unwrap();
-        assert_eq!(meta.parent_slot, Some(parent.slot()));
-        assert_eq!(meta.parent_block_id, parent.block_id().unwrap());
-        assert!(!blockstore.is_full(1));
-        let genesis_marker = GenesisCertBlockMarker::try_from((*genesis_cert).clone()).unwrap();
-        run.test_process_receive_results(
+        let state = broadcast_state(&run);
+
+        // Duplicate and lower-slot starts are rejected before state mutation.
+        for rejected_bank in [&bank1, &parent] {
+            process_without_outputs(
+                &mut run,
+                &keypair,
+                &blockstore,
+                ReceiveResults {
+                    payload: ReceivePayload::StartBank,
+                    bank: rejected_bank.clone(),
+                    last_tick_height: rejected_bank.tick_height(),
+                },
+            )
+            .unwrap();
+            assert_eq!(broadcast_state(&run), state);
+        }
+
+        // Upstream wire-shaped headers are also rejected before state mutation.
+        let bank2 = Arc::new(Bank::new_from_parent(bank1.clone(), *bank1.leader(), 2));
+        process_without_outputs(
+            &mut run,
             &keypair,
-            &cluster_info,
-            &socket,
             &blockstore,
             ReceiveResults {
-                component: BlockComponent::new_block_marker(
-                    VersionedBlockMarker::from_genesis_cert_block_marker(genesis_marker),
-                ),
-                bank: bank.clone(),
-                last_tick_height: bank.tick_height(),
+                payload: ReceivePayload::Component(BlockComponent::new_block_header(
+                    bank1.slot(),
+                    Hash::new_unique(),
+                )),
+                bank: bank2.clone(),
+                last_tick_height: bank2.tick_height(),
             },
-            &forks,
         )
         .unwrap();
-        assert_eq!(run.next_shred_index, header_end * 2); // Genesis cert follows the header.
+        assert_eq!(broadcast_state(&run), state);
+
+        // A future start cannot close the current slot until its parent is frozen and has an ID.
+        bank1.freeze();
+        assert_eq!(bank1.block_id(), None);
+        process_without_outputs(
+            &mut run,
+            &keypair,
+            &blockstore,
+            ReceiveResults {
+                payload: ReceivePayload::StartBank,
+                bank: bank2.clone(),
+                last_tick_height: bank2.tick_height(),
+            },
+        )
+        .unwrap();
+        assert_eq!(broadcast_state(&run), state);
+        assert!(!blockstore.is_full(bank1.slot()));
+
+        // Once the parent ID exists, the ordinary component path remains a valid lazy fallback.
+        let parent_block_id = Hash::new_unique();
+        bank1.set_block_id(Some(parent_block_id));
         let ticks = create_ticks(1, 0, genesis.hash());
         run.test_process_receive_results(
             &keypair,
@@ -957,46 +1171,175 @@ mod test {
             &socket,
             &blockstore,
             ReceiveResults {
-                component: BlockComponent::EntryBatch(ticks.clone()),
-                bank: bank.clone(),
-                last_tick_height: bank.tick_height() + 1,
+                payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks.clone())),
+                bank: bank2.clone(),
+                last_tick_height: bank2.tick_height() + ticks.len() as u64,
             },
             &forks,
         )
         .unwrap();
-        assert_eq!(
-            blockstore
-                .get_slot_entries(1, u64::from(header_end * 2))
-                .unwrap(),
-            ticks
+        assert_eq!(run.slot, bank2.slot());
+        assert_eq!(run.parent_block_id, parent_block_id);
+        assert!(blockstore.is_full(bank1.slot()));
+        let meta = blockstore.meta(bank2.slot()).unwrap().unwrap();
+        assert_eq!(meta.parent_slot, Some(bank1.slot()));
+        assert_eq!(meta.parent_block_id, parent_block_id);
+    }
+
+    #[test]
+    fn test_delayed_standard_processes_four_queued_banks_in_fifo_order() {
+        let (blockstore, _genesis, cluster_info, root, keypair, socket, forks) =
+            setup(DATA_SHREDS_PER_FEC_BLOCK as u64);
+        let migration_status = Arc::new(MigrationStatus::post_migration_status());
+        let (events, _rx) = bounded(1024);
+        let mut run = StandardBroadcastRun::new(
+            0,
+            migration_status.clone(),
+            events,
+            test_leader_schedule_cache(&root),
         );
-        assert_eq!(run.next_shred_index, header_end * 3); // No second opening header.
-        let footer = solana_entry::block_component::BlockFooterV1 {
-            bank_hash: Hash::default(),
-            block_producer_time_nanos: 0,
-            block_user_agent: vec![],
-            block_final_cert: None,
-            skip_reward_cert: None,
-            notar_reward_cert: None,
-        };
-        run.test_process_receive_results(
-            &keypair,
-            &cluster_info,
-            &socket,
-            &blockstore,
-            ReceiveResults {
-                component: BlockComponent::new_block_marker(
-                    VersionedBlockMarker::from_block_footer(footer),
-                ),
-                bank: bank.clone(),
-                last_tick_height: bank.max_tick_height(),
-            },
-            &forks,
-        )
-        .unwrap();
-        assert!(blockstore.is_full(1));
-        assert!(run.completed);
-        assert_eq!(run.next_shred_index, header_end * 4);
+
+        // Model a paused Standard thread: all four banks and their terminal components are queued
+        // while the locally produced parents still have no broadcaster-assigned block ID.
+        let mut banks = Vec::new();
+        let mut parent = root.clone();
+        for slot in 1..=4 {
+            let bank = Arc::new(Bank::new_from_parent(
+                parent.clone(),
+                *parent.leader(),
+                slot,
+            ));
+            bank.freeze();
+            assert_eq!(bank.block_id(), None);
+            banks.push(bank.clone());
+            parent = bank;
+        }
+        let (sender, receiver) = bounded(WORKING_BANK_CHANNEL_CAPACITY);
+        for bank in &banks {
+            sender
+                .send((bank.clone(), (EntryOrMarker::StartBank, bank.tick_height())))
+                .unwrap();
+            let entry = Entry::new(&bank.last_blockhash(), 2, vec![]);
+            sender
+                .send((
+                    bank.clone(),
+                    (EntryOrMarker::Entry(entry.clone()), bank.tick_height() + 1),
+                ))
+                .unwrap();
+            let footer = solana_entry::block_component::BlockFooterV1 {
+                bank_hash: bank.hash(),
+                block_producer_time_nanos: u64::try_from(
+                    bank.clock()
+                        .unix_timestamp
+                        .saturating_mul(1_000_000_000)
+                        .saturating_add(bank.slot() as i64),
+                )
+                .unwrap(),
+                block_user_agent: vec![],
+                block_final_cert: None,
+                skip_reward_cert: None,
+                notar_reward_cert: None,
+            };
+            sender
+                .send((
+                    bank.clone(),
+                    (
+                        EntryOrMarker::Marker(VersionedBlockMarker::from_block_footer(footer)),
+                        bank.max_tick_height() - 1,
+                    ),
+                ))
+                .unwrap();
+            let alpentick = Entry::new(&entry.hash, 1, vec![]);
+            sender
+                .send((
+                    bank.clone(),
+                    (EntryOrMarker::Entry(alpentick), bank.max_tick_height()),
+                ))
+                .unwrap();
+        }
+        assert_eq!(receiver.len(), banks.len() * 4);
+        assert!(receiver.len() < WORKING_BANK_CHANNEL_CAPACITY);
+
+        for bank in &banks {
+            for expected_payload in ["start", "entry", "footer", "alpentick"] {
+                let receive_results = broadcast_utils::recv_slot_components(
+                    &receiver,
+                    &mut run.carryover_entry,
+                    &mut ProcessShredsStats::default(),
+                )
+                .unwrap();
+                assert_eq!(receive_results.bank.bank_id(), bank.bank_id());
+                match expected_payload {
+                    "start" => {
+                        assert!(matches!(
+                            &receive_results.payload,
+                            ReceivePayload::StartBank
+                        ));
+                        assert!(receive_results.bank.parent().unwrap().block_id().is_some());
+                    }
+                    "footer" => assert!(matches!(
+                        &receive_results.payload,
+                        ReceivePayload::Component(BlockComponent::BlockMarker(_))
+                    )),
+                    "entry" | "alpentick" => assert!(matches!(
+                        &receive_results.payload,
+                        ReceivePayload::Component(BlockComponent::EntryBatch(_))
+                    )),
+                    _ => unreachable!(),
+                }
+                run.test_process_receive_results(
+                    &keypair,
+                    &cluster_info,
+                    &socket,
+                    &blockstore,
+                    receive_results,
+                    &forks,
+                )
+                .unwrap();
+            }
+            assert!(bank.block_id().is_some());
+            assert!(blockstore.is_full(bank.slot()));
+        }
+        assert!(receiver.is_empty());
+
+        // Validate the exact component sequence through the same state machine replay uses.
+        for bank in &banks {
+            let parent = bank.parent().unwrap();
+            let (components, _, _) = blockstore
+                .get_slot_component_views_with_shred_info(bank.slot(), 0, false)
+                .unwrap();
+            assert_eq!(components.len(), 4);
+            let component_count = components.len();
+            let mut processor = BlockComponentProcessor::default();
+            for (index, component) in components.into_iter().enumerate() {
+                match component {
+                    ParsedBlockComponent::BlockMarker(marker) => processor
+                        .on_marker(
+                            bank.clone(),
+                            parent.clone(),
+                            0,
+                            marker,
+                            false,
+                            None,
+                            &migration_status,
+                        )
+                        .unwrap_or_else(|err| {
+                            panic!("slot {} marker {index} rejected: {err:?}", bank.slot())
+                        }),
+                    ParsedBlockComponent::EntryBatch(entries) => processor
+                        .on_entry_batch(
+                            &migration_status,
+                            bank.slot(),
+                            &entries,
+                            index + 1 == component_count,
+                        )
+                        .unwrap(),
+                }
+            }
+            processor
+                .on_final(&migration_status, bank.slot(), parent.slot())
+                .unwrap();
+        }
     }
 
     // A slot abandoned after only its header is closed by finish_prev_slot, and
@@ -1020,10 +1363,7 @@ mod test {
                 &socket,
                 &blockstore,
                 ReceiveResults {
-                    component: BlockComponent::new_block_header(
-                        parent.slot(),
-                        parent.block_id().unwrap(),
-                    ),
+                    payload: ReceivePayload::StartBank,
                     bank: bank.clone(),
                     last_tick_height: bank.tick_height(),
                 },
@@ -1095,7 +1435,7 @@ mod test {
         // Insert 1 less than the number of ticks needed to finish the slot
         let ticks0 = create_ticks(genesis_config.ticks_per_slot - 1, 0, genesis_config.hash());
         let receive_results = ReceiveResults {
-            component: BlockComponent::EntryBatch(ticks0.clone()),
+            payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks0.clone())),
             bank: bank1.clone(),
             last_tick_height: bank1.tick_height() + ticks0.len() as u64,
         };
@@ -1180,7 +1520,7 @@ mod test {
             genesis_config.hash(),
         );
         let receive_results = ReceiveResults {
-            component: BlockComponent::EntryBatch(ticks1.clone()),
+            payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks1.clone())),
             bank: bank2.clone(),
             last_tick_height: bank2.tick_height() + ticks1.len() as u64,
         };
@@ -1265,7 +1605,7 @@ mod test {
             let ticks = create_ticks(num_ticks, 0, genesis_config.hash());
             last_tick_height += ticks.len() as u64;
             let receive_results = ReceiveResults {
-                component: BlockComponent::EntryBatch(ticks),
+                payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks)),
                 bank: bank.clone(),
                 last_tick_height,
             };
@@ -1324,7 +1664,7 @@ mod test {
         // Insert complete slot of ticks needed to finish the slot
         let ticks = create_ticks(genesis_config.ticks_per_slot, 0, genesis_config.hash());
         let receive_results = ReceiveResults {
-            component: BlockComponent::EntryBatch(ticks.clone()),
+            payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks.clone())),
             bank: bank.clone(),
             last_tick_height: bank.tick_height() + ticks.len() as u64,
         };
@@ -1397,7 +1737,7 @@ mod test {
                 &ssend,
                 &bsend,
                 ReceiveResults {
-                    component: BlockComponent::EntryBatch(ticks.clone()),
+                    payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks.clone())),
                     bank: bank1.clone(),
                     last_tick_height: bank1.tick_height() + ticks.len() as u64,
                 },
@@ -1416,7 +1756,7 @@ mod test {
                 &ssend,
                 &bsend,
                 ReceiveResults {
-                    component: BlockComponent::EntryBatch(ticks.clone()),
+                    payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks.clone())),
                     bank: bank1.clone(),
                     last_tick_height: bank1.tick_height() + ticks.len() as u64,
                 },
@@ -1440,7 +1780,7 @@ mod test {
                 &ssend,
                 &bsend,
                 ReceiveResults {
-                    component: BlockComponent::EntryBatch(ticks.clone()),
+                    payload: ReceivePayload::Component(BlockComponent::EntryBatch(ticks.clone())),
                     bank: bank2,
                     last_tick_height: bank1.tick_height() + ticks.len() as u64,
                 },
