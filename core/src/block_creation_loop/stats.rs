@@ -119,6 +119,7 @@ pub(crate) struct SlotMetrics {
     pub(crate) replay_is_behind_cumulative_wait_elapsed: u64,
     pub(crate) replay_is_behind_wait_elapsed_hist: Histogram,
     pub(crate) parent_block_id_wait_us: u64,
+    pub(crate) parent_block_id_wait_elapsed_us: u64,
     pub(crate) opening_header_sent: bool,
 }
 
@@ -184,6 +185,11 @@ impl SlotMetrics {
                 i64
             ),
             ("parent_block_id_wait_us", self.parent_block_id_wait_us, i64),
+            (
+                "parent_block_id_wait_elapsed_us",
+                self.parent_block_id_wait_elapsed_us,
+                i64
+            ),
             ("opening_header_sent", self.opening_header_sent, i64),
         );
     }
@@ -205,7 +211,15 @@ impl SlotMetrics {
         } else {
             0
         };
+        let parent_block_id_wait_elapsed_us = if same_slot {
+            self.parent_block_id_wait_elapsed_us
+        } else {
+            0
+        };
+        let opening_header_sent = same_slot && self.opening_header_sent;
         *self = Self::default();
+        self.opening_header_sent = opening_header_sent;
+        self.parent_block_id_wait_elapsed_us = parent_block_id_wait_elapsed_us;
         self.leader_handover_fast = leader_handover_fast;
         self.leader_handover_sad = leader_handover_sad;
         self.parent_block_id_wait_us = parent_block_id_wait_us;
@@ -216,6 +230,23 @@ impl SlotMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_slot_metrics_preserve_header_and_waits_only_in_same_slot() {
+        let mut metrics = SlotMetrics::default();
+        metrics.reset(1);
+        metrics.opening_header_sent = true;
+        metrics.parent_block_id_wait_us = 1;
+        metrics.parent_block_id_wait_elapsed_us = 2;
+        metrics.reset(1);
+        assert!(metrics.opening_header_sent);
+        assert_eq!(metrics.parent_block_id_wait_us, 1);
+        assert_eq!(metrics.parent_block_id_wait_elapsed_us, 2);
+        metrics.reset(2);
+        assert!(!metrics.opening_header_sent);
+        assert_eq!(metrics.parent_block_id_wait_us, 0);
+        assert_eq!(metrics.parent_block_id_wait_elapsed_us, 0);
+    }
 
     #[test]
     fn test_slot_metrics_handover() {

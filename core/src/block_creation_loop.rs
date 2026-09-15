@@ -1152,6 +1152,11 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
     entry_bytes_consumed: u64,
     ctx: &mut LeaderContext,
 ) -> Result<Arc<Bank>, StartLeaderError> {
+    // A consecutive slot must not inherit the previous slot's handover mode or waits.
+    // Same-slot retries keep their accumulated metrics and optimistic-start flag.
+    if ctx.slot_metrics.slot != slot {
+        ctx.slot_metrics.reset(slot);
+    }
     trace!(
         "{}: Attempting to start leader slot {slot} parent {parent_slot}",
         ctx.my_pubkey
@@ -1276,7 +1281,10 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
                 );
                 // Broadcast assigns the block ID without a notification; poll briefly.
                 let wait_timeout = time_left(block_timer, timeout).min(Duration::from_millis(1));
+                let wait_start = Instant::now();
                 std::thread::sleep(wait_timeout);
+                ctx.slot_metrics.parent_block_id_wait_elapsed_us +=
+                    wait_start.elapsed().as_micros() as u64;
                 ctx.slot_metrics.parent_block_id_wait_us += wait_timeout.as_micros() as u64;
             }
             Err(e) => return Err(e),
@@ -1481,7 +1489,7 @@ fn create_and_insert_leader_bank(
     // Wakeup banking stage
     ctx.record_receiver.restart(bank_id);
     ctx.slot_metrics.reset(slot);
-    ctx.slot_metrics.opening_header_sent = opening_header_sent;
+    ctx.slot_metrics.opening_header_sent |= opening_header_sent;
 
     info!(
         "{}: new fork:{} parent:{} (leader) root:{}",
@@ -1844,6 +1852,38 @@ mod tests {
         let test = test_context(my_pubkey, bank_forks, blockstore, (2, 2));
         set_opening_header(&test.ctx, true);
         (ledger_path, test, parent)
+    }
+
+    #[test]
+    fn test_opening_header_next_slot_clears_fast_handover() {
+        let (_ledger_path, mut test, parent) = opening_header_context();
+        parent.set_block_id(Some(Hash::new_unique()));
+        test.ctx.slot_metrics.reset(parent.slot());
+        test.ctx.slot_metrics.mark_leader_handover_fast();
+        let bank =
+            start_leader_wait_for_parent_replay(2, 1, None, true, Instant::now(), &mut test.ctx)
+                .unwrap();
+        assert_eq!(bank.slot(), 2);
+        assert!(!test.ctx.slot_metrics.leader_handover_fast);
+        assert!(
+            test.ctx.slot_metrics.opening_header_sent,
+            "a prior slot's optimistic handover must not suppress this slot's header"
+        );
+        assert!(!test.entry_receiver.is_empty());
+    }
+
+    #[test]
+    fn test_opening_header_wait_metrics_belong_to_target_slot() {
+        let (_ledger_path, mut test, parent) = opening_header_context();
+        test.ctx.slot_metrics.reset(parent.slot());
+        let timeout = block_timeout(&parent, 2);
+        let timer = Instant::now() - timeout.saturating_sub(Duration::from_millis(10));
+        assert!(
+            start_leader_wait_for_parent_replay(2, 1, None, true, timer, &mut test.ctx,).is_err()
+        );
+        assert_eq!(test.ctx.slot_metrics.slot, 2);
+        assert!(test.ctx.slot_metrics.parent_block_id_wait_us > 0);
+        assert!(test.ctx.bank_forks.read().unwrap().get(2).is_none());
     }
 
     #[test]
