@@ -378,18 +378,19 @@ impl PohRecorder {
 
     /// Send the block marker to be broadcast
     pub fn send_marker(&mut self, marker: VersionedBlockMarker) -> Result<()> {
+        self.send_entry_or_marker(EntryOrMarker::Marker(marker))
+    }
+
+    fn send_entry_or_marker(&mut self, entry_or_marker: EntryOrMarker) -> Result<()> {
         let tick_height = self.tick_height();
         let working_bank = self
             .working_bank
-            .as_mut()
+            .as_ref()
             .ok_or(PohRecorderError::MaxHeightReached)?;
 
         send_working_bank_entry(
             &self.working_bank_sender,
-            (
-                working_bank.bank.clone(),
-                (EntryOrMarker::Marker(marker), tick_height),
-            ),
+            (working_bank.bank.clone(), (entry_or_marker, tick_height)),
         )?;
 
         Ok(())
@@ -500,6 +501,16 @@ impl PohRecorder {
             let (_flush_res, flush_cache_and_tick_us) = measure_us!(self.flush_cache(true, None));
             self.metrics.flush_cache_tick_us += flush_cache_and_tick_us;
         }
+    }
+
+    /// Installs a working bank and notifies broadcast that its slot has started.
+    pub fn set_bank_and_send_slot_start(
+        &mut self,
+        bank: BankWithScheduler,
+        atomic_batches_enabled: bool,
+    ) -> Result<()> {
+        self.set_bank_with_atomic_batches_enabled(bank, atomic_batches_enabled);
+        self.send_entry_or_marker(EntryOrMarker::SlotStart)
     }
 
     pub fn set_bank(&mut self, bank: BankWithScheduler) {
