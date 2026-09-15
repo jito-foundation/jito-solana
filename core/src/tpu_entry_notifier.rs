@@ -80,6 +80,7 @@ impl TpuEntryNotifier {
         let index = *current_index;
 
         match &entry_or_marker {
+            EntryOrMarker::SlotStart => {}
             EntryOrMarker::Entry(entry) => {
                 let entry_summary = EntrySummary {
                     num_hashes: entry.num_hashes,
