@@ -130,17 +130,32 @@ impl StandardBroadcastRun {
         }
     }
 
-    fn report_rejected_start_bank(bank: &Bank, last_tick_height: u64, reason: &str) {
-        warn!(
-            "Dropping StartBank for slot {} at tick height {last_tick_height}: {reason}",
-            bank.slot()
-        );
-        datapoint_warn!(
-            "broadcast-rejected-start-bank",
-            ("count", 1, i64),
-            ("slot", bank.slot(), i64),
-            ("reason", reason, String),
-        );
+    fn validate_start_bank(
+        &self,
+        bank: &Bank,
+        last_tick_height: u64,
+    ) -> std::result::Result<(Arc<Bank>, Hash), &'static str> {
+        if !self
+            .migration_status
+            .should_allow_block_markers(bank.slot())
+        {
+            return Err("block markers are disabled");
+        }
+        if last_tick_height >= bank.max_tick_height() {
+            return Err("the bank has reached its final tick");
+        }
+        if self.slot != Slot::MAX && bank.slot() <= self.slot {
+            return Err("the bank slot is duplicate or stale");
+        }
+        let parent_bank = bank.parent().ok_or("parent is unavailable")?;
+        if parent_bank.slot() != bank.parent_slot() {
+            return Err("parent slot does not match the bank");
+        }
+        if !parent_bank.is_frozen() {
+            return Err("parent is not frozen");
+        }
+        let parent_block_id = parent_bank.block_id().ok_or("parent has no block ID")?;
+        Ok((parent_bank, parent_block_id))
     }
 
     /// Upon receipt of shreds from a new bank (bank.slot() != self.slot)
@@ -389,8 +404,24 @@ impl StandardBroadcastRun {
             last_tick_height,
         } = receive_results;
 
-        let is_start_bank = match &payload {
-            ReceivePayload::StartBank => true,
+        let prevalidated_parent = match &payload {
+            ReceivePayload::StartBank => match self.validate_start_bank(&bank, last_tick_height) {
+                Ok(parent) => Some(parent),
+                Err(reason) => {
+                    warn!(
+                        "Dropping StartBank for slot {} at tick height {last_tick_height}: \
+                         {reason}",
+                        bank.slot()
+                    );
+                    datapoint_warn!(
+                        "broadcast-rejected-start-bank",
+                        ("count", 1, i64),
+                        ("slot", bank.slot(), i64),
+                        ("reason", reason, String),
+                    );
+                    return Ok(());
+                }
+            },
             ReceivePayload::Component(BlockComponent::BlockMarker(marker))
                 if broadcast_utils::is_block_header(marker) =>
             {
@@ -406,51 +437,9 @@ impl StandardBroadcastRun {
                 );
                 return Ok(());
             }
-            ReceivePayload::Component(_) => false,
+            ReceivePayload::Component(_) => None,
         };
-
-        let prevalidated_parent = if is_start_bank {
-            let reject_reason = if !self
-                .migration_status
-                .should_allow_block_markers(bank.slot())
-            {
-                Some("block markers are disabled")
-            } else if last_tick_height >= bank.max_tick_height() {
-                Some("the bank has reached its final tick")
-            } else if self.slot != Slot::MAX && bank.slot() <= self.slot {
-                Some("the bank slot is duplicate or stale")
-            } else {
-                None
-            };
-            if let Some(reason) = reject_reason {
-                Self::report_rejected_start_bank(&bank, last_tick_height, reason);
-                return Ok(());
-            }
-
-            let Some(parent_bank) = bank.parent() else {
-                Self::report_rejected_start_bank(&bank, last_tick_height, "parent is unavailable");
-                return Ok(());
-            };
-            if parent_bank.slot() != bank.parent_slot() {
-                Self::report_rejected_start_bank(
-                    &bank,
-                    last_tick_height,
-                    "parent slot does not match the bank",
-                );
-                return Ok(());
-            }
-            if !parent_bank.is_frozen() {
-                Self::report_rejected_start_bank(&bank, last_tick_height, "parent is not frozen");
-                return Ok(());
-            }
-            let Some(parent_block_id) = parent_bank.block_id() else {
-                Self::report_rejected_start_bank(&bank, last_tick_height, "parent has no block ID");
-                return Ok(());
-            };
-            Some((parent_bank, parent_block_id))
-        } else {
-            None
-        };
+        let is_start_bank = prevalidated_parent.is_some();
 
         if self.is_broadcast_blacklisted(bank.slot()) {
             return Ok(());
@@ -934,12 +923,13 @@ mod test {
         )
     }
 
-    fn process_without_outputs(
+    fn assert_rejected_control(
         run: &mut StandardBroadcastRun,
         keypair: &Keypair,
         blockstore: &Blockstore,
         receive_results: ReceiveResults,
-    ) -> Result<()> {
+    ) {
+        let state = broadcast_state(run);
         let slot = receive_results.bank.slot();
         let (socket_sender, socket_receiver) = bounded(BROADCAST_CHANNEL_CAPACITY);
         let (blockstore_sender, blockstore_receiver) = bounded(BROADCAST_CHANNEL_CAPACITY);
@@ -963,7 +953,8 @@ mod test {
             blockstore_receiver.is_empty(),
             "unexpected blockstore output for rejected slot {slot}"
         );
-        result
+        result.unwrap();
+        assert_eq!(broadcast_state(run), state);
     }
 
     fn test_leader_schedule_cache(bank: &Bank) -> Arc<LeaderScheduleCache> {
@@ -1034,40 +1025,41 @@ mod test {
     }
 
     #[test]
-    fn test_rejected_start_bank_events_do_not_change_broadcast_state() {
-        let (blockstore, _genesis, _cluster_info, parent, keypair, _socket, _forks) =
+    fn test_rejected_controls_preserve_current_slot_and_lazy_header_fallback() {
+        let (blockstore, genesis, cluster_info, parent, keypair, socket, forks) =
             setup(DATA_SHREDS_PER_FEC_BLOCK as u64);
-        let valid_bank = new_child_bank(&parent, 1);
+        let bank1 = new_child_bank(&parent, 2);
+        let (events, _rx) = bounded(1024);
+        let migration_status = Arc::new(MigrationStatus::post_migration_status());
+        let mut run = StandardBroadcastRun::new(
+            0,
+            migration_status.clone(),
+            events,
+            test_leader_schedule_cache(&parent),
+        );
         assert!(parent.parent().is_none());
+        // Let the parentless root pass marker admission so this case reaches the parent check.
+        let full_alpenglow = Arc::new(MigrationStatus::post_migration_status());
+        full_alpenglow.alpenglow_rooted_new_epoch(1);
+        assert!(full_alpenglow.should_allow_block_markers(parent.slot()));
 
         let cases = [
             (
                 Arc::new(MigrationStatus::default()),
-                valid_bank.clone(),
-                valid_bank.tick_height(),
+                bank1.clone(),
+                bank1.tick_height(),
             ),
             (
-                Arc::new(MigrationStatus::post_migration_status()),
-                valid_bank.clone(),
-                valid_bank.max_tick_height(),
+                migration_status.clone(),
+                bank1.clone(),
+                bank1.max_tick_height(),
             ),
-            (
-                Arc::new(MigrationStatus::post_migration_status()),
-                parent.clone(),
-                0,
-            ),
+            (full_alpenglow, parent.clone(), 0),
         ];
 
-        for (migration_status, bank, last_tick_height) in cases {
-            let (events, _rx) = bounded(1024);
-            let mut run = StandardBroadcastRun::new(
-                0,
-                migration_status,
-                events,
-                test_leader_schedule_cache(&parent),
-            );
-            let state = broadcast_state(&run);
-            process_without_outputs(
+        for (case_migration_status, bank, last_tick_height) in cases {
+            run.migration_status = case_migration_status;
+            assert_rejected_control(
                 &mut run,
                 &keypair,
                 &blockstore,
@@ -1076,25 +1068,9 @@ mod test {
                     bank,
                     last_tick_height,
                 },
-            )
-            .unwrap();
-            assert_eq!(broadcast_state(&run), state);
+            );
         }
-    }
-
-    #[test]
-    fn test_rejected_controls_preserve_current_slot_and_lazy_header_fallback() {
-        let (blockstore, genesis, cluster_info, parent, keypair, socket, forks) =
-            setup(DATA_SHREDS_PER_FEC_BLOCK as u64);
-        let bank1 = new_child_bank(&parent, 1);
-        let (events, _rx) = bounded(1024);
-        let migration_status = Arc::new(MigrationStatus::post_migration_status());
-        let mut run = StandardBroadcastRun::new(
-            0,
-            migration_status,
-            events,
-            test_leader_schedule_cache(&parent),
-        );
+        run.migration_status = migration_status;
         run.test_process_receive_results(
             &keypair,
             &cluster_info,
@@ -1108,27 +1084,23 @@ mod test {
             &forks,
         )
         .unwrap();
-        let state = broadcast_state(&run);
-
         // Duplicate and lower-slot starts are rejected before state mutation.
-        for rejected_bank in [&bank1, &parent] {
-            process_without_outputs(
+        for rejected_bank in [bank1.clone(), new_child_bank(&parent, 1)] {
+            assert_rejected_control(
                 &mut run,
                 &keypair,
                 &blockstore,
                 ReceiveResults {
                     payload: ReceivePayload::StartBank,
-                    bank: rejected_bank.clone(),
                     last_tick_height: rejected_bank.tick_height(),
+                    bank: rejected_bank,
                 },
-            )
-            .unwrap();
-            assert_eq!(broadcast_state(&run), state);
+            );
         }
 
         // Upstream wire-shaped headers are also rejected before state mutation.
-        let bank2 = Arc::new(Bank::new_from_parent(bank1.clone(), *bank1.leader(), 2));
-        process_without_outputs(
+        let bank2 = Arc::new(Bank::new_from_parent(bank1.clone(), *bank1.leader(), 3));
+        assert_rejected_control(
             &mut run,
             &keypair,
             &blockstore,
@@ -1140,14 +1112,11 @@ mod test {
                 bank: bank2.clone(),
                 last_tick_height: bank2.tick_height(),
             },
-        )
-        .unwrap();
-        assert_eq!(broadcast_state(&run), state);
+        );
 
-        // A future start cannot close the current slot until its parent is frozen and has an ID.
-        bank1.freeze();
+        // A future start cannot close the current slot while its frozen parent has no ID.
         assert_eq!(bank1.block_id(), None);
-        process_without_outputs(
+        assert_rejected_control(
             &mut run,
             &keypair,
             &blockstore,
@@ -1156,9 +1125,7 @@ mod test {
                 bank: bank2.clone(),
                 last_tick_height: bank2.tick_height(),
             },
-        )
-        .unwrap();
-        assert_eq!(broadcast_state(&run), state);
+        );
         assert!(!blockstore.is_full(bank1.slot()));
 
         // Once the parent ID exists, the ordinary component path remains a valid lazy fallback.
@@ -1201,6 +1168,8 @@ mod test {
 
         // Model a paused Standard thread: all four banks and their terminal components are queued
         // while the locally produced parents still have no broadcaster-assigned block ID.
+        // The banks and tick payloads are synthetic: this exercises FIFO ordering, not a
+        // replay-valid Alpenglow block sequence.
         let mut banks = Vec::new();
         let mut parent = root.clone();
         for slot in 1..=4 {
@@ -1216,16 +1185,8 @@ mod test {
         }
         let (sender, receiver) = bounded(WORKING_BANK_CHANNEL_CAPACITY);
         for bank in &banks {
-            sender
-                .send((bank.clone(), (EntryOrMarker::StartBank, bank.tick_height())))
-                .unwrap();
             let entry = Entry::new(&bank.last_blockhash(), 2, vec![]);
-            sender
-                .send((
-                    bank.clone(),
-                    (EntryOrMarker::Entry(entry.clone()), bank.tick_height() + 1),
-                ))
-                .unwrap();
+            let alpentick = Entry::new(&entry.hash, 1, vec![]);
             let footer = solana_entry::block_component::BlockFooterV1 {
                 bank_hash: bank.hash(),
                 block_producer_time_nanos: u64::try_from(
@@ -1240,28 +1201,23 @@ mod test {
                 skip_reward_cert: None,
                 notar_reward_cert: None,
             };
-            sender
-                .send((
-                    bank.clone(),
-                    (
-                        EntryOrMarker::Marker(VersionedBlockMarker::from_block_footer(footer)),
-                        bank.max_tick_height() - 1,
-                    ),
-                ))
-                .unwrap();
-            let alpentick = Entry::new(&entry.hash, 1, vec![]);
-            sender
-                .send((
-                    bank.clone(),
-                    (EntryOrMarker::Entry(alpentick), bank.max_tick_height()),
-                ))
-                .unwrap();
+            for event in [
+                (EntryOrMarker::StartBank, bank.tick_height()),
+                (EntryOrMarker::Entry(entry), bank.tick_height() + 1),
+                (
+                    EntryOrMarker::Marker(VersionedBlockMarker::from_block_footer(footer)),
+                    bank.max_tick_height() - 1,
+                ),
+                (EntryOrMarker::Entry(alpentick), bank.max_tick_height()),
+            ] {
+                sender.send((bank.clone(), event)).unwrap();
+            }
         }
         assert_eq!(receiver.len(), banks.len() * 4);
         assert!(receiver.len() < WORKING_BANK_CHANNEL_CAPACITY);
 
         for bank in &banks {
-            for expected_payload in ["start", "entry", "footer", "alpentick"] {
+            for component_index in 0..4 {
                 let receive_results = broadcast_utils::recv_slot_components(
                     &receiver,
                     &mut run.carryover_entry,
@@ -1269,23 +1225,12 @@ mod test {
                 )
                 .unwrap();
                 assert_eq!(receive_results.bank.bank_id(), bank.bank_id());
-                match expected_payload {
-                    "start" => {
-                        assert!(matches!(
-                            &receive_results.payload,
-                            ReceivePayload::StartBank
-                        ));
-                        assert!(receive_results.bank.parent().unwrap().block_id().is_some());
-                    }
-                    "footer" => assert!(matches!(
+                if component_index == 0 {
+                    assert!(matches!(
                         &receive_results.payload,
-                        ReceivePayload::Component(BlockComponent::BlockMarker(_))
-                    )),
-                    "entry" | "alpentick" => assert!(matches!(
-                        &receive_results.payload,
-                        ReceivePayload::Component(BlockComponent::EntryBatch(_))
-                    )),
-                    _ => unreachable!(),
+                        ReceivePayload::StartBank
+                    ));
+                    assert!(receive_results.bank.parent().unwrap().block_id().is_some());
                 }
                 run.test_process_receive_results(
                     &keypair,
@@ -1302,7 +1247,8 @@ mod test {
         }
         assert!(receiver.is_empty());
 
-        // Validate the exact component sequence through the same state machine replay uses.
+        // Validate component ordering through BlockComponentProcessor. This does not run tick/PoH
+        // verification, transaction execution, or final bank-hash comparison.
         for bank in &banks {
             let parent = bank.parent().unwrap();
             let (components, _, _) = blockstore

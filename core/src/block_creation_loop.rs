@@ -1283,12 +1283,6 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
     Err(StartLeaderError::ReplayIsBehind(parent_slot, slot))
 }
 
-// TODO(MEV-12808): once BAM handles UpdateParent, send on optimistic starts but not on same-slot
-// bank replacements.
-fn should_send_start_bank(ctx: &LeaderContext, slot_metrics: &SlotMetrics) -> bool {
-    ctx.bam_url.load().is_some() && !slot_metrics.leader_handover_fast
-}
-
 /// Checks if we are set to produce a leader block for `slot`:
 /// - Is the highest notarization/finalized slot from `consensus_pool` frozen
 /// - Startup verification is complete
@@ -1354,7 +1348,9 @@ fn create_and_insert_leader_bank(
     slot_metrics: &mut SlotMetrics,
 ) -> Result<(), StartLeaderError> {
     let parent_slot = parent_bank.slot();
-    let send_start_bank = should_send_start_bank(ctx, slot_metrics);
+    // TODO(MEV-12808): once BAM handles UpdateParent, send on optimistic starts but not on same-slot
+    // bank replacements.
+    let send_start_bank = ctx.bam_url.load().is_some() && !slot_metrics.leader_handover_fast;
     let root_slot = ctx.bank_forks.read().unwrap().root();
     trace!(
         "{}: Creating and inserting leader slot {slot} parent {parent_slot} root {root_slot}",
@@ -1820,13 +1816,34 @@ mod tests {
     }
 
     #[test]
-    fn test_start_bank_precedes_first_transaction() {
-        for enabled in [false, true] {
+    fn test_start_bank_precedes_genesis_certificate_and_first_transaction() {
+        for (enabled, genesis_boundary) in [(false, false), (true, false), (true, true)] {
             let (_ledger_path, mut test, parent) = start_bank_context();
             set_start_bank(&test.ctx, enabled);
             assert!(parent.is_frozen());
             assert_eq!(parent.block_id(), None);
             assert!(test.ctx.record_receiver.is_shutdown());
+            if genesis_boundary {
+                parent.set_block_id(Some(Hash::default()));
+                test.ctx.genesis_cert_block_marker.slot = parent.slot();
+                test.ctx.genesis_cert_block_marker.block_id = Hash::default();
+                let genesis_block = Block {
+                    slot: parent.slot(),
+                    block_id: Hash::default(),
+                };
+                let migration_status = test.ctx.bank_forks.read().unwrap().migration_status();
+                migration_status.record_feature_activation(0);
+                migration_status.set_genesis_block(genesis_block);
+                migration_status.set_genesis_certificate(Arc::new(GenesisCert {
+                    block: genesis_block,
+                    signature: CertSignature {
+                        signature: test.ctx.genesis_cert_block_marker.bls_signature,
+                        bitmap: test.ctx.genesis_cert_block_marker.bitmap.clone(),
+                    },
+                }));
+                migration_status.enable_alpenglow_during_startup();
+                assert!(migration_status.should_allow_block_markers(2));
+            }
             let mut slot_metrics = SlotMetrics::new(2, false);
             let bank = start_leader_wait_for_parent_replay(
                 &mut test.ctx,
@@ -1846,6 +1863,15 @@ mod tests {
                 let (start_bank, (component, _)) = test.entry_receiver.try_recv().unwrap();
                 assert_eq!(start_bank.bank_id(), bank.bank_id());
                 assert!(matches!(component, EntryOrMarker::StartBank));
+            }
+            if genesis_boundary {
+                let (genesis_bank, (component, _)) = test.entry_receiver.try_recv().unwrap();
+                assert_eq!(genesis_bank.bank_id(), bank.bank_id());
+                assert!(matches!(
+                    component,
+                    EntryOrMarker::Marker(VersionedBlockMarker::V1(marker))
+                        if marker.as_genesis_certificate().is_some()
+                ));
             }
             assert!(test.entry_receiver.is_empty());
 
@@ -1874,52 +1900,6 @@ mod tests {
             assert_eq!(entry.transactions, vec![tx]);
             assert!(test.entry_receiver.is_empty());
         }
-    }
-
-    #[test]
-    fn test_start_bank_precedes_genesis_certificate() {
-        let (_ledger_path, mut test, parent) = start_bank_context();
-        parent.set_block_id(Some(Hash::default()));
-        test.ctx.genesis_cert_block_marker.slot = parent.slot();
-        test.ctx.genesis_cert_block_marker.block_id = Hash::default();
-        let genesis_block = Block {
-            slot: parent.slot(),
-            block_id: Hash::default(),
-        };
-        let migration_status = test.ctx.bank_forks.read().unwrap().migration_status();
-        migration_status.record_feature_activation(0);
-        migration_status.set_genesis_block(genesis_block);
-        migration_status.set_genesis_certificate(Arc::new(GenesisCert {
-            block: genesis_block,
-            signature: CertSignature {
-                signature: test.ctx.genesis_cert_block_marker.bls_signature,
-                bitmap: test.ctx.genesis_cert_block_marker.bitmap.clone(),
-            },
-        }));
-        migration_status.enable_alpenglow_during_startup();
-        assert!(migration_status.should_allow_block_markers(2));
-
-        maybe_start_leader(
-            &mut test.ctx,
-            &mut SlotMetrics::new(2, false),
-            2,
-            parent.slot(),
-            None,
-            0,
-            true,
-        )
-        .unwrap();
-
-        let (first_bank, (first, _)) = test.entry_receiver.try_recv().unwrap();
-        assert!(matches!(first, EntryOrMarker::StartBank));
-        let (second_bank, (second, _)) = test.entry_receiver.try_recv().unwrap();
-        assert_eq!(first_bank.bank_id(), second_bank.bank_id());
-        assert!(matches!(
-            second,
-            EntryOrMarker::Marker(VersionedBlockMarker::V1(marker))
-                if marker.as_genesis_certificate().is_some()
-        ));
-        assert!(test.entry_receiver.is_empty());
     }
 
     // A failed StartBank send removes the new bank and leaves record intake stopped.

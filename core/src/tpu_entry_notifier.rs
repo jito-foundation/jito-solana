@@ -92,24 +92,12 @@ impl TpuEntryNotifier {
             entry_receiver.recv_timeout(Duration::from_secs(1))?;
         let slot = bank.slot();
 
-        // StartBank is an internal BroadcastStage control event. Forward it without changing
-        // Geyser bookkeeping; a delayed or same-slot replacement event must not reset indexes.
-        if matches!(entry_or_marker, EntryOrMarker::StartBank) {
-            if let Err(err) = send_broadcast_entry(
-                broadcast_entry_sender,
-                (bank, (entry_or_marker, tick_height)),
-            ) {
-                warn!(
-                    "Failed to send StartBank for slot {slot:?} from Tpu to BroadcastStage, error \
-                     {err:?}",
-                );
-                exit.store(true, Ordering::Relaxed);
-            }
-            return Ok(());
-        }
-
         let bank_id = bank.bank_id();
-        if slot != *current_slot || bank_id != *current_bank_id {
+        // StartBank only forwards an internal control event. A delayed or same-slot replacement
+        // event must not reset Geyser indexes.
+        if !matches!(entry_or_marker, EntryOrMarker::StartBank)
+            && (slot != *current_slot || bank_id != *current_bank_id)
+        {
             *current_index = 0;
             *current_transaction_index = 0;
             *current_slot = slot;
@@ -118,7 +106,7 @@ impl TpuEntryNotifier {
         let index = *current_index;
 
         match &entry_or_marker {
-            EntryOrMarker::StartBank => unreachable!("handled before Geyser bookkeeping"),
+            EntryOrMarker::StartBank => {}
             EntryOrMarker::Entry(entry) => {
                 let entry_summary = EntrySummary {
                     num_hashes: entry.num_hashes,
@@ -167,8 +155,8 @@ impl TpuEntryNotifier {
             (bank, (entry_or_marker, tick_height)),
         ) {
             warn!(
-                "Failed to send slot {slot:?} entry/marker {index:?} from Tpu to BroadcastStage, \
-                 error {err:?}",
+                "Failed to forward slot {slot:?} at entry index {index:?} from Tpu to \
+                 BroadcastStage, error {err:?}",
             );
             // If the BroadcastStage channel is closed, the validator has halted. Try to exit
             // gracefully.
