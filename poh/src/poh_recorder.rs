@@ -511,6 +511,28 @@ impl PohRecorder {
         bank: BankWithScheduler,
         atomic_batches_enabled: bool,
     ) {
+        self.set_bank_internal(bank, atomic_batches_enabled, false, false)
+            .expect("setting a bank without StartBank cannot fail");
+    }
+
+    /// Attaches an Alpenglow leader bank and optionally queues an internal start event before any
+    /// bank components can be flushed.
+    pub fn set_alpenglow_bank(
+        &mut self,
+        bank: BankWithScheduler,
+        atomic_batches_enabled: bool,
+        send_start_bank: bool,
+    ) -> Result<()> {
+        self.set_bank_internal(bank, atomic_batches_enabled, true, send_start_bank)
+    }
+
+    fn set_bank_internal(
+        &mut self,
+        bank: BankWithScheduler,
+        atomic_batches_enabled: bool,
+        require_empty_tick_cache: bool,
+        send_start_bank: bool,
+    ) -> Result<()> {
         assert!(self.working_bank.is_none());
         let working_bank = WorkingBank {
             min_tick_height: bank.tick_height(),
@@ -534,6 +556,15 @@ impl PohRecorder {
             tick_height = self.reset_poh(working_bank.bank.clone(), false);
         }
 
+        // BCL must send any StartBank and genesis-certificate events before the bank's first
+        // component. A cached entry here would make that ordering invalid during replay.
+        if require_empty_tick_cache {
+            assert!(
+                self.tick_cache.is_empty(),
+                "attaching an Alpenglow bank requires an empty PoH tick cache"
+            );
+        }
+
         let leader_state = self.shared_leader_state.load();
         let leader_first_tick_height = leader_state.leader_first_tick_height();
         let next_leader_slot = leader_state.next_leader_slot_range();
@@ -548,9 +579,20 @@ impl PohRecorder {
             )));
         self.working_bank = Some(working_bank);
 
+        if send_start_bank {
+            send_working_bank_entry(
+                &self.working_bank_sender,
+                (
+                    self.bank().unwrap(),
+                    (EntryOrMarker::StartBank, tick_height),
+                ),
+            )?;
+        }
+
         // TODO: adjust the working_bank.start time based on number of ticks
         // that have already elapsed based on current tick height.
         let _ = self.flush_cache(false, None);
+        Ok(())
     }
 
     pub(crate) fn notify_replay_wakeup(&self) {
@@ -1442,7 +1484,7 @@ mod tests {
             .expect("Expected to be able to open database ledger");
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank0 = Arc::new(Bank::new_for_tests(&genesis_config));
-        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
             0,
             Hash::default(),
             bank0.clone(),
@@ -1455,6 +1497,25 @@ mod tests {
         );
         poh_recorder.tick();
         assert_eq!(poh_recorder.tick_cache.len(), 1);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = poh_recorder.set_alpenglow_bank(
+                BankWithScheduler::new_without_scheduler(bank0.clone()),
+                false,
+                false,
+            );
+        }));
+        assert!(result.is_err());
+        assert!(!poh_recorder.has_bank());
+        assert!(
+            poh_recorder
+                .shared_leader_state()
+                .load()
+                .working_bank()
+                .is_none()
+        );
+        assert!(entry_receiver.is_empty());
+
         poh_recorder.reset(bank0, Some((4, 4)));
         assert_eq!(poh_recorder.tick_cache.len(), 0);
     }

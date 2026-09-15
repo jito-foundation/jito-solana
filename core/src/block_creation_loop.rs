@@ -23,7 +23,7 @@ use {
     crossbeam_channel::{Receiver, Sender, select_biased},
     solana_clock::Slot,
     solana_entry::block_component::{
-        BlockFooterV1, BlockHeaderV1, GenesisCertBlockMarker, UpdateParentV1, VersionedBlockMarker,
+        BlockFooterV1, GenesisCertBlockMarker, UpdateParentV1, VersionedBlockMarker,
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
@@ -217,11 +217,6 @@ enum StartLeaderError {
     /// Replay has not yet frozen the parent slot
     #[error("Replay is behind for parent slot {0} for leader slot {1}")]
     ReplayIsBehind(/* parent slot */ Slot, /* leader slot */ Slot),
-
-    /// The parent is frozen but broadcast has not yet assigned its block ID,
-    /// which the opening header needs.
-    #[error("Parent {0} block id pending for leader slot {1}")]
-    ParentBlockIdPending(/* parent slot */ Slot, /* leader slot */ Slot),
 
     /// Bank forks already contains bank
     #[error("Already contain bank for leader slot {0}")]
@@ -1278,16 +1273,6 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
                 replay_behind_measure.stop();
                 slot_metrics.replay_is_behind_us += replay_behind_measure.as_us();
             }
-            Err(StartLeaderError::ParentBlockIdPending(_, _)) => {
-                trace!(
-                    "{my_pubkey}: Attempting to produce slot {slot}, however parent {parent_slot} \
-                     has no block id yet; waiting for broadcast"
-                );
-                // Broadcast assigns the block ID without a notification; poll briefly.
-                let wait_timeout = time_left(block_timer, timeout).min(Duration::from_millis(1));
-                std::thread::sleep(wait_timeout);
-                slot_metrics.parent_block_id_wait_us += wait_timeout.as_micros() as u64;
-            }
             Err(e) => return Err(e),
         }
     }
@@ -1296,12 +1281,6 @@ fn start_leader_wait_for_parent_replay_with_used_bytes(
         "{my_pubkey}: Skipping production of {slot}: Unable to replay parent {parent_slot} in time"
     );
     Err(StartLeaderError::ReplayIsBehind(parent_slot, slot))
-}
-
-// TODO(MEV-12808): once BAM handles UpdateParent, emit on optimistic starts
-// but not on same-slot bank replacements.
-fn should_emit_opening_header(ctx: &LeaderContext, slot_metrics: &SlotMetrics) -> bool {
-    ctx.bam_url.load().is_some() && !slot_metrics.leader_handover_fast
 }
 
 /// Checks if we are set to produce a leader block for `slot`:
@@ -1333,11 +1312,6 @@ fn maybe_start_leader(
 
     if !parent_bank.is_frozen() {
         return Err(StartLeaderError::ReplayIsBehind(parent_slot, slot));
-    }
-
-    // A locally produced parent freezes before broadcast publishes its block ID.
-    if should_emit_opening_header(ctx, slot_metrics) && parent_bank.block_id().is_none() {
-        return Err(StartLeaderError::ParentBlockIdPending(parent_slot, slot));
     }
 
     if let Some(expected) = parent_hash.filter(|hash| *hash != Hash::default()) {
@@ -1374,17 +1348,9 @@ fn create_and_insert_leader_bank(
     slot_metrics: &mut SlotMetrics,
 ) -> Result<(), StartLeaderError> {
     let parent_slot = parent_bank.slot();
-    let opening_header = if should_emit_opening_header(ctx, slot_metrics) {
-        let parent_block_id = parent_bank
-            .block_id()
-            .ok_or(StartLeaderError::ParentBlockIdPending(parent_slot, slot))?;
-        Some(VersionedBlockMarker::from_block_header(BlockHeaderV1 {
-            parent_slot,
-            parent_block_id,
-        }))
-    } else {
-        None
-    };
+    // TODO(MEV-12808): once BAM handles UpdateParent, send on optimistic starts but not on same-slot
+    // bank replacements.
+    let send_start_bank = ctx.bam_url.load().is_some() && !slot_metrics.leader_handover_fast;
     let root_slot = ctx.bank_forks.read().unwrap().root();
     trace!(
         "{}: Creating and inserting leader slot {slot} parent {parent_slot} root {root_slot}",
@@ -1466,19 +1432,16 @@ fn create_and_insert_leader_bank(
     let tpu_bank = ctx.bank_forks_controller.insert_bank(tpu_bank)?;
 
     let bank_id = tpu_bank.bank_id();
-    ctx.poh_recorder
-        .write()
-        .unwrap()
-        .set_bank_with_atomic_batches_enabled(tpu_bank, atomic_batches_enabled);
-
-    if let Some(marker) = opening_header {
-        let result = ctx.poh_recorder.write().unwrap().send_marker(marker);
-        if let Err(err) = result {
-            abort_working_bank(ctx, slot)?;
-            return Err(StartLeaderError::PohRecorder(err));
-        }
-        slot_metrics.opening_header_sent = true;
+    let result = ctx.poh_recorder.write().unwrap().set_alpenglow_bank(
+        tpu_bank,
+        atomic_batches_enabled,
+        send_start_bank,
+    );
+    if let Err(err) = result {
+        abort_working_bank(ctx, slot)?;
+        return Err(StartLeaderError::PohRecorder(err));
     }
+    slot_metrics.start_bank_sent = send_start_bank;
 
     // If this is the first alpenglow block, emit the genesis certificate marker.
     // This happens before record intake restarts, so a send failure can be
@@ -1557,6 +1520,7 @@ mod tests {
             banking_trace::BankingTracer,
         },
         agave_banking_stage_ingress_types::BankingPacketReceiver,
+        agave_votor_messages::certificate::{CertSignature, GenesisCert},
         crossbeam_channel::{bounded, unbounded},
         jito_protos::proto::bam_types::atomic_txn_batch_result::Result::{Committed, NotCommitted},
         solana_bls_signatures::{BLS_SIGNATURE_AFFINE_SIZE, Signature as BLSSignature},
@@ -1822,12 +1786,12 @@ mod tests {
         )
     }
 
-    fn set_opening_header(ctx: &LeaderContext, enabled: bool) {
+    fn set_start_bank(ctx: &LeaderContext, enabled: bool) {
         ctx.bam_url
             .store(Arc::new(enabled.then(|| "http://bam.test".to_string())));
     }
 
-    fn opening_header_context() -> (tempfile::TempDir, TestContext, Arc<Bank>) {
+    fn start_bank_context() -> (tempfile::TempDir, TestContext, Arc<Bank>) {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
         let my_pubkey = Pubkey::new_unique();
@@ -1847,121 +1811,67 @@ mod tests {
         bank_forks.write().unwrap().insert(parent);
         let parent = bank_forks.read().unwrap().get(1).unwrap();
         let test = test_context(my_pubkey, bank_forks, blockstore, (2, 2));
-        set_opening_header(&test.ctx, true);
+        set_start_bank(&test.ctx, true);
         (ledger_path, test, parent)
     }
 
     #[test]
-    fn test_opening_header_waits_for_parent_block_id() {
-        let (_ledger_path, mut test, parent) = opening_header_context();
-        assert!(parent.is_frozen());
-        assert_eq!(parent.block_id(), None);
-        *test
-            .ctx
-            .replay_highest_frozen
-            .highest_frozen_slot
-            .lock()
-            .unwrap() = parent.slot();
-
-        assert!(matches!(
-            maybe_start_leader(
-                &mut test.ctx,
-                &mut SlotMetrics::new(2, false),
-                2,
-                1,
-                None,
-                0,
-                true
-            ),
-            Err(StartLeaderError::ParentBlockIdPending(1, 2))
-        ));
-        assert!(test.ctx.bank_forks.read().unwrap().get(2).is_none());
-        assert!(!test.ctx.poh_recorder.read().unwrap().has_bank());
-        assert!(test.ctx.record_receiver.is_shutdown());
-        assert!(test.entry_receiver.is_empty());
-
-        // A frozen parent without an ID must still respect the window deadline.
-        let timeout = block_timeout(&parent, 2);
-        let block_timer = Instant::now() - timeout.saturating_sub(Duration::from_millis(10));
-        assert!(matches!(
-            start_leader_wait_for_parent_replay(
-                &mut test.ctx,
-                &mut SlotMetrics::new(2, false),
-                2,
-                1,
-                None,
-                true,
-                block_timer
-            ),
-            Err(StartLeaderError::ReplayIsBehind(1, 2))
-        ));
-        assert!(test.ctx.bank_forks.read().unwrap().get(2).is_none());
-        assert!(test.ctx.record_receiver.is_shutdown());
-        assert!(test.entry_receiver.is_empty());
-
-        let parent_id = Hash::new_unique();
-        parent.set_block_id(Some(parent_id));
-        let bank = start_leader_wait_for_parent_replay(
-            &mut test.ctx,
-            &mut SlotMetrics::new(2, false),
-            2,
-            1,
-            Some(parent_id),
-            true,
-            Instant::now(),
-        )
-        .unwrap();
-        assert_eq!(bank.parent().unwrap().bank_id(), parent.bank_id());
-        let (header_bank, (component, _)) = test.entry_receiver.try_recv().unwrap();
-        assert_eq!(header_bank.bank_id(), bank.bank_id());
-        let EntryOrMarker::Marker(marker) = component else {
-            panic!("expected opening header");
-        };
-        assert_eq!(
-            marker,
-            VersionedBlockMarker::from_block_header(BlockHeaderV1 {
-                parent_slot: 1,
-                parent_block_id: parent_id,
-            })
-        );
-        assert!(test.entry_receiver.is_empty());
-    }
-
-    #[test]
-    fn test_opening_header_precedes_first_transaction() {
-        for enabled in [false, true] {
-            let (_ledger_path, mut test, parent) = opening_header_context();
-            set_opening_header(&test.ctx, enabled);
-            let parent_id = Hash::new_unique();
-            parent.set_block_id(Some(parent_id));
+    fn test_start_bank_precedes_genesis_certificate_and_first_transaction() {
+        for (enabled, genesis_boundary) in [(false, false), (true, false), (true, true)] {
+            let (_ledger_path, mut test, parent) = start_bank_context();
+            set_start_bank(&test.ctx, enabled);
+            assert!(parent.is_frozen());
+            assert_eq!(parent.block_id(), None);
             assert!(test.ctx.record_receiver.is_shutdown());
-            maybe_start_leader(
+            if genesis_boundary {
+                parent.set_block_id(Some(Hash::default()));
+                test.ctx.genesis_cert_block_marker.slot = parent.slot();
+                test.ctx.genesis_cert_block_marker.block_id = Hash::default();
+                let genesis_block = Block {
+                    slot: parent.slot(),
+                    block_id: Hash::default(),
+                };
+                let migration_status = test.ctx.bank_forks.read().unwrap().migration_status();
+                migration_status.record_feature_activation(0);
+                migration_status.set_genesis_block(genesis_block);
+                migration_status.set_genesis_certificate(Arc::new(GenesisCert {
+                    block: genesis_block,
+                    signature: CertSignature {
+                        signature: test.ctx.genesis_cert_block_marker.bls_signature,
+                        bitmap: test.ctx.genesis_cert_block_marker.bitmap.clone(),
+                    },
+                }));
+                migration_status.enable_alpenglow_during_startup();
+                assert!(migration_status.should_allow_block_markers(2));
+            }
+            let mut slot_metrics = SlotMetrics::new(2, false);
+            let bank = start_leader_wait_for_parent_replay(
                 &mut test.ctx,
-                &mut SlotMetrics::new(2, false),
+                &mut slot_metrics,
                 2,
                 1,
-                Some(parent_id),
-                0,
+                None,
                 true,
+                Instant::now(),
             )
             .unwrap();
+            assert_eq!(slot_metrics.attempt_start_leader_count, 1);
             assert!(!test.ctx.record_receiver.is_shutdown());
-            let bank = test.ctx.poh_recorder.read().unwrap().bank().unwrap();
 
-            // No transaction has been submitted; enabled startup already emitted a header.
+            // No transaction has been submitted; enabled startup already queued StartBank.
             if enabled {
-                let (header_bank, (component, _)) = test.entry_receiver.try_recv().unwrap();
-                assert_eq!(header_bank.bank_id(), bank.bank_id());
-                let EntryOrMarker::Marker(marker) = component else {
-                    panic!("expected opening header");
-                };
-                assert_eq!(
-                    marker,
-                    VersionedBlockMarker::from_block_header(BlockHeaderV1 {
-                        parent_slot: 1,
-                        parent_block_id: parent_id,
-                    })
-                );
+                let (start_bank, (component, _)) = test.entry_receiver.try_recv().unwrap();
+                assert_eq!(start_bank.bank_id(), bank.bank_id());
+                assert!(matches!(component, EntryOrMarker::StartBank));
+            }
+            if genesis_boundary {
+                let (genesis_bank, (component, _)) = test.entry_receiver.try_recv().unwrap();
+                assert_eq!(genesis_bank.bank_id(), bank.bank_id());
+                assert!(matches!(
+                    component,
+                    EntryOrMarker::Marker(VersionedBlockMarker::V1(marker))
+                        if marker.as_genesis_certificate().is_some()
+                ));
             }
             assert!(test.entry_receiver.is_empty());
 
@@ -1992,10 +1902,10 @@ mod tests {
         }
     }
 
-    // A failed header send removes the new bank and leaves record intake stopped.
+    // A failed StartBank send removes the new bank and leaves record intake stopped.
     #[test]
-    fn test_opening_header_send_failure_keeps_record_intake_stopped() {
-        let (_ledger_path, mut test, parent) = opening_header_context();
+    fn test_start_bank_send_failure_keeps_record_intake_stopped() {
+        let (_ledger_path, mut test, parent) = start_bank_context();
         parent.set_block_id(Some(Hash::new_unique()));
         drop(test.entry_receiver);
         assert!(matches!(
@@ -2019,27 +1929,41 @@ mod tests {
     }
 
     #[test]
-    fn test_opening_header_skipped_for_fast_leader_handover() {
-        // Optimistic start, then the replacement bank a sad handover would build.
-        for atomic_batches_enabled in [false, true] {
-            let (_ledger_path, mut test, parent) = opening_header_context();
-            // No parent block ID: neither may wait for one nor emit a header.
-            assert_eq!(parent.block_id(), None);
-            let bank = start_leader_wait_for_parent_replay(
-                &mut test.ctx,
-                &mut SlotMetrics::new(2, true),
-                2,
-                1,
-                None,
-                atomic_batches_enabled,
-                Instant::now(),
-            )
-            .unwrap();
-            assert_eq!(bank.parent().unwrap().bank_id(), parent.bank_id());
-            assert!(test.ctx.poh_recorder.read().unwrap().has_bank());
-            assert!(!test.ctx.record_receiver.is_shutdown());
-            assert!(test.entry_receiver.is_empty());
-        }
+    fn test_start_bank_skipped_for_fast_leader_handover() {
+        let (_ledger_path, mut test, parent) = start_bank_context();
+        let mut slot_metrics = SlotMetrics::new(2, true);
+        // No parent block ID: neither the optimistic bank nor its same-slot replacement may wait
+        // for one or emit StartBank.
+        assert_eq!(parent.block_id(), None);
+        let bank = start_leader_wait_for_parent_replay(
+            &mut test.ctx,
+            &mut slot_metrics,
+            2,
+            1,
+            None,
+            false,
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(bank.parent().unwrap().bank_id(), parent.bank_id());
+        assert!(test.entry_receiver.is_empty());
+
+        abort_failed_working_bank(&mut test.ctx, 2).unwrap();
+        let replacement = start_leader_wait_for_parent_replay(
+            &mut test.ctx,
+            &mut slot_metrics,
+            2,
+            1,
+            None,
+            true,
+            Instant::now(),
+        )
+        .unwrap();
+        assert_ne!(replacement.bank_id(), bank.bank_id());
+        assert_eq!(replacement.parent().unwrap().bank_id(), parent.bank_id());
+        assert!(test.ctx.poh_recorder.read().unwrap().has_bank());
+        assert!(!test.ctx.record_receiver.is_shutdown());
+        assert!(test.entry_receiver.is_empty());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use {
-    super::*,
+    super::{broadcast_utils::ReceivePayload, *},
     crate::{ShredReceiverAddresses, cluster_nodes::ClusterNodesCache},
     agave_votor::event::VotorEventSender,
     agave_votor_messages::migration::MigrationStatus,
@@ -108,10 +108,16 @@ impl BroadcastRun for BroadcastDuplicatesRun {
     ) -> Result<()> {
         // 1) Pull entries from banking stage
         let mut stats = ProcessShredsStats::default();
-        let mut receive_results =
-            broadcast_utils::recv_slot_components(receiver, &mut self.carryover_entry, &mut stats)?;
-        let bank = receive_results.bank.clone();
-        let last_tick_height = receive_results.last_tick_height;
+        let broadcast_utils::ReceiveResults {
+            payload: ReceivePayload::Component(BlockComponent::EntryBatch(mut entries)),
+            bank,
+            last_tick_height,
+        } = broadcast_utils::recv_slot_components(receiver, &mut self.carryover_entry, &mut stats)?
+        else {
+            // This TowerBFT test-only implementation does not use Alpenglow control events or
+            // block markers.
+            return Ok(());
+        };
 
         if bank.slot() != self.current_slot {
             self.chained_merkle_root = broadcast_utils::get_chained_merkle_root_from_parent(
@@ -127,10 +133,6 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             self.num_slots_broadcasted += 1;
         }
 
-        let BlockComponent::EntryBatch(ref mut entries) = receive_results.component else {
-            // This test only TowerBFT implementation does not use block markers
-            return Ok(());
-        };
         // We are guarenteed by coalesce that this is not empty
         assert!(!entries.is_empty());
         // Update the recent blockhash based on transactions in the entries
@@ -206,7 +208,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
 
         let (data_shreds, coding_shreds) = shredder.component_to_merkle_shreds_for_tests(
             keypair,
-            &receive_results.component,
+            &BlockComponent::EntryBatch(entries),
             last_tick_height == bank.max_tick_height() && last_entries.is_none(),
             self.chained_merkle_root,
             self.next_shred_index,
@@ -480,7 +482,54 @@ impl BroadcastRun for BroadcastDuplicatesRun {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, solana_entry::entry::create_ticks};
+    use {
+        super::*,
+        solana_entry::{entry::create_ticks, entry_or_marker::EntryOrMarker},
+        solana_genesis_config::GenesisConfig,
+        solana_ledger::get_tmp_ledger_path,
+        solana_runtime::bank::Bank,
+    };
+
+    #[test]
+    fn test_start_bank_is_ignored_by_duplicate_broadcast() {
+        let ledger_path = get_tmp_ledger_path!();
+        let blockstore = Blockstore::open(&ledger_path).unwrap();
+        let bank = Arc::new(Bank::new_for_tests(&GenesisConfig::default()));
+        let (entry_sender, entry_receiver) = crossbeam_channel::bounded(1);
+        entry_sender
+            .send((bank, (EntryOrMarker::StartBank, 123)))
+            .unwrap();
+        let (socket_sender, socket_receiver) = crossbeam_channel::bounded(1);
+        let (blockstore_sender, blockstore_receiver) = crossbeam_channel::bounded(1);
+        let (votor_event_sender, _votor_event_receiver) = crossbeam_channel::bounded(1);
+        let mut run = BroadcastDuplicatesRun::new(
+            0,
+            BroadcastDuplicatesConfig {
+                partition: ClusterPartition::Stake(0),
+                duplicate_slot_sender: None,
+            },
+            Arc::new(MigrationStatus::default()),
+            votor_event_sender,
+        );
+        run.current_slot = 99;
+        let mut pinnable_slice = blockstore.new_pinnable_slice();
+        let mut write_batch = blockstore.get_write_batch();
+
+        run.run(
+            &Keypair::new(),
+            &blockstore,
+            &mut pinnable_slice,
+            &mut write_batch,
+            &entry_receiver,
+            &socket_sender,
+            &blockstore_sender,
+        )
+        .unwrap();
+
+        assert_eq!(run.current_slot, 99);
+        assert!(socket_receiver.is_empty());
+        assert!(blockstore_receiver.is_empty());
+    }
 
     #[test]
     fn test_special_shred_key_distinguishes_shreds_with_shared_signature() {

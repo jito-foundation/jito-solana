@@ -4,7 +4,10 @@ use {
     agave_votor_messages::migration::MigrationStatus,
     crossbeam_channel::Receiver,
     solana_clock::Slot,
-    solana_entry::{block_component::BlockComponent, entry::Entry, entry_or_marker::EntryOrMarker},
+    solana_entry::{
+        block_component::{BlockComponent, VersionedBlockMarker},
+        entry_or_marker::EntryOrMarker,
+    },
     solana_hash::Hash,
     solana_ledger::{
         blockstore::Blockstore,
@@ -21,10 +24,20 @@ use {
 
 const ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(50);
 
+#[allow(clippy::large_enum_variant)]
+pub(super) enum ReceivePayload {
+    StartBank,
+    Component(BlockComponent),
+}
+
 pub(super) struct ReceiveResults {
-    pub component: BlockComponent,
+    pub payload: ReceivePayload,
     pub bank: Arc<Bank>,
     pub last_tick_height: u64,
+}
+
+pub(super) fn is_block_header(marker: &VersionedBlockMarker) -> bool {
+    matches!(marker, VersionedBlockMarker::V1(marker) if marker.as_block_header().is_some())
 }
 
 const fn get_target_batch_bytes_default() -> u64 {
@@ -102,20 +115,32 @@ fn recv_slot_components_maybe_empty(
         Some((bank, (entry_or_marker, tick_height))) => (bank, (entry_or_marker, tick_height)),
         None => receiver.recv_timeout(Duration::new(1, 0))?,
     };
-    assert!(last_tick_height <= bank.max_tick_height());
-
-    let mut entries: Vec<Entry> = match entry_or_marker {
+    let mut entries = match entry_or_marker {
+        EntryOrMarker::StartBank => {
+            // StartBank is an internal ordering barrier, not a ledger component. Return it without
+            // waiting to coalesce entries or inspecting its parent.
+            process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
+            return Ok(Some(ReceiveResults {
+                payload: ReceivePayload::StartBank,
+                bank,
+                last_tick_height,
+            }));
+        }
         EntryOrMarker::Marker(marker) => {
             // If the first thing is a block marker, return it immediately
+            if !is_block_header(&marker) {
+                assert!(last_tick_height <= bank.max_tick_height());
+            }
             process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
 
             return Ok(Some(ReceiveResults {
-                component: BlockComponent::BlockMarker(marker),
+                payload: ReceivePayload::Component(BlockComponent::BlockMarker(marker)),
                 bank,
                 last_tick_height,
             }));
         }
         EntryOrMarker::Entry(entry) => {
+            assert!(last_tick_height <= bank.max_tick_height());
             vec![entry]
         }
     };
@@ -148,6 +173,18 @@ fn recv_slot_components_maybe_empty(
             process_stats.coalesce_exited_rcv_timeout += 1;
             break;
         };
+        // Internal start events and upstream headers are control barriers. Preserve the current
+        // batch until Standard Broadcast has accepted or rejected the control event; an invalid
+        // future control must not discard valid entries here.
+        if match &entry_or_marker {
+            EntryOrMarker::StartBank => true,
+            EntryOrMarker::Marker(marker) => is_block_header(marker),
+            EntryOrMarker::Entry(_) => false,
+        } {
+            *carryover_entry = Some((try_bank, (entry_or_marker, tick_height)));
+            break;
+        }
+
         // If the bank changed, that implies the previous slot was interrupted and we do not have to
         // broadcast its entries.
         if try_bank.slot() != bank.slot() {
@@ -162,6 +199,7 @@ fn recv_slot_components_maybe_empty(
         }
 
         match entry_or_marker {
+            EntryOrMarker::StartBank => unreachable!("handled before bank-change processing"),
             EntryOrMarker::Marker(ref _marker) => {
                 // If we hit a block marker, save it for next time and stop coalescing
                 *carryover_entry = Some((try_bank, (entry_or_marker, tick_height)));
@@ -196,7 +234,7 @@ fn recv_slot_components_maybe_empty(
     Ok(match entries.is_empty() {
         true => None,
         false => Some(ReceiveResults {
-            component: BlockComponent::EntryBatch(entries),
+            payload: ReceivePayload::Component(BlockComponent::EntryBatch(entries)),
             bank,
             last_tick_height,
         }),
@@ -253,7 +291,7 @@ mod tests {
     use {
         super::*,
         crossbeam_channel::bounded,
-        solana_entry::entry_or_marker::EntryOrMarker,
+        solana_entry::{entry::Entry, entry_or_marker::EntryOrMarker},
         solana_genesis_config::GenesisConfig,
         solana_ledger::genesis_utils::{GenesisConfigInfo, create_genesis_config},
         solana_runtime::bank::SlotLeader,
@@ -330,7 +368,7 @@ mod tests {
         {
             assert_eq!(result.bank.slot(), bank1.slot());
             last_tick_height = result.last_tick_height;
-            if let BlockComponent::EntryBatch(entries) = result.component {
+            if let ReceivePayload::Component(BlockComponent::EntryBatch(entries)) = result.payload {
                 res_entries.extend(entries);
             }
         }
@@ -362,8 +400,9 @@ mod tests {
 
         assert_eq!(result.last_tick_height, 1);
         assert!(matches!(
-            result.component,
-            BlockComponent::EntryBatch(ref batch) if batch == &entries[..1]
+            result.payload,
+            ReceivePayload::Component(BlockComponent::EntryBatch(ref batch))
+                if batch == &entries[..1]
         ));
         assert!(carryover.is_some() || !r.is_empty());
     }
@@ -420,7 +459,7 @@ mod tests {
         {
             bank_slot = result.bank.slot();
             last_tick_height = result.last_tick_height;
-            if let BlockComponent::EntryBatch(entries) = result.component {
+            if let ReceivePayload::Component(BlockComponent::EntryBatch(entries)) = result.payload {
                 res_entries = entries;
             }
         }
@@ -457,14 +496,91 @@ mod tests {
         let result =
             recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
 
-        assert!(matches!(result.component, BlockComponent::EntryBatch(ref e) if e.len() == 2));
+        assert!(matches!(
+            result.payload,
+            ReceivePayload::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 2
+        ));
         assert_eq!(result.last_tick_height, 2);
         assert!(carryover.is_some());
 
         let result =
             recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
-        assert!(matches!(result.component, BlockComponent::BlockMarker(_)));
+        assert!(matches!(
+            result.payload,
+            ReceivePayload::Component(BlockComponent::BlockMarker(_))
+        ));
         assert_eq!(result.last_tick_height, max_tick);
+    }
+
+    #[test]
+    fn test_control_carryover_preserves_current_entries() {
+        let (genesis_config, bank0, _bank_forks, tx) = setup_test();
+        let bank1 = Arc::new(Bank::new_from_parent(
+            bank0.clone(),
+            SlotLeader::default(),
+            1,
+        ));
+        let bank2 = Arc::new(Bank::new_from_parent(
+            bank1.clone(),
+            SlotLeader::default(),
+            2,
+        ));
+        assert_eq!(bank2.parent().unwrap().block_id(), None);
+        let upstream_header = EntryOrMarker::Marker(
+            solana_entry::block_component::VersionedBlockMarker::from_block_header(
+                solana_entry::block_component::BlockHeaderV1 {
+                    parent_slot: bank1.slot(),
+                    parent_block_id: Hash::default(),
+                },
+            ),
+        );
+
+        let invalid_tick_height = bank2.max_tick_height() + 1;
+        for control in [EntryOrMarker::StartBank, upstream_header] {
+            let is_start_bank = matches!(&control, EntryOrMarker::StartBank);
+            let entry = Entry::new(&genesis_config.hash(), 1, vec![tx.clone()]);
+            let (sender, receiver) = bounded(2);
+            sender
+                .send((bank1.clone(), (EntryOrMarker::Entry(entry.clone()), 1)))
+                .unwrap();
+            sender
+                .send((bank2.clone(), (control, invalid_tick_height)))
+                .unwrap();
+
+            let mut carryover = None;
+            let result = recv_slot_components(
+                &receiver,
+                &mut carryover,
+                &mut ProcessShredsStats::default(),
+            )
+            .unwrap();
+            assert!(matches!(
+                result.payload,
+                ReceivePayload::Component(BlockComponent::EntryBatch(ref entries))
+                    if entries.as_slice() == std::slice::from_ref(&entry)
+            ));
+            assert!(Arc::ptr_eq(&result.bank, &bank1));
+            assert_eq!(result.last_tick_height, 1);
+            assert!(carryover.is_some());
+
+            let control_result = recv_slot_components(
+                &receiver,
+                &mut carryover,
+                &mut ProcessShredsStats::default(),
+            )
+            .unwrap();
+            assert!(Arc::ptr_eq(&control_result.bank, &bank2));
+            assert_eq!(control_result.last_tick_height, invalid_tick_height);
+            assert!(carryover.is_none());
+            if is_start_bank {
+                assert!(matches!(control_result.payload, ReceivePayload::StartBank));
+            } else {
+                assert!(matches!(
+                    control_result.payload,
+                    ReceivePayload::Component(BlockComponent::BlockMarker(_))
+                ));
+            }
+        }
     }
 
     #[test]
@@ -498,8 +614,11 @@ mod tests {
         // First call should return only entry1
         let result =
             recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
-        assert!(matches!(result.component, BlockComponent::EntryBatch(ref e) if e.len() == 1));
-        if let BlockComponent::EntryBatch(ref entries) = result.component {
+        assert!(matches!(
+            result.payload,
+            ReceivePayload::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 1
+        ));
+        if let ReceivePayload::Component(BlockComponent::EntryBatch(ref entries)) = result.payload {
             assert_eq!(entries[0], entry1);
         }
         assert_eq!(result.last_tick_height, 1);
@@ -507,14 +626,20 @@ mod tests {
         // Second call should return the marker
         let result =
             recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
-        assert!(matches!(result.component, BlockComponent::BlockMarker(_)));
+        assert!(matches!(
+            result.payload,
+            ReceivePayload::Component(BlockComponent::BlockMarker(_))
+        ));
         assert_eq!(result.last_tick_height, 2);
 
         // Third call should return entry2
         let result =
             recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
-        assert!(matches!(result.component, BlockComponent::EntryBatch(ref e) if e.len() == 1));
-        if let BlockComponent::EntryBatch(ref entries) = result.component {
+        assert!(matches!(
+            result.payload,
+            ReceivePayload::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 1
+        ));
+        if let ReceivePayload::Component(BlockComponent::EntryBatch(ref entries)) = result.payload {
             assert_eq!(entries[0], entry2);
         }
         assert_eq!(result.last_tick_height, 3);
@@ -546,10 +671,10 @@ mod tests {
         // Bank changes to bank2, but the next item is a marker with tick_height=3 — this should
         // leave entries empty after the clear. The stale last_tick_height (5, from bank1) must not
         // leak into subsequent results.
-        let marker = solana_entry::block_component::VersionedBlockMarker::from_block_header(
-            solana_entry::block_component::BlockHeaderV1 {
-                parent_slot: 1,
-                parent_block_id: Hash::default(),
+        let marker = solana_entry::block_component::VersionedBlockMarker::from_update_parent(
+            solana_entry::block_component::UpdateParentV1 {
+                new_parent_slot: 1,
+                new_parent_block_id: Hash::default(),
             },
         );
         s.send((bank2.clone(), (EntryOrMarker::Marker(marker), 3)))
@@ -577,7 +702,10 @@ mod tests {
         // last_tick_height must be 3 (from the marker), not 5 (stale value from bank1).
         let result =
             recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
-        assert!(matches!(result.component, BlockComponent::BlockMarker(_)));
+        assert!(matches!(
+            result.payload,
+            ReceivePayload::Component(BlockComponent::BlockMarker(_))
+        ));
         assert_eq!(result.last_tick_height, 3);
     }
 
