@@ -269,11 +269,13 @@ impl BamManager {
                         .store(BamConnectionState::Connected as u8, Ordering::Release);
                 }
             }
-            // Send leader state if we are in a leader slot
-            if let Some(bank) = shared_leader_state.load().working_bank()
+            // Bank and readiness from one snapshot; a same-slot replacement must not mix them.
+            let state = shared_leader_state.load();
+            if let Some(bank) = state.working_bank()
                 && !bank.is_frozen()
             {
-                let leader_state = Self::generate_leader_state(bank);
+                let leader_state =
+                    Self::generate_leader_state(bank, state.atomic_batches_enabled());
                 let _ = dependencies
                     .outbound_sender
                     .try_send(BamOutboundMessage::LeaderState(leader_state));
@@ -332,7 +334,7 @@ impl BamManager {
         true
     }
 
-    fn generate_leader_state(bank: &Bank) -> LeaderState {
+    fn generate_leader_state(bank: &Bank, atomic_batches_enabled: bool) -> LeaderState {
         let cost_tracker = bank.read_cost_tracker().unwrap();
         let max_block_cu = cost_tracker.block_cost_limit();
         let consumed_block_cu = cost_tracker.block_cost();
@@ -342,6 +344,9 @@ impl BamManager {
             slot: bank.slot(),
             tick: (bank.tick_height() % bank.ticks_per_slot()) as u32,
             slot_cu_budget_remaining,
+            parent_slot: Some(bank.parent_slot()),
+            parent_block_id: bank.parent_block_id().map(|id| id.to_bytes().to_vec()),
+            atomic_batches_enabled: Some(atomic_batches_enabled),
         }
     }
 
@@ -555,5 +560,34 @@ impl BamManager {
 
     pub fn join(self) -> std::thread::Result<()> {
         self.thread.join()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*, solana_hash::Hash, solana_leader_schedule::SlotLeader,
+        solana_runtime::genesis_utils::create_genesis_config,
+    };
+
+    #[test]
+    fn leader_state_carries_parent_identity_and_readiness() {
+        let genesis = create_genesis_config(1_000_000_000);
+        let (parent, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis.genesis_config);
+        let parent_block_id = Hash::new_unique();
+        parent.set_block_id(Some(parent_block_id));
+        let bank = Bank::new_from_parent(parent.clone(), SlotLeader::new_unique(), 7);
+
+        let state = BamManager::generate_leader_state(&bank, true);
+        assert_eq!(state.slot, 7);
+        assert_eq!(state.parent_slot, Some(parent.slot()));
+        assert_eq!(
+            state.parent_block_id.as_deref(),
+            Some(parent_block_id.as_ref())
+        );
+        assert_eq!(state.atomic_batches_enabled, Some(true));
+
+        let state = BamManager::generate_leader_state(&bank, false);
+        assert_eq!(state.atomic_batches_enabled, Some(false));
     }
 }
