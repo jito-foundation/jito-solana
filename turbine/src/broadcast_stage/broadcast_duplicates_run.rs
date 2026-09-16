@@ -53,6 +53,7 @@ pub(super) struct BroadcastDuplicatesRun {
     reed_solomon_cache: Arc<ReedSolomonCache>,
     migration_status: Arc<MigrationStatus>,
     votor_event_sender: VotorEventSender,
+    non_alpenglow_entry_coalesce_duration: Duration,
 }
 
 impl BroadcastDuplicatesRun {
@@ -61,6 +62,7 @@ impl BroadcastDuplicatesRun {
         config: BroadcastDuplicatesConfig,
         migration_status: Arc<MigrationStatus>,
         votor_event_sender: VotorEventSender,
+        non_alpenglow_entry_coalesce_duration: Duration,
     ) -> Self {
         let cluster_nodes_cache = Arc::new(ClusterNodesCache::<BroadcastStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -83,6 +85,7 @@ impl BroadcastDuplicatesRun {
             reed_solomon_cache: Arc::<ReedSolomonCache>::default(),
             migration_status,
             votor_event_sender,
+            non_alpenglow_entry_coalesce_duration,
         }
     }
 }
@@ -98,8 +101,15 @@ impl BroadcastRun for BroadcastDuplicatesRun {
     ) -> Result<()> {
         // 1) Pull entries from banking stage
         let mut stats = ProcessShredsStats::default();
-        let mut receive_results =
-            broadcast_utils::recv_slot_components(receiver, &mut self.carryover_entry, &mut stats)?;
+        let mut receive_results = broadcast_utils::recv_slot_components(
+            receiver,
+            &mut self.carryover_entry,
+            &mut stats,
+            broadcast_utils::entry_coalesce_duration(
+                &self.migration_status,
+                self.non_alpenglow_entry_coalesce_duration,
+            ),
+        )?;
         let bank = receive_results.bank.clone();
         let last_tick_height = receive_results.last_tick_height;
 

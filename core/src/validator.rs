@@ -152,7 +152,10 @@ use {
     },
     solana_time_utils::timestamp,
     solana_tpu_client::tpu_client::{DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_VOTE_USE_QUIC},
-    solana_turbine::{self, broadcast_stage::BroadcastStageType},
+    solana_turbine::{
+        self,
+        broadcast_stage::{BroadcastStageType, DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION},
+    },
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     solana_validator_exit::Exit,
     solana_vote_program::vote_state::{VoteStateV4, handler::VoteStateHandler},
@@ -391,6 +394,8 @@ pub struct ValidatorConfig {
     pub block_production_method: BlockProductionMethod,
     pub block_production_num_workers: NonZeroUsize,
     pub block_production_scheduler_config: SchedulerConfig,
+    /// Entry coalescing window used by broadcast while Alpenglow is not enabled.
+    pub non_alpenglow_entry_coalesce_duration: Duration,
     pub enable_block_production_forwarding: bool,
     pub enable_scheduler_bindings: bool,
     pub generator_config: Option<GeneratorConfig>,
@@ -490,6 +495,7 @@ impl ValidatorConfig {
             block_production_method: BlockProductionMethod::default(),
             block_production_num_workers: BankingStage::default_num_workers(),
             block_production_scheduler_config: SchedulerConfig::default(),
+            non_alpenglow_entry_coalesce_duration: DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
             // enable forwarding by default for tests
             enable_block_production_forwarding: true,
             enable_scheduler_bindings: false,
@@ -1836,6 +1842,7 @@ impl Validator {
             bam_shred_receiver_addresses,
             config.multicast_receiver_address.clone(),
             config.bam_url.clone(),
+            config.non_alpenglow_entry_coalesce_duration,
         );
 
         datapoint_info!(

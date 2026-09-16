@@ -40,6 +40,7 @@ use {
 pub mod thread_args;
 use {
     solana_core::banking_stage::BankingStage,
+    solana_turbine::broadcast_stage::DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
     thread_args::{DefaultThreadArgs, thread_args},
 };
 
@@ -334,6 +335,7 @@ pub struct DefaultArgs {
 
     pub banking_trace_dir_byte_limit: String,
     pub block_production_pacing_fill_time_millis: String,
+    pub non_alpenglow_entry_coalesce_duration_millis: String,
 
     pub thread_args: DefaultThreadArgs,
 
@@ -389,6 +391,10 @@ impl DefaultArgs {
             banking_trace_dir_byte_limit: 0.to_string(),
             block_production_pacing_fill_time_millis: BankingStage::default_fill_time_millis()
                 .to_string(),
+            non_alpenglow_entry_coalesce_duration_millis:
+                DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION
+                    .as_millis()
+                    .to_string(),
             thread_args: DefaultThreadArgs::default(),
             relayer_expected_heartbeat_interval_ms: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
                 .to_string(),

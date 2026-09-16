@@ -65,6 +65,7 @@ pub struct StandardBroadcastRun {
     max_data_shreds_per_slot: u32,
     max_code_shreds_per_slot: u32,
     broadcast_blacklist: VecDeque<Slot>,
+    non_alpenglow_entry_coalesce_duration: Duration,
 }
 
 #[derive(Debug)]
@@ -78,6 +79,7 @@ impl StandardBroadcastRun {
         migration_status: Arc<MigrationStatus>,
         votor_event_sender: VotorEventSender,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
+        non_alpenglow_entry_coalesce_duration: Duration,
     ) -> Self {
         let cluster_nodes_cache = Arc::new(ClusterNodesCache::<BroadcastStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -112,6 +114,7 @@ impl StandardBroadcastRun {
             max_data_shreds_per_slot: DEFAULT_MAX_DATA_SHREDS_PER_SLOT,
             max_code_shreds_per_slot: DEFAULT_MAX_CODE_SHREDS_PER_SLOT,
             broadcast_blacklist: VecDeque::new(),
+            non_alpenglow_entry_coalesce_duration,
         }
     }
 
@@ -653,6 +656,10 @@ impl BroadcastRun for StandardBroadcastRun {
             receiver,
             &mut self.carryover_entry,
             &mut process_stats,
+            broadcast_utils::entry_coalesce_duration(
+                &self.migration_status,
+                self.non_alpenglow_entry_coalesce_duration,
+            ),
         )?;
         // TODO: Confirm that last chunk of coding shreds
         // will not be lost or delayed for too long.
@@ -826,6 +833,7 @@ mod test {
             Arc::new(MigrationStatus::default()),
             votor_event_sender,
             test_leader_schedule_cache(&bank),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
 
         standard_broadcast_run
@@ -855,6 +863,7 @@ mod test {
             Arc::new(MigrationStatus::default()),
             votor_event_sender,
             test_leader_schedule_cache(&bank),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         assert!(run.completed);
 
@@ -911,6 +920,7 @@ mod test {
             Arc::new(migration_status),
             votor_event_sender,
             test_leader_schedule_cache(&bank0),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         standard_broadcast_run
             .test_process_receive_results(
@@ -1062,6 +1072,7 @@ mod test {
             Arc::new(MigrationStatus::default()),
             votor_event_sender,
             test_leader_schedule_cache(&bank),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         let mut process_ticks = |num_ticks| {
             let ticks = create_ticks(num_ticks, 0, genesis_config.hash());
@@ -1135,6 +1146,7 @@ mod test {
             Arc::new(MigrationStatus::default()),
             votor_event_sender,
             test_leader_schedule_cache(&bank),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         standard_broadcast_run
             .test_process_receive_results(
@@ -1181,6 +1193,7 @@ mod test {
             Arc::new(MigrationStatus::default()),
             votor_event_sender,
             test_leader_schedule_cache(&bank1),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         let (bsend, brecv) = bounded(1024);
         let (ssend, srecv) = bounded(1024);
@@ -1293,6 +1306,7 @@ mod test {
             Arc::new(MigrationStatus::default()),
             votor_event_sender,
             test_leader_schedule_cache(&bank),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         bs.slot = 1;
         bs.parent = 0;
@@ -1330,6 +1344,7 @@ mod test {
             Arc::new(MigrationStatus::post_migration_status()),
             votor_event_sender,
             test_leader_schedule_cache(&bank),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
         bs.slot = 12;
         bs.parent = 10;

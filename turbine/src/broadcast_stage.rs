@@ -54,6 +54,8 @@ pub mod broadcast_metrics;
 pub(crate) mod broadcast_utils;
 pub(crate) mod standard_broadcast_run;
 
+pub use broadcast_utils::DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION;
+
 const _: () = const {
     // From https://github.com/anza-xyz/agave/pull/1735#discussion_r1644899183:
     // 1. There must be at least two epochs because near an epoch boundary you might receive
@@ -177,6 +179,7 @@ impl BroadcastStageType {
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        non_alpenglow_entry_coalesce_duration: Duration,
     ) -> BroadcastStage {
         let migration_status = bank_forks.read().unwrap().migration_status();
         match self {
@@ -193,6 +196,7 @@ impl BroadcastStageType {
                     migration_status,
                     votor_event_sender,
                     leader_schedule_cache,
+                    non_alpenglow_entry_coalesce_duration,
                 ),
                 xdp_sender,
                 shredstream_receiver_address,
@@ -214,6 +218,7 @@ impl BroadcastStageType {
                     config.clone(),
                     migration_status,
                     votor_event_sender,
+                    non_alpenglow_entry_coalesce_duration,
                 ),
                 xdp_sender,
                 shredstream_receiver_address,
@@ -1102,6 +1107,7 @@ pub mod test {
                 Arc::new(MigrationStatus::default()),
                 votor_event_sender,
                 leader_schedule_cache,
+                broadcast_utils::DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
             ),
             None,
             Arc::default(),

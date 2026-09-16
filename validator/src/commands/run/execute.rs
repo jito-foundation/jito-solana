@@ -932,6 +932,11 @@ pub fn execute(
                 SchedulerPacing
             ),
         },
+        non_alpenglow_entry_coalesce_duration: Duration::from_millis(value_t_or_exit!(
+            matches,
+            "non_alpenglow_entry_coalesce_duration_millis",
+            u64
+        )),
         enable_block_production_forwarding: staked_nodes_overrides_path.is_some(),
         enable_scheduler_bindings: matches.is_present("enable_scheduler_bindings"),
         banking_trace_dir_byte_limit: value_t_or_exit!(

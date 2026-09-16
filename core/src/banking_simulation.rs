@@ -48,7 +48,9 @@ use {
     },
     solana_shred_version::compute_shred_version,
     solana_signer::Signer,
-    solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
+    solana_turbine::broadcast_stage::{
+        BroadcastStage, BroadcastStageType, DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
+    },
     std::{
         collections::BTreeMap,
         fmt::Display,
@@ -812,6 +814,7 @@ impl BankingSimulator {
             Arc::new(ArcSwap::default()),
             Arc::new(ArcSwap::default()),
             Arc::new(ArcSwap::default()),
+            DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
         );
 
         info!("Start banking stage!...");

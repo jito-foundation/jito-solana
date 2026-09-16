@@ -30,6 +30,7 @@ use {
     solana_rpc::{rpc::JsonRpcConfig, rpc_pubsub_service::PubSubConfig},
     solana_send_transaction_service::send_transaction_service::Config as SendTransactionServiceConfig,
     solana_signer::Signer,
+    solana_turbine::broadcast_stage::DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION,
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     std::{collections::HashSet, net::SocketAddr, path::PathBuf},
 };
@@ -1179,6 +1180,26 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .help(
                 "Pacing fill time in milliseconds for the central-scheduler block production \
                  method",
+            ),
+    )
+    .arg(
+        Arg::with_name("non_alpenglow_entry_coalesce_duration_millis")
+            .long("non-alpenglow-entry-coalesce-duration-millis")
+            .value_name("MILLIS")
+            .takes_value(true)
+            .default_value(&default_args.non_alpenglow_entry_coalesce_duration_millis)
+            .validator(|s| {
+                is_within_range(
+                    s,
+                    1..=DEFAULT_NON_ALPENGLOW_ENTRY_COALESCE_DURATION.as_millis() as usize,
+                )
+            })
+            .help(
+                "How long broadcast waits for more entries before shredding a partially filled \
+                 batch, while Alpenglow is not enabled. A shorter window puts shreds on the wire \
+                 sooner, at the cost of more padding in the erasure batches. Has no effect once \
+                 Alpenglow is enabled. The default is also the maximum, so this flag can only \
+                 shorten the window",
             ),
     )
     .arg(

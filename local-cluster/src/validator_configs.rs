@@ -71,6 +71,7 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         block_production_method: config.block_production_method.clone(),
         block_production_num_workers: config.block_production_num_workers,
         block_production_scheduler_config: config.block_production_scheduler_config.clone(),
+        non_alpenglow_entry_coalesce_duration: config.non_alpenglow_entry_coalesce_duration,
         enable_block_production_forwarding: config.enable_block_production_forwarding,
         enable_scheduler_bindings: config.enable_scheduler_bindings,
         generator_config: config.generator_config.clone(),

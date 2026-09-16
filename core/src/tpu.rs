@@ -84,6 +84,7 @@ use {
             atomic::{AtomicBool, AtomicU8},
         },
         thread::{self, JoinHandle},
+        time::Duration,
     },
     tokio::sync::mpsc,
     tokio_util::sync::CancellationToken,
@@ -194,6 +195,7 @@ impl Tpu {
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
+        non_alpenglow_entry_coalesce_duration: Duration,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -532,6 +534,7 @@ impl Tpu {
             shred_receiver_addresses,
             bam_shred_receiver_addresses,
             multicast_receiver_address,
+            non_alpenglow_entry_coalesce_duration,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();
