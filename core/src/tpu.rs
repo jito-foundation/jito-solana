@@ -46,7 +46,7 @@ use {
     solana_keypair::Keypair,
     solana_ledger::{blockstore::Blockstore, entry_notifier_service::EntryNotifierSender},
     solana_poh::{
-        poh_recorder::{PohRecorder, WorkingBankEntryOrMarker},
+        poh_recorder::{PohRecorder, WorkingBankMessage},
         transaction_recorder::TransactionRecorder,
     },
     solana_pubkey::Pubkey,
@@ -141,7 +141,7 @@ impl Tpu {
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
         transaction_recorder: TransactionRecorder,
-        entry_receiver: Receiver<WorkingBankEntryOrMarker>,
+        entry_receiver: Receiver<WorkingBankMessage>,
         retransmit_slots_receiver: Receiver<Slot>,
         sockets: TpuSockets,
         subscriptions: Option<Arc<RpcSubscriptions>>,
@@ -508,19 +508,20 @@ impl Tpu {
             )
         });
 
-        let (entry_receiver, tpu_entry_notifier) =
-            if let Some(entry_notification_sender) = entry_notification_sender {
-                let (broadcast_entry_sender, broadcast_entry_receiver) = bounded(TPU_CHANNEL_SIZE);
-                let tpu_entry_notifier = TpuEntryNotifier::new(
-                    entry_receiver,
-                    entry_notification_sender,
-                    broadcast_entry_sender,
-                    exit.clone(),
-                );
-                (broadcast_entry_receiver, Some(tpu_entry_notifier))
-            } else {
-                (entry_receiver, None)
-            };
+        let (entry_receiver, tpu_entry_notifier) = if let Some(entry_notification_sender) =
+            entry_notification_sender
+        {
+            let (broadcast_message_sender, broadcast_message_receiver) = bounded(TPU_CHANNEL_SIZE);
+            let tpu_entry_notifier = TpuEntryNotifier::new(
+                entry_receiver,
+                entry_notification_sender,
+                broadcast_message_sender,
+                exit.clone(),
+            );
+            (broadcast_message_receiver, Some(tpu_entry_notifier))
+        } else {
+            (entry_receiver, None)
+        };
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
             broadcast_sockets,
