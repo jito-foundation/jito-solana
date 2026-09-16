@@ -1042,7 +1042,7 @@ mod tests {
         itertools::Itertools,
         solana_entry::{
             entry::{self, EntrySlice},
-            entry_or_marker::EntryOrMarker,
+            recorder_message::RecorderMessage,
         },
         solana_hash::Hash,
         solana_keypair::Keypair,
@@ -1215,7 +1215,7 @@ mod tests {
         trace!("getting entries");
         let entries: Vec<_> = entry_receiver
             .iter()
-            .map(|(_bank, (entry_or_marker, _tick_height))| entry_or_marker.unwrap_entry())
+            .map(|(_bank, (message, _tick_height))| message.unwrap_entry())
             .collect();
         trace!("done");
         assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -1317,7 +1317,7 @@ mod tests {
         // capture the entry receiver until we've received all our entries.
         let mut entries = Vec::with_capacity(100);
         loop {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _))) = entry_receiver.try_recv() {
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _))) = entry_receiver.try_recv() {
                 let tx_entry = !entry.transactions.is_empty();
                 entries.push(entry);
                 if tx_entry {
@@ -1344,7 +1344,7 @@ mod tests {
         entries.extend(
             entry_receiver
                 .iter()
-                .map(|(_bank, (entry_or_marker, _tick_height))| entry_or_marker.unwrap_entry()),
+                .map(|(_bank, (message, _tick_height))| message.unwrap_entry()),
         );
 
         assert!(
@@ -1464,7 +1464,7 @@ mod tests {
         // check that the balance is what we expect.
         let entries: Vec<_> = entry_receiver
             .iter()
-            .map(|(_bank, (entry_or_marker, _tick_height))| entry_or_marker.unwrap_entry())
+            .map(|(_bank, (message, _tick_height))| message.unwrap_entry())
             .collect();
 
         let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
@@ -1775,7 +1775,7 @@ mod tests {
                 let mut num_txs = 0;
                 const EXPECTED_TXS: usize = 1;
                 while start.elapsed() < Duration::from_secs(5) {
-                    if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick))) =
+                    if let Ok((_bank, (RecorderMessage::Entry(entry), _tick))) =
                         entry_receiver.recv_timeout(Duration::from_millis(10))
                     {
                         num_txs += entry.transactions.len();
