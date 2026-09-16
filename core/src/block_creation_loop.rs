@@ -1405,10 +1405,17 @@ fn create_and_insert_leader_bank(
     let tpu_bank = ctx.bank_forks_controller.insert_bank(tpu_bank)?;
 
     let bank_id = tpu_bank.bank_id();
-    ctx.poh_recorder
+
+    // Tell broadcast to produce the header
+    let send_result = ctx
+        .poh_recorder
         .write()
         .unwrap()
-        .set_bank_with_atomic_batches_enabled(tpu_bank, atomic_batches_enabled);
+        .set_bank_and_send_slot_start(tpu_bank, atomic_batches_enabled);
+    if let Err(err) = send_result {
+        abort_working_bank(ctx, slot)?;
+        return Err(StartLeaderError::PohRecorder(err));
+    }
 
     // If this is the first alpenglow block, emit the genesis certificate marker.
     // This happens before record intake restarts, so a send failure can be
@@ -1491,13 +1498,18 @@ mod tests {
         crossbeam_channel::{bounded, unbounded},
         jito_protos::proto::bam_types::atomic_txn_batch_result::Result::{Committed, NotCommitted},
         solana_bls_signatures::{BLS_SIGNATURE_AFFINE_SIZE, Signature as BLSSignature},
-        solana_entry::{block_component::VersionedUpdateParent, entry_or_marker::EntryOrMarker},
+        solana_entry::{block_component::VersionedUpdateParent, recorder_message::RecorderMessage},
         solana_keypair::Keypair,
         solana_leader_schedule::{FixedSchedule, LeaderSchedule, SlotLeader},
         solana_ledger::{blockstore::Blockstore, get_tmp_ledger_path_auto_delete},
         solana_poh::{
+<<<<<<< HEAD
             poh_recorder::{PohRecorder, Record, SharedLeaderState, WorkingBankEntryOrMarker},
             record_channels::{RecordSender, RecordSenderError, record_channels},
+=======
+            poh_recorder::{PohRecorder, Record, SharedLeaderState, WorkingBankMessage},
+            record_channels::{RecordSender, record_channels},
+>>>>>>> 219672f7e8 (feat(broadcast): send block header at Alpenglow slot start (agave#15275) (#1661))
             transaction_recorder::TransactionRecorder,
         },
         solana_poh_config::PohConfig,
@@ -1598,7 +1610,7 @@ mod tests {
     struct TestContext {
         ctx: LeaderContext,
         record_sender: RecordSender,
-        entry_receiver: Receiver<WorkingBankEntryOrMarker>,
+        entry_receiver: Receiver<WorkingBankMessage>,
         banking_stage_receiver: BankingPacketReceiver,
         leader_window_info_sender: Sender<LeaderWindowInfo>,
         _reward_requests: Receiver<rewards::msg_types::RewardRequest>,
@@ -1709,9 +1721,7 @@ mod tests {
         assert_eq!(selected.parent_block.slot, 6);
     }
 
-    fn recv_update_parent_marker(
-        entry_receiver: &Receiver<WorkingBankEntryOrMarker>,
-    ) -> UpdateParentV1 {
+    fn recv_update_parent_marker(entry_receiver: &Receiver<WorkingBankMessage>) -> UpdateParentV1 {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             let timeout = deadline.saturating_duration_since(Instant::now());
@@ -1719,9 +1729,8 @@ mod tests {
                 !timeout.is_zero(),
                 "timed out waiting for UpdateParent marker"
             );
-            let (_bank, (entry_or_marker, _tick_height)) =
-                entry_receiver.recv_timeout(timeout).unwrap();
-            let EntryOrMarker::Marker(VersionedBlockMarker::V1(marker)) = entry_or_marker else {
+            let (_bank, (message, _tick_height)) = entry_receiver.recv_timeout(timeout).unwrap();
+            let RecorderMessage::Marker(VersionedBlockMarker::V1(marker)) = message else {
                 continue;
             };
             let Some(VersionedUpdateParent::V1(update_parent)) = marker.as_update_parent() else {

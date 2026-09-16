@@ -27,8 +27,8 @@ use {
     solana_entry::{
         block_component::{BlockFooterV1, VersionedBlockMarker},
         entry::Entry,
-        entry_or_marker::EntryOrMarker,
         poh::Poh,
+        recorder_message::RecorderMessage,
     },
     solana_hash::Hash,
     solana_leader_schedule::NUM_CONSECUTIVE_LEADER_SLOTS,
@@ -56,6 +56,35 @@ use {
 pub const GRACE_TICKS_FACTOR: u64 = 2;
 pub const MAX_GRACE_SLOTS: u64 = 2;
 
+<<<<<<< HEAD
+=======
+/// Maximum number of messages waiting to be consumed by the broadcast pipeline.
+///
+/// Sending is intentionally blocking: once a record has been mixed into PoH, its message must not
+/// be dropped. This capacity absorbs transient downstream stalls;
+/// a sustained stall applies backpressure instead of growing memory without bound.
+pub const WORKING_BANK_CHANNEL_CAPACITY: usize = 2048;
+
+/// Try the nonblocking fast path first so saturation is observable, then block
+/// rather than dropping a message that has already been mixed into PoH.
+fn send_working_bank_message(
+    sender: &Sender<WorkingBankMessage>,
+    message: WorkingBankMessage,
+) -> std::result::Result<(), Box<SendError<WorkingBankMessage>>> {
+    match sender.try_send(message) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(message)) => {
+            error!(
+                "PohRecorder output channel is full (capacity {WORKING_BANK_CHANNEL_CAPACITY}); \
+                 blocking to preserve the message"
+            );
+            sender.send(message).map_err(Box::new)
+        }
+        Err(TrySendError::Disconnected(message)) => Err(Box::new(SendError(message))),
+    }
+}
+
+>>>>>>> 219672f7e8 (feat(broadcast): send block header at Alpenglow slot start (agave#15275) (#1661))
 #[derive(Debug, Error)]
 pub enum PohRecorderError {
     #[error("max height reached")]
@@ -64,8 +93,8 @@ pub enum PohRecorderError {
     #[error("min height not reached")]
     MinHeightNotReached,
 
-    #[error("send WorkingBankEntry error")]
-    SendError(#[from] Box<SendError<WorkingBankEntryOrMarker>>),
+    #[error("send WorkingBankMessage error")]
+    SendError(#[from] Box<SendError<WorkingBankMessage>>),
 
     #[error("channel full")]
     ChannelFull,
@@ -97,7 +126,7 @@ pub enum PohRecorderError {
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
 
-pub type WorkingBankEntryOrMarker = (Arc<Bank>, (EntryOrMarker, u64));
+pub type WorkingBankMessage = (Arc<Bank>, (RecorderMessage, u64));
 
 #[derive(Debug)]
 pub struct RecordSummary {
@@ -210,7 +239,7 @@ pub struct PohRecorder {
     /// This field MUST match `shared_leader_state` outside bank replacement.
     working_bank: Option<WorkingBank>,
     shared_leader_state: SharedLeaderState,
-    working_bank_sender: Sender<WorkingBankEntryOrMarker>,
+    working_bank_sender: Sender<WorkingBankMessage>,
     leader_last_tick_height: u64, // zero if none
     grace_ticks: u64,
     blockstore: Arc<Blockstore>,
@@ -236,7 +265,7 @@ impl PohRecorder {
         leader_schedule_cache: &Arc<LeaderScheduleCache>,
         poh_config: &PohConfig,
         is_exited: Arc<AtomicBool>,
-    ) -> (Self, Receiver<WorkingBankEntryOrMarker>) {
+    ) -> (Self, Receiver<WorkingBankMessage>) {
         let delay_leader_block_for_pending_fork = false;
         Self::new_with_clear_signal(
             tick_height,
@@ -266,7 +295,7 @@ impl PohRecorder {
         leader_schedule_cache: &Arc<LeaderScheduleCache>,
         poh_config: &PohConfig,
         is_exited: Arc<AtomicBool>,
-    ) -> (Self, Receiver<WorkingBankEntryOrMarker>) {
+    ) -> (Self, Receiver<WorkingBankMessage>) {
         let tick_number = 0;
         let poh = Arc::new(Mutex::new(Poh::new_with_slot_info(
             last_entry_hash,
@@ -352,18 +381,29 @@ impl PohRecorder {
 
     /// Send the block marker to be broadcast
     pub fn send_marker(&mut self, marker: VersionedBlockMarker) -> Result<()> {
+        self.send_recorder_message(RecorderMessage::Marker(marker))
+    }
+
+    fn send_recorder_message(&mut self, message: RecorderMessage) -> Result<()> {
         let tick_height = self.tick_height();
         let working_bank = self
             .working_bank
-            .as_mut()
+            .as_ref()
             .ok_or(PohRecorderError::MaxHeightReached)?;
 
+<<<<<<< HEAD
         self.working_bank_sender
             .send((
                 working_bank.bank.clone(),
                 (EntryOrMarker::Marker(marker), tick_height),
             ))
             .map_err(Box::new)?;
+=======
+        send_working_bank_message(
+            &self.working_bank_sender,
+            (working_bank.bank.clone(), (message, tick_height)),
+        )?;
+>>>>>>> 219672f7e8 (feat(broadcast): send block header at Alpenglow slot start (agave#15275) (#1661))
 
         Ok(())
     }
@@ -410,8 +450,14 @@ impl PohRecorder {
             drop(poh_lock);
 
             if let Some(entry) = entry {
+<<<<<<< HEAD
                 let (send_entry_res, send_entry_us) = measure_us!(
                     self.working_bank_sender.send((
+=======
+                let (send_entry_res, send_entry_us) = measure_us!(send_working_bank_message(
+                    &self.working_bank_sender,
+                    (
+>>>>>>> 219672f7e8 (feat(broadcast): send block header at Alpenglow slot start (agave#15275) (#1661))
                         working_bank.bank.clone(),
                         (
                             Entry {
@@ -472,6 +518,16 @@ impl PohRecorder {
             let (_flush_res, flush_cache_and_tick_us) = measure_us!(self.flush_cache(true, None));
             self.metrics.flush_cache_tick_us += flush_cache_and_tick_us;
         }
+    }
+
+    /// Installs a working bank and notifies broadcast that its slot has started.
+    pub fn set_bank_and_send_slot_start(
+        &mut self,
+        bank: BankWithScheduler,
+        atomic_batches_enabled: bool,
+    ) -> Result<()> {
+        self.set_bank_with_atomic_batches_enabled(bank, atomic_batches_enabled);
+        self.send_recorder_message(RecorderMessage::SlotStart)
     }
 
     pub fn set_bank(&mut self, bank: BankWithScheduler) {
@@ -659,11 +715,12 @@ impl PohRecorder {
         footer.bank_hash = working_bank.bank.hash();
 
         let footer = VersionedBlockMarker::from_block_footer(footer);
-        let footer_entry_marker = (
-            EntryOrMarker::Marker(footer),
+        let footer_message = (
+            RecorderMessage::Marker(footer),
             working_bank.max_tick_height - 1,
         );
 
+<<<<<<< HEAD
         self.working_bank_sender
             .send((working_bank.bank.clone(), footer_entry_marker))
             .map_err(|err| {
@@ -673,6 +730,19 @@ impl PohRecorder {
                 );
                 PohRecorderError::SendError(Box::new(err))
             })
+=======
+        send_working_bank_message(
+            &self.working_bank_sender,
+            (working_bank.bank.clone(), footer_message),
+        )
+        .map_err(|err| {
+            error!(
+                "slot = {} block production failure. failed to broadcast footer",
+                working_bank.bank.slot()
+            );
+            PohRecorderError::SendError(err)
+        })
+>>>>>>> 219672f7e8 (feat(broadcast): send block header at Alpenglow slot start (agave#15275) (#1661))
     }
 
     // Flush cache will delay flushing the cache for a bank until it past the WorkingBank::min_tick_height
@@ -720,12 +790,20 @@ impl PohRecorder {
                     break;
                 }
 
-                let tick = (EntryOrMarker::from(entry.clone()), *tick_height);
+                let tick = (RecorderMessage::from(entry.clone()), *tick_height);
 
+<<<<<<< HEAD
                 send_result = self
                     .working_bank_sender
                     .send((working_bank.bank.clone(), tick))
                     .map_err(|err| PohRecorderError::SendError(Box::new(err)));
+=======
+                send_result = send_working_bank_message(
+                    &self.working_bank_sender,
+                    (working_bank.bank.clone(), tick),
+                )
+                .map_err(PohRecorderError::SendError);
+>>>>>>> 219672f7e8 (feat(broadcast): send block header at Alpenglow slot start (agave#15275) (#1661))
                 if send_result.is_err() {
                     break;
                 }
@@ -1135,7 +1213,7 @@ fn do_create_test_recorder(
     PohController,
     TransactionRecorder,
     PohService,
-    Receiver<WorkingBankEntryOrMarker>,
+    Receiver<WorkingBankMessage>,
 ) {
     let leader_schedule_cache = match leader_schedule_cache {
         Some(provided_cache) => provided_cache,
@@ -1200,7 +1278,7 @@ pub fn create_test_recorder(
     PohController,
     TransactionRecorder,
     PohService,
-    Receiver<WorkingBankEntryOrMarker>,
+    Receiver<WorkingBankMessage>,
 ) {
     do_create_test_recorder(bank, blockstore, poh_config, leader_schedule_cache, false)
 }
@@ -1511,7 +1589,7 @@ mod tests {
     fn new_alpenglow_recorder_for_bank(
         bank: Arc<Bank>,
         blockstore: Arc<Blockstore>,
-    ) -> (PohRecorder, Receiver<WorkingBankEntryOrMarker>) {
+    ) -> (PohRecorder, Receiver<WorkingBankMessage>) {
         let prev_hash = bank.last_blockhash();
         let (mut poh_recorder, entry_receiver) = PohRecorder::new(
             bank.tick_height(),
@@ -1671,8 +1749,8 @@ mod tests {
 
         // Collect the tick entries produced.
         let mut entries = vec![];
-        while let Ok((_bank, (entry_or_marker, _tick_height))) = entry_receiver.try_recv() {
-            if let EntryOrMarker::Entry(entry) = entry_or_marker {
+        while let Ok((_bank, (message, _tick_height))) = entry_receiver.try_recv() {
+            if let RecorderMessage::Entry(entry) = message {
                 assert!(entry.is_tick());
                 entries.push(entry);
             }

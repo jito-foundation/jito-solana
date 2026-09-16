@@ -20,7 +20,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         validator::BlockProductionMethod,
     },
-    solana_entry::entry_or_marker::EntryOrMarker,
+    solana_entry::recorder_message::RecorderMessage,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_keypair::Keypair,
     solana_leader_schedule::SlotLeader,
@@ -33,7 +33,7 @@ use {
     solana_net_utils::SocketAddrSpace,
     solana_poh::{
         poh_controller::PohController,
-        poh_recorder::{PohRecorder, WorkingBankEntryOrMarker, create_test_recorder},
+        poh_recorder::{PohRecorder, WorkingBankMessage, create_test_recorder},
     },
     solana_pubkey::Pubkey,
     solana_runtime::{
@@ -235,7 +235,7 @@ fn bank_setting_loop(
     bank_forks: Arc<RwLock<BankForks>>,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     mut poh_controller: PohController,
-    signal_receiver: Receiver<WorkingBankEntryOrMarker>,
+    signal_receiver: Receiver<WorkingBankMessage>,
     exit: Arc<AtomicBool>,
 ) {
     let mut bank = bank_forks.read().unwrap().working_bank_with_scheduler();
@@ -244,7 +244,7 @@ fn bank_setting_loop(
     let mut total_txs = 0;
 
     while !exit.load(Ordering::Relaxed) {
-        if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+        if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
             signal_receiver.recv_timeout(Duration::from_millis(10))
         {
             total_txs += entry.transactions.len();

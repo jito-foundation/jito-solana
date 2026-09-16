@@ -968,7 +968,7 @@ mod tests {
         agave_feature_set::FeatureSet,
         crossbeam_channel::{bounded, unbounded},
         solana_cluster_type::ClusterType,
-        solana_entry::entry_or_marker::EntryOrMarker,
+        solana_entry::recorder_message::RecorderMessage,
         solana_fee_calculator::{DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, FeeRateGovernor},
         solana_genesis_config::GenesisConfig,
         solana_gossip::contact_info::ContactInfo,
@@ -1334,7 +1334,7 @@ mod tests {
         let mut tx_count = 0;
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
@@ -1474,7 +1474,7 @@ mod tests {
         const MAX_EXPECTED_TXS: usize = 4;
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
@@ -1586,7 +1586,7 @@ mod tests {
         while (tx_count < MAX_EXPECTED_TXS || bank.get_balance(&kp2.pubkey()) != expected_balance)
             && start.elapsed() < PROCESSING_TIMEOUT
         {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
@@ -1707,7 +1707,7 @@ mod tests {
         const MAX_EXPECTED_TXS: usize = 4; // 4 initial for tips
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
@@ -1807,7 +1807,7 @@ mod tests {
         const MAX_EXPECTED_TXS: usize = 5; // 4 initial for tips
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
@@ -1836,7 +1836,7 @@ mod tests {
         let start = Instant::now();
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (EntryOrMarker::Entry(entry), _tick_height))) =
+            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
