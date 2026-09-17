@@ -11,18 +11,12 @@ use {
 pub type CostAdmission = (Arc<Bank>, SmallVec<[CostResult<()>; 1]>);
 
 /// A unique identifier for a transaction batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct TransactionBatchId(pub u64);
 
 impl TransactionBatchId {
     pub fn new(index: u64) -> Self {
         Self(index)
-    }
-}
-
-impl std::hash::Hash for TransactionBatchId {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0)
     }
 }
 
@@ -60,7 +54,6 @@ pub struct ConsumeWork<Tx> {
     pub max_ages: Vec<MaxAge>,
     pub revert_on_error: bool,
     pub respond_with_extra_info: bool,
-    pub max_schedule_slot: Option<Slot>,
     /// Admission bank and cost results, taken when settled or returned for release.
     pub admission: Option<CostAdmission>,
 }
@@ -70,12 +63,7 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<RetryableIndex>,
-    pub extra_info: Option<FinishedConsumeWorkExtraInfo>,
-}
-
-#[derive(Debug)]
-pub struct FinishedConsumeWorkExtraInfo {
-    pub processed_results: Vec<TransactionResult>,
+    pub extra_info: Option<Vec<TransactionResult>>,
 }
 
 #[derive(Clone, Debug)]

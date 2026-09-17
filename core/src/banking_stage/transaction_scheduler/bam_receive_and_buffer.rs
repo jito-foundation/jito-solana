@@ -1162,7 +1162,7 @@ pub(super) mod tests {
         std::sync::atomic::AtomicU8,
     };
 
-    fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
+    pub(crate) fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
