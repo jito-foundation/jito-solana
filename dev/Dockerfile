@@ -106,6 +106,20 @@ esac
 # cargo builds natively (no --target), making this exact by construction.
 TARGET_TRIPLE="$(uname -m)-unknown-linux-gnu"
 
+# Keep debug information embedded when building older refs with --checkout.
+if [ "$BUILD_PROFILE" = "release-with-debug" ]; then
+  export CARGO_PROFILE_RELEASE_WITH_DEBUG_DEBUG=2
+  export CARGO_PROFILE_RELEASE_WITH_DEBUG_STRIP=none
+  export CARGO_PROFILE_RELEASE_WITH_DEBUG_SPLIT_DEBUGINFO=off
+
+  # Target flags merge with .cargo/config.toml, preserving its CPU settings.
+  flags_var="CARGO_TARGET_${TARGET_TRIPLE^^}_RUSTFLAGS"
+  flags_var="${flags_var//-/_}"
+  export "$flags_var=${!flags_var-} -Cforce-frame-pointers=yes"
+  export CFLAGS="${CFLAGS:+$CFLAGS }-g -fno-omit-frame-pointer"
+  export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-g -fno-omit-frame-pointer"
+fi
+
 # The host .git is intentionally excluded from the build context (see
 # .dockerignore) to keep the COPY layer cheap. Upstream scripts still call
 # `git rev-parse HEAD` to stamp version.yml. Synthesize a minimal .git that

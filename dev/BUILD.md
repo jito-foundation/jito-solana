@@ -82,6 +82,9 @@ git fetch --tags origin
 # Build a moving branch (artifact tag includes short SHA)
 ./f --checkout master
 
+# Optimized build with embedded symbols and frame pointers
+./f --debug-symbols
+
 # Debug build
 ./f --profile debug
 
@@ -91,6 +94,20 @@ git fetch --tags origin
 # x86_64 artifact from a non-x86 host (emulation or remote builder)
 ./f --platform linux/amd64 --tag v4.0.3-jito
 ```
+
+## Debug symbols
+
+`--debug-symbols` selects `--profile release-with-debug`: release optimization
+and thin LTO, full embedded DWARF, and frame pointers for Rust and native C/C++
+dependencies built from source. Both Cargo workspaces receive these settings,
+including supported refs built with `--checkout`. Expect larger binaries and
+higher build costs; frame pointers can affect runtime performance.
+
+If combined with `--profile`, the last profile selection wins.
+
+Artifacts for this profile are named
+`<basename>-<tag>-debug-symbols_<target>.{tar.bz2,yml}`, including custom basenames.
+The manifest's channel/tag and internal tarball layout stay the same.
 
 ## How it works
 

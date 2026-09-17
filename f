@@ -31,6 +31,7 @@
 #   ./f                                          # local: v<version>_<sha>
 #                                                # [-dirty]
 #   ./f --tip-router                             # include tip-router support
+#   ./f --debug-symbols                          # optimized build with symbols
 #   ./f --profile debug
 #   ./f --profile release-with-lto --tag v3.0.1
 #   ./f --output ./out
@@ -77,6 +78,8 @@ Output (default ./dist/):
   <basename>-<tag>_<target>.tar.bz2   release tarball (bzip2)
   <basename>-<tag>_<target>.yml       version manifest: channel, commit, target
 
+Symbol builds add -debug-symbols before _<target> in both artifact names.
+
 The <target> triple is derived inside the container from the actual build
 platform, so it always matches the binaries. The platform suffix is joined
 with '_', for example:
@@ -90,6 +93,9 @@ Usage: ./f [options]
 Options:
   --profile PROFILE       release | release-with-debug | release-with-lto | debug
                           (default: release)
+  --debug-symbols         optimized build with embedded symbols and frame pointers
+                          (alias for --profile release-with-debug).
+                          The last profile selection wins.
   --tag VALUE             channel/tag to embed in version.yml
                           (default: --checkout-derived tag; else the exact git
                           tag at HEAD when present; else
@@ -158,6 +164,7 @@ while [[ $# -gt 0 ]]; do
       profile="$2"
       shift 2
       ;;
+    --debug-symbols) profile=release-with-debug; shift ;;
     --tag)
       require_arg "$1" "${2:-}"
       tag="$2"
@@ -294,6 +301,9 @@ fi
 # from --build-dir, not the basename). The target triple is joined with '_'
 # inside the container (e.g. ..._<sha>_x86_64-unknown-linux-gnu).
 artifact_basename="${basename}-${tag//\//_}"
+if [[ "$profile" == release-with-debug ]]; then
+  artifact_basename+="-debug-symbols"
+fi
 
 # Read rust-toolchain.toml from the build context (worktree if --checkout was
 # used, else the current checkout) just for the informational banner. The
