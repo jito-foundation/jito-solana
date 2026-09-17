@@ -111,12 +111,11 @@ impl BroadcastRun for BroadcastDuplicatesRun {
     ) -> Result<()> {
         // 1) Pull entries from banking stage
         let mut stats = ProcessShredsStats::default();
-        let current_slot = self.current_slot;
         let mut receive_results = broadcast_utils::recv_slot_components(
             receiver,
             &mut self.carryover_message,
             &mut stats,
-            current_slot,
+            self.current_slot,
         )?;
         let bank = receive_results.bank.clone();
         let last_tick_height = receive_results.last_tick_height;

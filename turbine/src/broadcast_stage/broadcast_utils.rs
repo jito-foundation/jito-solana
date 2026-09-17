@@ -148,6 +148,18 @@ fn recv_slot_components_maybe_empty(
         }
     };
 
+    // The first entry of a new slot is sent immediately, so do not size it
+    // or compute a coalescing target that this call will never use.
+    if bank.slot() != current_slot {
+        process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
+        process_stats.coalesce_elapsed = 0;
+        return Ok(Some(ReceiveResults {
+            item: BroadcastItem::Component(BlockComponent::EntryBatch(entries)),
+            bank,
+            last_tick_height,
+        }));
+    }
+
     let mut serialized_batch_byte_count = serialized_size(&entries)?;
 
     // Determine the maximum batch size we will allow for coalescing. Normally
@@ -162,8 +174,8 @@ fn recv_slot_components_maybe_empty(
     // 3. We're over the max data target.
     // 4. We hit a block marker.
     // 5. We're "close enough" to tightly packing erasure batches.
-    // 6. This is the first shred of a new slot. Skip coalescing so shred 0 is
-    //    broadcast immediately and replicas can create the bank.
+    // 6. We encounter a new slot while coalescing. Send its first entry
+    //    immediately so replicas can create the bank.
     let mut coalesce_start = Instant::now();
     while bank.slot() == current_slot
         && keep_coalescing_entries(
@@ -388,7 +400,7 @@ mod tests {
         let bank1 = Arc::new(Bank::new_from_parent(bank0, SlotLeader::default(), 1));
         let (s, r) = bounded(1024);
         let mut last_hash = genesis_config.hash();
-        let entries: Vec<_> = (1..=2)
+        let entries: Vec<_> = (1..=3)
             .map(|tick_height| {
                 let entry = Entry::new(&last_hash, 1, vec![tx.clone()]);
                 last_hash = entry.hash;
@@ -412,7 +424,67 @@ mod tests {
         ));
         assert_eq!(result.last_tick_height, 1);
         assert!(carryover.is_none());
-        assert!(!r.is_empty());
+        assert_eq!(r.len(), 2);
+
+        // Once broadcast advances to this slot, normal coalescing resumes.
+        // Disconnect after queueing the entries so this check needs no timeout.
+        drop(s);
+        let result = recv(&r, &mut carryover, bank1.slot()).unwrap();
+        assert!(matches!(
+            result.item,
+            BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
+                if batch == &entries[1..]
+        ));
+        assert_eq!(result.last_tick_height, 3);
+        assert!(carryover.is_none());
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn test_new_slot_during_coalesce_sends_only_first_entry() {
+        let (genesis_config, bank0, _bank_forks, tx) = setup_test();
+        let bank1 = Arc::new(Bank::new_from_parent(
+            bank0.clone(),
+            SlotLeader::default(),
+            1,
+        ));
+        let bank2 = Arc::new(Bank::new_from_parent(bank0, SlotLeader::default(), 2));
+
+        for oversized in [false, true] {
+            let (s, r) = bounded(3);
+            let interrupted_entry = Entry::new(&genesis_config.hash(), 1, vec![tx.clone()]);
+            let first_entry = if oversized {
+                // A large entry crosses the batch target after the bank changes
+                // and reaches the first-entry fast path through carryover.
+                let mut last_hash = interrupted_entry.hash;
+                oversized_entry(&mut last_hash, &tx)
+            } else {
+                Entry::new(&interrupted_entry.hash, 1, vec![tx.clone()])
+            };
+            let next_entry = Entry::new(&first_entry.hash, 1, vec![tx.clone()]);
+            s.send((bank1.clone(), (interrupted_entry.into(), 1)))
+                .unwrap();
+            s.send((bank2.clone(), (first_entry.clone().into(), 2)))
+                .unwrap();
+            s.send((bank2.clone(), (next_entry.clone().into(), 3)))
+                .unwrap();
+
+            let mut carryover = None;
+            let result = recv(&r, &mut carryover, bank1.slot()).unwrap();
+            assert_eq!(result.bank.slot(), bank2.slot());
+            assert_eq!(result.last_tick_height, 2);
+            assert!(matches!(
+                result.item,
+                BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
+                    if batch == &[first_entry]
+            ));
+            assert!(carryover.is_none());
+            assert_eq!(r.len(), 1);
+            let (queued_bank, (queued_message, queued_tick_height)) = r.try_recv().unwrap();
+            assert_eq!(queued_bank.slot(), bank2.slot());
+            assert_eq!(queued_tick_height, 3);
+            assert!(matches!(queued_message, RecorderMessage::Entry(entry) if entry == next_entry));
+        }
     }
 
     #[test]

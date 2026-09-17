@@ -682,12 +682,11 @@ impl BroadcastRun for StandardBroadcastRun {
         blockstore_sender: &Sender<(Arc<Vec<Shred>>, Option<BroadcastShredBatchInfo>)>,
     ) -> Result<()> {
         let mut process_stats = ProcessShredsStats::default();
-        let current_slot = self.slot;
         let receive_results = broadcast_utils::recv_slot_components(
             receiver,
             &mut self.carryover_message,
             &mut process_stats,
-            current_slot,
+            self.slot,
         )?;
         // TODO: Confirm that last chunk of coding shreds
         // will not be lost or delayed for too long.
