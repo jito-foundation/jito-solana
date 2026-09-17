@@ -32,6 +32,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install --no-install-recommends -y \
+      binutils \
       build-essential \
       ca-certificates \
       clang \
@@ -105,6 +106,59 @@ esac
 # running as, so artifact names cannot lie about the binaries inside.
 # cargo builds natively (no --target), making this exact by construction.
 TARGET_TRIPLE="$(uname -m)-unknown-linux-gnu"
+
+# Keep these settings in the current Dockerfile: --checkout can build source
+# trees whose release-with-debug profile still inherits unpacked DWARF.
+configure_debug_symbols() {
+  [ "$BUILD_PROFILE" = "release-with-debug" ] || return 0
+
+  export CARGO_PROFILE_RELEASE_WITH_DEBUG_DEBUG=2
+  export CARGO_PROFILE_RELEASE_WITH_DEBUG_STRIP=none
+  export CARGO_PROFILE_RELEASE_WITH_DEBUG_SPLIT_DEBUGINFO=off
+
+  # Append to the active Cargo flag source. Introducing global RUSTFLAGS would
+  # hide target config flags such as -Ctarget-cpu=x86-64-v2. Target env flags
+  # merge with the existing target rustflags array instead.
+  local flags_var="CARGO_TARGET_${TARGET_TRIPLE^^}_RUSTFLAGS" separator=' '
+  flags_var="${flags_var//-/_}"
+  if [ "${CARGO_ENCODED_RUSTFLAGS+x}" = "x" ]; then
+    flags_var=CARGO_ENCODED_RUSTFLAGS
+    separator=$'\x1f'
+  elif [ "${RUSTFLAGS+x}" = "x" ]; then
+    flags_var=RUSTFLAGS
+  fi
+  local flags="${!flags_var-}"
+  export "$flags_var=${flags:+$flags$separator}-Cforce-frame-pointers=yes"
+
+  export CFLAGS="${CFLAGS:+$CFLAGS }-g -fno-omit-frame-pointer"
+  export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-g -fno-omit-frame-pointer"
+}
+
+validate_debug_symbols() {
+  [ "$BUILD_PROFILE" = "release-with-debug" ] || return 0
+
+  # Validate the curated executable groups used by the installer.
+  local name bin info section
+  for name in "${AGAVE_BINS_END_USER[@]}" "${AGAVE_BINS_VAL_OP[@]}" "${AGAVE_BINS_DCOU[@]}"; do
+    bin="$1/$name"
+    if ! info="$(LC_ALL=C readelf --wide --section-headers --notes "$bin")"; then
+      echo "Error: cannot read ELF metadata: $bin" >&2
+      return 1
+    fi
+    for section in .symtab .debug_info .debug_line; do
+      if ! grep -Fq " $section " <<< "$info"; then
+        echo "Error: debug-symbol build is missing $section: $bin" >&2
+        return 1
+      fi
+    done
+    if ! grep -Eq 'Build ID: [[:xdigit:]]+' <<< "$info"; then
+      echo "Error: debug-symbol build is missing a GNU build ID: $bin" >&2
+      return 1
+    fi
+  done
+}
+
+configure_debug_symbols
 
 # The host .git is intentionally excluded from the build context (see
 # .dockerignore) to keep the COPY layer cheap. Upstream scripts still call
@@ -220,6 +274,8 @@ else
     "--${BUILD_PROFILE}" \
     --no-spl-token --no-build-platform-tools --no-perf-libs \
     stable "$build_dir"
+
+  validate_debug_symbols "$build_dir/bin"
 
   tmp_excludes="$(mktemp)"
   trap 'rm -f "$tmp_excludes"' EXIT

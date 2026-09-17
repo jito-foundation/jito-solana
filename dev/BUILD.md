@@ -82,6 +82,9 @@ git fetch --tags origin
 # Build a moving branch (artifact tag includes short SHA)
 ./f --checkout master
 
+# Optimized build with embedded symbols and frame pointers for slotopsy
+./f --debug-symbols
+
 # Debug build
 ./f --profile debug
 
@@ -91,6 +94,50 @@ git fetch --tags origin
 # x86_64 artifact from a non-x86 host (emulation or remote builder)
 ./f --platform linux/amd64 --tag v4.0.3-jito
 ```
+
+## Profiling with slotopsy
+
+```bash
+./f --debug-symbols
+# Also works with feature selection and a supported source ref:
+./f --debug-symbols --tip-router --checkout HEAD
+```
+
+`--debug-symbols` selects `--profile release-with-debug`: release optimization
+and thin LTO, full embedded DWARF, and frame pointers for Rust and native C/C++
+dependencies built from source. Both Cargo workspaces receive these settings.
+Before packaging, the selected executables are checked for debug sections,
+symbols, and a GNU build ID. Expect larger binaries and higher build costs.
+Frame pointers can affect runtime performance.
+
+The flag accepts an explicit `--profile release` or `release-with-debug` in
+either order; combining it with `debug` or `release-with-lto` is an error.
+Historical refs must support the existing build scripts and debug release profile.
+
+Both entry points name artifacts
+`<basename>-<tag>-debug-symbols_<target>.{tar.bz2,yml}`, including custom basenames.
+The manifest's channel/tag and internal tarball layout stay the same.
+`docker-output/` is replaced by subsequent builds, so save the matching symbols
+with each recording:
+
+```bash
+# Set validator_pid, record_dir, and profile_json for your running validator.
+~/dev/slotopsy/target/release/slotopsy attach --pid "$validator_pid" --cpu \
+  --record "$record_dir" --record-save-symbol-files
+# Stop capture with Ctrl-C, then:
+~/dev/slotopsy/target/release/slotopsy report \
+  --record "$record_dir" --profile "$profile_json"
+~/dev/slotopsy/target/release/slotopsy load --port 3000 \
+  --symbol-files "$record_dir/symbol_files" "$profile_json"
+```
+
+Use your installed slotopsy path if different. Take a fresh recording with the
+updated profiler: older recordings lack ELF load-segment metadata needed for
+correct symbol addresses. Verify application call stacks and file/line locations
+in the resulting profile. Viewing source text additionally requires the matching
+sources at their recorded `/solana` and `/usr/local/cargo` paths. Prebuilt
+libraries and assembly can still limit stack depth; Agave markers require
+slotopsy's separate trace integration.
 
 ## How it works
 
@@ -106,6 +153,10 @@ git fetch --tags origin
 
 Incremental state persists via BuildKit cache mounts (keyed by arch +
 profile). Optional registry cache: `--pull-cache` / `--push-cache`.
+
+Run the focused wrapper, compiler-setting, and ELF-export regression checks with
+`python3 dev/test_debug_symbols.py` (requires Git, Bash, a C compiler, and
+binutils; no Docker daemon or validator build).
 
 ## Syncing to a remote build host
 
