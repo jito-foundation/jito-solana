@@ -686,6 +686,7 @@ impl BroadcastRun for StandardBroadcastRun {
             receiver,
             &mut self.carryover_message,
             &mut process_stats,
+            self.slot,
         )?;
         // TODO: Confirm that last chunk of coding shreds
         // will not be lost or delayed for too long.
