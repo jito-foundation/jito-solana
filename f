@@ -31,7 +31,7 @@
 #   ./f                                          # local: v<version>_<sha>
 #                                                # [-dirty]
 #   ./f --tip-router                             # include tip-router support
-#   ./f --debug-symbols                          # optimized build for slotopsy
+#   ./f --debug-symbols                          # optimized build with symbols
 #   ./f --profile debug
 #   ./f --profile release-with-lto --tag v3.0.1
 #   ./f --output ./out
@@ -94,9 +94,8 @@ Options:
   --profile PROFILE       release | release-with-debug | release-with-lto | debug
                           (default: release)
   --debug-symbols         optimized build with embedded symbols and frame pointers
-                          for slotopsy (same as --profile release-with-debug).
-                          Can combine with --profile release or release-with-debug;
-                          incompatible with debug and release-with-lto.
+                          (alias for --profile release-with-debug).
+                          The last profile selection wins.
   --tag VALUE             channel/tag to embed in version.yml
                           (default: --checkout-derived tag; else the exact git
                           tag at HEAD when present; else
@@ -146,7 +145,6 @@ require_arg() {
 }
 
 profile=release
-debug_symbols=0
 tag=""
 checkout=""
 platform=""
@@ -166,7 +164,7 @@ while [[ $# -gt 0 ]]; do
       profile="$2"
       shift 2
       ;;
-    --debug-symbols) debug_symbols=1; shift ;;
+    --debug-symbols) profile=release-with-debug; shift ;;
     --tag)
       require_arg "$1" "${2:-}"
       tag="$2"
@@ -220,15 +218,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$profile" in
-  release|release-with-debug)
-    if [[ "$debug_symbols" -eq 1 ]]; then profile=release-with-debug; fi
-    ;;
-  release-with-lto|debug)
-    if [[ "$debug_symbols" -eq 1 ]]; then
-      echo "Error: --debug-symbols is incompatible with --profile $profile" >&2
-      exit 1
-    fi
-    ;;
+  release|release-with-debug|release-with-lto|debug) ;;
   *)
     echo "Invalid --profile: $profile" >&2
     echo "Expected one of: release, release-with-debug, release-with-lto, debug" >&2
@@ -371,10 +361,6 @@ done
 
 echo "+++ building jito-solana release artifacts"
 echo "    profile        : $profile"
-if [[ "$profile" == release-with-debug ]]; then
-  echo "    debug symbols  : full, embedded (not stripped)"
-  echo "    frame pointers : enabled for Rust and native builds"
-fi
 echo "    platform       : ${platform:-native (builder default)}"
 echo "    channel/tag    : $tag"
 echo "    commit         : $ci_commit"
