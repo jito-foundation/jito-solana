@@ -19,17 +19,6 @@ pub enum VoteSource {
     Tpu,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub(super) enum RetainedVoteState {
-    /// Retained bytes are not eligible for restoration in the current bank.
-    #[default]
-    Disabled,
-    /// The current candidate is the restored vote, either queued or in flight.
-    Restored,
-    /// The retained vote is a validated fallback behind a newer candidate.
-    Deferred,
-}
-
 /// Holds deserialized vote messages as well as their source, and slot
 #[derive(Debug)]
 pub struct LatestValidatorVote {
@@ -39,7 +28,10 @@ pub struct LatestValidatorVote {
     vote: Option<SanitizedTransactionView<Bytes>>,
     /// Successfully landed vote retained for a same-slot bank replacement.
     pub(super) retained_vote: Option<(Bytes, VoteSource, (Slot, Hash))>,
-    pub(super) retained_vote_state: RetainedVoteState,
+    /// Retained vote is eligible for fallback behind a newer candidate in this bank.
+    pub(super) restore_retained_on_failure: bool,
+    /// The current candidate came from retained bytes, including while in flight.
+    pub(super) is_restored: bool,
     slot: Slot,
     hash: Hash,
     timestamp: Option<UnixTimestamp>,
@@ -100,7 +92,8 @@ impl LatestValidatorVote {
                 Ok(Self {
                     vote: Some(vote),
                     retained_vote: None,
-                    retained_vote_state: RetainedVoteState::Disabled,
+                    restore_retained_on_failure: false,
+                    is_restored: false,
                     slot,
                     hash,
                     vote_pubkey,
@@ -176,13 +169,7 @@ impl LatestValidatorVote {
             .retained_vote
             .as_ref()
             .is_some_and(|(_, _, slot_hash)| is_valid_for_fork(*slot_hash));
-        if !current_vote_is_valid || !retained_vote_is_valid {
-            self.retained_vote_state = RetainedVoteState::Disabled;
-        } else if self.retained_vote_state != RetainedVoteState::Restored {
-            // A queued restored vote must not acquire itself as a fallback when
-            // another same-slot bank replacement occurs before it is processed.
-            self.retained_vote_state = RetainedVoteState::Deferred;
-        }
+        self.restore_retained_on_failure = current_vote_is_valid && retained_vote_is_valid;
 
         if current_vote_is_valid || !retained_vote_is_valid {
             return None;
@@ -197,9 +184,8 @@ impl LatestValidatorVote {
         &mut self,
         deprecate_legacy_vote_ixs: bool,
     ) -> Option<SanitizedTransactionView<Bytes>> {
-        // Failure of the restored candidate itself is terminal. Only a newer
-        // candidate may fall back to it; taking a packet or retrying is not a failure.
-        if std::mem::take(&mut self.retained_vote_state) != RetainedVoteState::Deferred {
+        // Consume eligibility even when the failing candidate is the restored vote itself.
+        if !std::mem::take(&mut self.restore_retained_on_failure) || self.is_restored {
             return None;
         }
 
@@ -213,7 +199,8 @@ impl LatestValidatorVote {
             SanitizedTransactionView::try_new_sanitized(bytes.clone(), &sanitize_config()).ok()?;
         let mut restored = Self::new_from_view(vote, *source, deprecate_legacy_vote_ixs).ok()?;
         restored.retained_vote = self.retained_vote.take();
-        restored.retained_vote_state = RetainedVoteState::Restored;
+        restored.restore_retained_on_failure = true;
+        restored.is_restored = true;
         *self = restored;
         Some(())
     }

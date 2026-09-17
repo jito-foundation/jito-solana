@@ -987,10 +987,11 @@ mod tests {
         assert_eq!(fixture.worker.storage.len(), 0);
         fixture.assert_idle();
 
+        // Success consumes fallback eligibility for both restored A and newer B.
+        let vote_c = fixture.successor(0, 3, Hash::new_unique());
+        fixture.insert(&vote_c);
+        fixture.assert_idle();
         if successor_succeeds {
-            let vote_c = fixture.successor(0, 3, Hash::new_unique());
-            fixture.insert(&vote_c);
-            fixture.assert_idle();
             assert_eq!(
                 bank.get_signature_status(&fixture.vote_a.signatures[0]),
                 None
