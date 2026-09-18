@@ -110,14 +110,12 @@ struct RankedNode {
     rtt_us: u64,
 }
 
-/// Marks a `--bam-url` as the registry's node list rather than a single node.
-pub const REGISTRY_URL_PREFIX: &str = "registry+";
-
-/// The node list a `--bam-url` names, or `None` when it names one node. tonic
-/// sends gRPC calls under a node url's path, so a path cannot tell the two apart
-/// and the prefix does.
+/// The node list a `--bam-url` names, or `None` when it names one node. A node
+/// is a bare host and port; the node list carries a path.
 pub fn registry_url(bam_url: &str) -> Option<&str> {
-    bam_url.strip_prefix(REGISTRY_URL_PREFIX)
+    reqwest::Url::parse(bam_url)
+        .is_ok_and(|url| url.path() != "/")
+        .then_some(bam_url)
 }
 
 /// Keeps the shared BAM url pointed at a live node from the registry's list.
