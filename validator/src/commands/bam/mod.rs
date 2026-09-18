@@ -1,6 +1,7 @@
 use {
     crate::{admin_rpc_service, cli::DefaultArgs},
     clap::{App, Arg, ArgMatches, SubCommand},
+    solana_core::bam_discovery::registry_url,
     std::path::Path,
     thiserror::Error,
     url::{ParseError, Url},
@@ -14,124 +15,93 @@ pub enum BamUrlError {
     UnsupportedScheme { scheme: String },
 }
 
-#[derive(Error, Debug, PartialEq)]
-pub enum BamRegistryUrlError {
-    #[error("BAM registry invalid URL format: {url}: {source}")]
-    InvalidUrlFormat { url: String, source: ParseError },
-    #[error("BAM registry URL unsupported scheme '{scheme}', only http and https are allowed")]
-    UnsupportedScheme { scheme: String },
-}
-
 const DEFAULT_BAM_URL_SCHEME: &str = "http";
 const DEFAULT_BAM_HTTP_PORT: u16 = 50055;
 const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 
-/// Empty values disable BAM. Missing schemes default to HTTP, while omitted
-/// ports default to 50055 for HTTP and 50056 for HTTPS. Explicit ports must be
-/// non-zero.
+/// Empty values disable BAM.
 pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlError> {
     matches
         .value_of("bam_url")
         .map(str::trim)
         .filter(|url| !url.is_empty())
-        .map(|url_str| {
-            let parse_target = if url_str.contains("://") {
-                url_str.to_owned()
-            } else {
-                format!("{DEFAULT_BAM_URL_SCHEME}://{url_str}")
-            };
-            let url =
-                Url::parse(&parse_target).map_err(|source| BamUrlError::InvalidUrlFormat {
-                    url: url_str.to_owned(),
-                    source,
-                })?;
-            let default_port = if parse_target.starts_with("http://") {
-                DEFAULT_BAM_HTTP_PORT
-            } else if parse_target.starts_with("https://") {
-                DEFAULT_BAM_HTTPS_PORT
-            } else {
-                return Err(BamUrlError::UnsupportedScheme {
-                    scheme: parse_target
-                        .split_once("://")
-                        .map_or("", |(scheme, _)| scheme)
-                        .to_owned(),
-                });
-            };
-            if url.port() == Some(0) {
-                return Err(BamUrlError::InvalidUrlFormat {
-                    url: url_str.to_owned(),
-                    source: ParseError::InvalidPort,
-                });
-            }
-
-            let authority_start = parse_target.find("://").unwrap() + 3;
-            let authority_end = parse_target[authority_start..]
-                .find(['/', '?', '#'])
-                .map_or(parse_target.len(), |offset| authority_start + offset);
-            let authority = &parse_target[authority_start..authority_end];
-            let host_port = authority.rsplit('@').next().unwrap();
-            let port = if host_port.starts_with('[') {
-                host_port
-                    .find(']')
-                    .and_then(|host_end| host_port[host_end + 1..].strip_prefix(':'))
-            } else {
-                host_port.rsplit_once(':').map(|(_, port)| port)
-            };
-
-            match port {
-                Some("") => Ok(format!(
-                    "{}{default_port}{}",
-                    &parse_target[..authority_end],
-                    &parse_target[authority_end..]
-                )),
-                Some(_) => Ok(parse_target),
-                None => Ok(format!(
-                    "{}:{default_port}{}",
-                    &parse_target[..authority_end],
-                    &parse_target[authority_end..]
-                )),
-            }
-        })
+        .map(normalize_bam_url)
         .transpose()
 }
 
-/// Empty values disable BAM node discovery. The value is the full URL of the
-/// published node list, not a base, and is passed through once the scheme is
-/// known to be HTTP(S).
-pub fn extract_bam_registry_url(
-    matches: &ArgMatches,
-) -> Result<Option<String>, BamRegistryUrlError> {
-    matches
-        .value_of("bam_registry_url")
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .map(|url_str| {
-            let url =
-                Url::parse(url_str).map_err(|source| BamRegistryUrlError::InvalidUrlFormat {
-                    url: url_str.to_owned(),
-                    source,
-                })?;
-            match url.scheme() {
-                "http" | "https" => Ok(url_str.to_owned()),
-                scheme => Err(BamRegistryUrlError::UnsupportedScheme {
-                    scheme: scheme.to_owned(),
-                }),
-            }
-        })
-        .transpose()
-}
+/// A `registry+` prefix marks the registry's node list, which is an ordinary
+/// HTTP(S) document and keeps the port it was given. Anything else names one
+/// node, where a missing scheme defaults to HTTP and an omitted port to 50055
+/// for HTTP or 50056 for HTTPS. Explicit ports must be non-zero.
+pub fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
+    if let Some(registry) = registry_url(url_str) {
+        let url = Url::parse(registry).map_err(|source| BamUrlError::InvalidUrlFormat {
+            url: url_str.to_owned(),
+            source,
+        })?;
+        return match url.scheme() {
+            "http" | "https" => Ok(url_str.to_owned()),
+            scheme => Err(BamUrlError::UnsupportedScheme {
+                scheme: scheme.to_owned(),
+            }),
+        };
+    }
 
-pub fn registry_argument() -> Arg<'static, 'static> {
-    Arg::with_name("bam_registry_url")
-        .long("bam-registry-url")
-        .value_name("URL")
-        .min_values(0)
-        .max_values(1)
-        .help(
-            "URL of the BAM Registry node list; leave empty to disable BAM node discovery. \
-             Ignored when --bam-url is set.",
-        )
-        .takes_value(true)
+    let parse_target = if url_str.contains("://") {
+        url_str.to_owned()
+    } else {
+        format!("{DEFAULT_BAM_URL_SCHEME}://{url_str}")
+    };
+    let url = Url::parse(&parse_target).map_err(|source| BamUrlError::InvalidUrlFormat {
+        url: url_str.to_owned(),
+        source,
+    })?;
+    let default_port = if parse_target.starts_with("http://") {
+        DEFAULT_BAM_HTTP_PORT
+    } else if parse_target.starts_with("https://") {
+        DEFAULT_BAM_HTTPS_PORT
+    } else {
+        return Err(BamUrlError::UnsupportedScheme {
+            scheme: parse_target
+                .split_once("://")
+                .map_or("", |(scheme, _)| scheme)
+                .to_owned(),
+        });
+    };
+    if url.port() == Some(0) {
+        return Err(BamUrlError::InvalidUrlFormat {
+            url: url_str.to_owned(),
+            source: ParseError::InvalidPort,
+        });
+    }
+
+    let authority_start = parse_target.find("://").unwrap() + 3;
+    let authority_end = parse_target[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(parse_target.len(), |offset| authority_start + offset);
+    let authority = &parse_target[authority_start..authority_end];
+    let host_port = authority.rsplit('@').next().unwrap();
+    let port = if host_port.starts_with('[') {
+        host_port
+            .find(']')
+            .and_then(|host_end| host_port[host_end + 1..].strip_prefix(':'))
+    } else {
+        host_port.rsplit_once(':').map(|(_, port)| port)
+    };
+
+    match port {
+        Some("") => Ok(format!(
+            "{}{default_port}{}",
+            &parse_target[..authority_end],
+            &parse_target[authority_end..]
+        )),
+        Some(_) => Ok(parse_target),
+        None => Ok(format!(
+            "{}:{default_port}{}",
+            &parse_target[..authority_end],
+            &parse_target[authority_end..]
+        )),
+    }
 }
 
 pub fn argument() -> Arg<'static, 'static> {
@@ -139,7 +109,11 @@ pub fn argument() -> Arg<'static, 'static> {
         .long("bam-url")
         .min_values(0)
         .max_values(1)
-        .help("URL of BAM Node; leave empty to disable BAM.")
+        .help(
+            "URL of a BAM Node, or a BAM Registry node list as \
+             registry+<url> to pick one by discovery; leave empty to disable \
+             BAM.",
+        )
         .takes_value(true)
 }
 
@@ -176,36 +150,28 @@ mod tests {
     #[test_case("http://localhost:8080", "http://localhost:8080")]
     #[test_case("http://your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080")]
     #[test_case("http://oh.bam:8080", "http://oh.bam:8080")]
-    #[test_case("http://bam:8080/badam", "http://bam:8080/badam")]
-    #[test_case("http://bam:8080/dot/slash/", "http://bam:8080/dot/slash/")]
-    #[test_case(
-        "http://192.168.100.42:8080/ba/da/m",
-        "http://192.168.100.42:8080/ba/da/m"
-    )]
     #[test_case("http://[::1]", "http://[::1]:50055")]
-    #[test_case("http://[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m")]
     // HTTPS URLs
     #[test_case("https://bam.example.com", "https://bam.example.com:50056")]
     #[test_case("https://localhost:8081", "https://localhost:8081")]
     #[test_case("https://your-bam.host.wtf:8081", "https://your-bam.host.wtf:8081")]
     #[test_case("https://oh.bam:8081", "https://oh.bam:8081")]
-    #[test_case("https://bam:8081/badam", "https://bam:8081/badam")]
-    #[test_case(
-        "https://192.168.100.42:8081/ba/da/m",
-        "https://192.168.100.42:8081/ba/da/m"
-    )]
     #[test_case("https://[2001:db8::1]", "https://[2001:db8::1]:50056")]
-    #[test_case("https://[fe80::1]:8081/ba/da/m", "https://[fe80::1]:8081/ba/da/m")]
     // Missing schemes default to HTTP
     #[test_case("localhost:8080", "http://localhost:8080")]
     #[test_case("your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080")]
     #[test_case("oh.bam:8080", "http://oh.bam:8080")]
-    #[test_case("bam:8080/badam", "http://bam:8080/badam")]
-    #[test_case("192.168.100.42:8080/ba/da/m", "http://192.168.100.42:8080/ba/da/m")]
-    #[test_case("[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m")]
     #[test_case("localhost", "http://localhost:50055")]
     #[test_case("your-bam.host.wtf", "http://your-bam.host.wtf:50055")]
     #[test_case("oh.bam", "http://oh.bam:50055")]
+    // Path-prefixed nodes: tonic sends gRPC calls under the path, so these stay
+    // nodes and still get BAM's port defaulting.
+    #[test_case("http://bam:8080/badam", "http://bam:8080/badam")]
+    #[test_case("http://bam:8080/dot/slash/", "http://bam:8080/dot/slash/")]
+    #[test_case("http://[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m")]
+    #[test_case("https://bam:8081/badam", "https://bam:8081/badam")]
+    #[test_case("bam:8080/badam", "http://bam:8080/badam")]
+    #[test_case("[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m")]
     #[test_case("bam/badam", "http://bam:50055/badam")]
     #[test_case("192.168.100.42/ba/da/m", "http://192.168.100.42:50055/ba/da/m")]
     #[test_case("[fe80::1]/ba/da/m", "http://[fe80::1]:50055/ba/da/m")]
@@ -290,65 +256,70 @@ mod tests {
         );
     }
 
-    fn create_test_registry_matches(registry_url: Option<&str>) -> ArgMatches<'_> {
-        let app = clap::App::new("test-app").arg(registry_argument());
-        let args = registry_url.map_or(vec!["test-app"], |url| {
-            vec!["test-app", "--bam-registry-url", url]
-        });
-        app.get_matches_from(args)
+    // `Url::port` reports None for a scheme's default port, so it cannot stand in
+    // for "was a port written" when inserting the BAM default.
+    #[test]
+    fn test_url_port_hides_scheme_defaults() {
+        assert_eq!(Url::parse("http://bam:80").unwrap().port(), None);
+        assert_eq!(Url::parse("https://bam:443").unwrap().port(), None);
+        assert_eq!(Url::parse("http://bam:8080").unwrap().port(), Some(8080));
     }
 
-    // Passed through unchanged: no scheme or port defaulting, unlike --bam-url.
-    #[test_case("https://registry.testnet.jito.wtf/nodes.json")]
-    #[test_case("http://localhost:9000/bam-registry-serve/nodes.json")]
-    #[test_case("https://registry.jito.wtf:8443/nodes.json")]
-    fn test_extract_bam_registry_url_success(input: &str) {
-        let matches = create_test_registry_matches(Some(input));
+    #[test_case("http://bam:80", "http://bam:80")]
+    #[test_case("https://bam:443", "https://bam:443")]
+    fn test_scheme_default_port_is_left_alone(input: &str, expected: &str) {
+        let matches = create_test_matches(Some(input));
         assert_eq!(
-            extract_bam_registry_url(&matches).unwrap().as_deref(),
-            Some(input),
+            extract_bam_url(&matches).unwrap().as_deref(),
+            Some(expected)
         );
     }
 
-    #[test_case("" ; "empty")]
-    #[test_case("   " ; "spaces")]
-    #[test_case("\t\n " ; "whitespace")]
-    fn test_extract_bam_registry_url_empty_inputs(input: &str) {
-        let matches = create_test_registry_matches(Some(input));
-        assert_eq!(extract_bam_registry_url(&matches).unwrap(), None);
+    // The marker is what makes it a registry, and its port is left alone.
+    #[test_case(
+        "registry+https://dev.testnet.registry.bam.jito.wtf/v1/nodes",
+        "registry+https://dev.testnet.registry.bam.jito.wtf/v1/nodes"
+    )]
+    #[test_case(
+        "registry+http://localhost:9000/nodes.json",
+        "registry+http://localhost:9000/nodes.json"
+    )]
+    // No BAM port is added, which the same url without the marker would have got.
+    #[test_case(
+        "registry+https://registry.jito.wtf",
+        "registry+https://registry.jito.wtf"
+    )]
+    fn test_registry_marker_keeps_its_port(input: &str, expected: &str) {
+        let matches = create_test_matches(Some(input));
+        assert_eq!(
+            extract_bam_url(&matches).unwrap().as_deref(),
+            Some(expected)
+        );
     }
 
-    #[test_case("ftp://registry.jito.wtf/nodes.json", "ftp")]
-    #[test_case("file:///tmp/nodes.json", "file")]
-    fn test_extract_bam_registry_url_unsupported_scheme(input: &str, scheme: &str) {
-        let matches = create_test_registry_matches(Some(input));
+    #[test_case("registry+ftp://registry.jito.wtf/nodes.json", "ftp")]
+    #[test_case("registry+file:///tmp/nodes.json", "file")]
+    fn test_registry_marker_rejects_other_schemes(input: &str, scheme: &str) {
+        let matches = create_test_matches(Some(input));
         assert_eq!(
-            extract_bam_registry_url(&matches),
-            Err(BamRegistryUrlError::UnsupportedScheme {
+            extract_bam_url(&matches),
+            Err(BamUrlError::UnsupportedScheme {
                 scheme: scheme.to_owned()
             })
         );
     }
 
-    // A bare host is a base, not the node list, and nothing defaults the scheme.
-    #[test_case("registry.jito.wtf/nodes.json", ParseError::RelativeUrlWithoutBase)]
-    #[test_case("://nodes.json", ParseError::RelativeUrlWithoutBase)]
-    #[test_case("https://", ParseError::EmptyHost)]
-    fn test_extract_bam_registry_url_invalid_format(input: &str, source: ParseError) {
-        let matches = create_test_registry_matches(Some(input));
+    // The marker takes the url as given, so a bare host has no scheme to default.
+    #[test]
+    fn test_registry_marker_requires_a_scheme() {
+        let matches = create_test_matches(Some("registry+registry.jito.wtf/v1/nodes"));
         assert_eq!(
-            extract_bam_registry_url(&matches),
-            Err(BamRegistryUrlError::InvalidUrlFormat {
-                url: input.to_owned(),
-                source
+            extract_bam_url(&matches),
+            Err(BamUrlError::InvalidUrlFormat {
+                url: "registry+registry.jito.wtf/v1/nodes".to_owned(),
+                source: ParseError::RelativeUrlWithoutBase
             })
         );
-    }
-
-    #[test]
-    fn test_extract_bam_registry_url_missing_argument() {
-        let matches = create_test_registry_matches(None);
-        assert_eq!(extract_bam_registry_url(&matches).unwrap(), None);
     }
 
     #[test]

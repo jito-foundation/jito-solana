@@ -110,6 +110,16 @@ struct RankedNode {
     rtt_us: u64,
 }
 
+/// Marks a `--bam-url` as the registry's node list rather than a single node.
+pub const REGISTRY_URL_PREFIX: &str = "registry+";
+
+/// The node list a `--bam-url` names, or `None` when it names one node. tonic
+/// sends gRPC calls under a node url's path, so a path cannot tell the two apart
+/// and the prefix does.
+pub fn registry_url(bam_url: &str) -> Option<&str> {
+    bam_url.strip_prefix(REGISTRY_URL_PREFIX)
+}
+
 /// Keeps the shared BAM url pointed at a live node from the registry's list.
 /// `BamManager` reconnects whenever that url changes.
 pub struct BamDiscovery {
@@ -120,15 +130,14 @@ pub struct BamDiscovery {
 impl BamDiscovery {
     pub fn new(
         exit: Arc<AtomicBool>,
+        bam_config: Arc<ArcSwap<Option<String>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
         bam_enabled: Arc<AtomicU8>,
-        registry_url: String,
     ) -> Self {
-        info!("Starting BamDiscovery against {registry_url}");
         let thread_hdl = Builder::new()
             .name("solBamDisc".to_string())
             .spawn(move || {
-                Self::run(exit, bam_url, bam_enabled, registry_url);
+                Self::run(exit, bam_config, bam_url, bam_enabled);
             })
             .unwrap();
 
@@ -137,9 +146,9 @@ impl BamDiscovery {
 
     fn run(
         exit: Arc<AtomicBool>,
+        bam_config: Arc<ArcSwap<Option<String>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
         bam_enabled: Arc<AtomicU8>,
-        registry_url: String,
     ) {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -168,15 +177,38 @@ impl BamDiscovery {
         let mut time_until_resync = Duration::ZERO;
         let mut time_until_probe = Duration::ZERO;
         let mut stalled_for = Duration::ZERO;
+        let mut config = bam_config.load_full();
+        Self::announce(&config);
 
         while !exit.load(Ordering::Relaxed) {
+            let current = bam_config.load_full();
+            if current != config {
+                config = current;
+                Self::announce(&config);
+                // Nothing measured against the old value survives it.
+                nodes.clear();
+                ranked.clear();
+                cursor = 0;
+                time_until_resync = Duration::ZERO;
+                time_until_probe = Duration::ZERO;
+                stalled_for = Duration::ZERO;
+            }
+
+            // Empty stays disconnected, and a single node is already the answer.
+            // Only a registry needs the fetch, probe and rank machinery below.
+            let Some(registry_url) = config.as_deref().and_then(registry_url) else {
+                Self::set_url(&bam_url, config.as_deref());
+                thread::sleep(POLL_INTERVAL);
+                continue;
+            };
+
             let state = Self::connection_state(&bam_enabled);
 
             // Time without a live session, not time in one state.
             let stuck = stalled_for >= CONNECT_GRACE;
 
             if time_until_resync == Duration::ZERO {
-                if let Some(served) = runtime.block_on(Self::fetch(&http_client, &registry_url))
+                if let Some(served) = runtime.block_on(Self::fetch(&http_client, registry_url))
                     && served.nodes != nodes
                 {
                     nodes = served.nodes;
@@ -260,8 +292,25 @@ impl BamDiscovery {
         if next >= len { 0 } else { next }
     }
 
+    /// Point BamManager at `url`, or at nothing. Reports whether that moved it.
+    fn set_url(bam_url: &ArcSwap<Option<String>>, url: Option<&str>) -> bool {
+        if bam_url.load_full().as_deref() == url {
+            return false;
+        }
+        bam_url.store(Arc::new(url.map(str::to_owned)));
+        true
+    }
+
+    fn announce(bam_config: &Option<String>) {
+        match (bam_config.as_deref().and_then(registry_url), bam_config) {
+            (Some(url), _) => info!("BAM discovery following registry {url}"),
+            (None, Some(url)) => info!("BAM discovery idle, url names one node: {url}"),
+            (None, None) => info!("BAM discovery idle, no url set"),
+        }
+    }
+
     fn publish(bam_url: &ArcSwap<Option<String>>, node: &RankedNode) {
-        if bam_url.load_full().as_deref() == Some(node.url.as_str()) {
+        if !Self::set_url(bam_url, Some(&node.url)) {
             return;
         }
         info!(
@@ -274,7 +323,6 @@ impl BamDiscovery {
             ("region", node.region.clone(), String),
             ("rtt_us", node.rtt_us as i64, i64),
         );
-        bam_url.store(Arc::new(Some(node.url.clone())));
     }
 
     /// Read the published list. `None` leaves the caller holding whatever it
