@@ -227,7 +227,7 @@ impl BamDiscovery {
             }
 
             let current_url = bam_url.load_full();
-            if (stuck || Self::is_drained(current_url.as_deref(), &nodes) || current_url.is_none())
+            if (stuck || Self::needs_pick(current_url.as_deref(), &nodes))
                 && let Some(node) = ranked.get(cursor)
             {
                 Self::publish(&bam_url, node);
@@ -267,13 +267,16 @@ impl BamDiscovery {
         }
     }
 
-    /// True once the registry stops serving the url we published. A pick that
-    /// leaves the list is draining for maintenance, so stepping off it early
-    /// beats waiting for the operator to take it down under a live session.
+    /// True when the shared url does not name a node the registry currently
+    /// serves: either nothing is published yet, or the pick has left the list
+    /// because it is draining for maintenance. Both want the next candidate
+    /// published, the drain early enough to beat the operator taking the node
+    /// down under a live session.
+    ///
     /// Keyed off the served list rather than the ranking, so a node that merely
     /// missed one probe round is not mistaken for a drain.
-    fn is_drained(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
-        current_url.is_some_and(|url| !nodes.iter().any(|node| node.url() == url))
+    fn needs_pick(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
+        !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
     }
 
     /// Step to the next candidate, wrapping at the end of the ranking.
@@ -563,32 +566,28 @@ mod tests {
     }
 
     #[test]
-    fn test_drained_once_the_registry_drops_the_current_pick() {
+    fn test_needs_pick_once_the_registry_drops_the_current_pick() {
         let still_served = served_node("203.0.113.1");
-        assert!(BamDiscovery::is_drained(
+        assert!(BamDiscovery::needs_pick(
             Some("https://203.0.113.9:50056"),
             &[still_served]
         ));
     }
 
     #[test]
-    fn test_not_drained_while_the_current_pick_is_served() {
+    fn test_no_pick_while_the_current_one_is_served() {
         let served = served_node("203.0.113.1");
         let url = served.url();
-        assert!(!BamDiscovery::is_drained(Some(&url), &[served]));
+        assert!(!BamDiscovery::needs_pick(Some(&url), &[served]));
     }
 
-    // Nothing published yet is not a drain; the bootstrap publish path covers it.
+    // Bootstrap: nothing published yet also wants a pick.
     #[test]
-    fn test_no_current_pick_is_not_drained() {
-        assert!(!BamDiscovery::is_drained(
+    fn test_needs_pick_when_nothing_is_published() {
+        assert!(BamDiscovery::needs_pick(
             None,
             &[served_node("203.0.113.1")]
         ));
-    }
-
-    fn polls_to_grace() -> usize {
-        (CONNECT_GRACE.as_millis() / POLL_INTERVAL.as_millis()) as usize
     }
 
     // Regression: a node that answers the probe but refuses the session leaves
@@ -603,7 +602,7 @@ mod tests {
         ]
         .iter()
         .cycle()
-        .take(2 * polls_to_grace())
+        .take(2 * (CONNECT_GRACE.as_millis() / POLL_INTERVAL.as_millis()) as usize)
         .fold(Duration::ZERO, |stalled, state| {
             BamDiscovery::stall_after_poll(*state, stalled)
         });
