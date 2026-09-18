@@ -23,13 +23,11 @@ use {
     tokio::{sync::Semaphore, time::timeout},
 };
 
-/// How often the published node list is re-read in the steady state.
-const RESYNC_INTERVAL: Duration = Duration::from_secs(30 * 60);
-
-/// Resync interval used while no node list is held at all. A validator that
-/// boots into a registry outage has nothing to fall back on, so it retries far
-/// more eagerly than the steady-state cadence.
-const RESYNC_INTERVAL_EMPTY: Duration = Duration::from_secs(60);
+/// How often the published node list is re-read. Tight enough that draining a
+/// node from the registry moves validators off it inside a maintenance window
+/// instead of a maintenance day. A fleet of ~800 validators re-reading a small
+/// JSON document at this cadence is ~13 requests per second.
+const RESYNC_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How long the connection may sit disconnected before the current pick is
 /// treated as bad and the ranking advances.
@@ -206,12 +204,11 @@ impl BamDiscovery {
                     nodes = served.nodes;
                     ranked.clear();
                     cursor = 0;
+                    // The ranking now answers a stale question, so re-probe on
+                    // the next pass rather than serving out the cooldown.
+                    time_until_probe = Duration::ZERO;
                 }
-                time_until_resync = if nodes.is_empty() {
-                    RESYNC_INTERVAL_EMPTY
-                } else {
-                    RESYNC_INTERVAL
-                };
+                time_until_resync = RESYNC_INTERVAL;
             }
 
             if ranked.is_empty() && !nodes.is_empty() && time_until_probe == Duration::ZERO {
@@ -232,7 +229,8 @@ impl BamDiscovery {
                 stalled_for = Duration::ZERO;
             }
 
-            if (stuck || bam_url.load_full().is_none())
+            let current_url = bam_url.load_full();
+            if (stuck || Self::is_drained(current_url.as_deref(), &nodes) || current_url.is_none())
                 && let Some(node) = ranked.get(cursor)
             {
                 Self::publish(&bam_url, node);
@@ -258,6 +256,15 @@ impl BamDiscovery {
         } else {
             stalled_for.saturating_add(POLL_INTERVAL)
         }
+    }
+
+    /// True once the registry stops serving the url we published. A pick that
+    /// leaves the list is draining for maintenance, so stepping off it early
+    /// beats waiting for the operator to take it down under a live session.
+    /// Keyed off the served list rather than the ranking, so a node that merely
+    /// missed one probe round is not mistaken for a drain.
+    fn is_drained(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
+        current_url.is_some_and(|url| !nodes.iter().any(|node| node.url() == url))
     }
 
     /// Step to the next candidate, wrapping at the end of the ranking.
@@ -544,6 +551,31 @@ mod tests {
         assert!(lines[0].contains("rank") && lines[0].contains("rtt"));
         assert!(lines[1].contains(&answered.url()) && lines[1].contains("4.20ms"));
         assert!(lines[2].contains(&silent.url()) && lines[2].contains("no answer"));
+    }
+
+    #[test]
+    fn test_drained_once_the_registry_drops_the_current_pick() {
+        let still_served = served_node("203.0.113.1");
+        assert!(BamDiscovery::is_drained(
+            Some("https://203.0.113.9:50056"),
+            &[still_served]
+        ));
+    }
+
+    #[test]
+    fn test_not_drained_while_the_current_pick_is_served() {
+        let served = served_node("203.0.113.1");
+        let url = served.url();
+        assert!(!BamDiscovery::is_drained(Some(&url), &[served]));
+    }
+
+    // Nothing published yet is not a drain; the bootstrap publish path covers it.
+    #[test]
+    fn test_no_current_pick_is_not_drained() {
+        assert!(!BamDiscovery::is_drained(
+            None,
+            &[served_node("203.0.113.1")]
+        ));
     }
 
     fn polls_to_grace() -> usize {
