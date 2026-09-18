@@ -100,7 +100,7 @@ pub struct ContactInfo {
     // Identifies duplicate running instances.
     outset: u64,
     shred_version: u16,
-    version: solana_version::Version,
+    pub version: solana_version::Version,
     // All IP addresses are unique and referenced at least once in sockets.
     #[wincode(with = "wincode::containers::Vec<IpAddr, short_vec::ShortU16>")]
     addrs: Vec<IpAddr>,

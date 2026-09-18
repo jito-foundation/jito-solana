@@ -1,4 +1,11 @@
-use {crate::banking_stage::scheduler_messages::TransactionId, std::cmp::Ordering};
+use {
+    crate::banking_stage::scheduler_messages::TransactionId,
+    prio_graph::TopLevelId,
+    std::{
+        cmp::Ordering,
+        hash::{Hash, Hasher},
+    },
+};
 
 /// A unique identifier tied with priority ordering for a transaction/packet:
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -30,6 +37,18 @@ impl Ord for TransactionPriorityId {
 impl PartialOrd for TransactionPriorityId {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl Hash for TransactionPriorityId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state)
+    }
+}
+
+impl TopLevelId<Self> for TransactionPriorityId {
+    fn id(&self) -> Self {
+        *self
     }
 }
 
