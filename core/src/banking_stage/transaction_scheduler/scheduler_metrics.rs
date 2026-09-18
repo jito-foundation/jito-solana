@@ -8,24 +8,42 @@ use {
     },
 };
 
-#[derive(Default)]
 pub struct SchedulerCountMetrics {
+    id: String,
     interval: IntervalSchedulerCountMetrics,
     slot: SlotSchedulerCountMetrics,
 }
 
+impl Default for SchedulerCountMetrics {
+    fn default() -> Self {
+        Self {
+            id: 0u32.to_string(),
+            interval: IntervalSchedulerCountMetrics::default(),
+            slot: SlotSchedulerCountMetrics::default(),
+        }
+    }
+}
+
 impl SchedulerCountMetrics {
+    pub fn new(id: u32) -> Self {
+        Self {
+            id: id.to_string(),
+            ..Self::default()
+        }
+    }
+
     pub fn update(&mut self, update: impl Fn(&mut SchedulerCountMetricsInner)) {
         update(&mut self.interval.metrics);
         update(&mut self.slot.metrics);
     }
 
     pub fn maybe_report_and_reset_slot(&mut self, slot: Option<Slot>) {
-        self.slot.maybe_report_and_reset(slot);
+        self.slot.maybe_report_and_reset(slot, &self.id);
     }
 
     pub fn maybe_report_and_reset_interval(&mut self, should_report: bool) {
-        self.interval.maybe_report_and_reset(should_report);
+        self.interval
+            .maybe_report_and_reset(should_report, &self.id);
     }
 
     pub fn interval_has_data(&self) -> bool {
@@ -57,7 +75,8 @@ pub struct SchedulerCountMetricsInner {
     pub num_unschedulable_conflicts: Saturating<usize>,
     /// Number of transactions that were unschedulable due to thread capacity.
     pub num_unschedulable_threads: Saturating<usize>,
-    /// Number of transactions dropped due to account key filtering.
+    /// Number of transactions dropped due to account key filtering (includes former
+    /// blacklisted-account drops).
     pub num_dropped_on_filter_key: Saturating<usize>,
     /// Number of completed transactions received from workers.
     pub num_finished: Saturating<usize>,
@@ -96,11 +115,12 @@ pub struct SchedulerCountMetricsInner {
 }
 
 impl IntervalSchedulerCountMetrics {
-    fn maybe_report_and_reset(&mut self, should_report: bool) {
+    fn maybe_report_and_reset(&mut self, should_report: bool, id: &str) {
         const REPORT_INTERVAL_MS: u64 = 1000;
         if self.interval.should_update(REPORT_INTERVAL_MS) {
             if should_report {
-                self.metrics.report("banking_stage_scheduler_counts", None);
+                self.metrics
+                    .report("banking_stage_scheduler_counts", None, id);
             }
             self.metrics.reset();
         }
@@ -108,12 +128,12 @@ impl IntervalSchedulerCountMetrics {
 }
 
 impl SlotSchedulerCountMetrics {
-    fn maybe_report_and_reset(&mut self, slot: Option<Slot>) {
+    fn maybe_report_and_reset(&mut self, slot: Option<Slot>, id: &str) {
         if self.slot != slot {
             // Only report if there was an assigned slot.
             if self.slot.is_some() {
                 self.metrics
-                    .report("banking_stage_scheduler_slot_counts", self.slot);
+                    .report("banking_stage_scheduler_slot_counts", self.slot, id);
             }
             self.metrics.reset();
             self.slot = slot;
@@ -122,7 +142,7 @@ impl SlotSchedulerCountMetrics {
 }
 
 impl SchedulerCountMetricsInner {
-    fn report(&self, name: &'static str, slot: Option<Slot>) {
+    fn report(&self, name: &'static str, slot: Option<Slot>, id: &str) {
         let &Self {
             num_received: Saturating(num_received),
             num_buffered: Saturating(num_buffered),
@@ -152,6 +172,7 @@ impl SchedulerCountMetricsInner {
         } = self;
         let mut datapoint = create_datapoint!(
             @point name,
+            "id" => id,
             ("num_received", num_received, i64),
             ("num_buffered", num_buffered, i64),
             ("num_scheduled", num_scheduled, i64),
@@ -269,24 +290,42 @@ impl SchedulerCountMetricsInner {
     }
 }
 
-#[derive(Default)]
 pub struct SchedulerTimingMetrics {
+    id: String,
     interval: IntervalSchedulerTimingMetrics,
     slot: SlotSchedulerTimingMetrics,
 }
 
+impl Default for SchedulerTimingMetrics {
+    fn default() -> Self {
+        Self {
+            id: 0u32.to_string(),
+            interval: IntervalSchedulerTimingMetrics::default(),
+            slot: SlotSchedulerTimingMetrics::default(),
+        }
+    }
+}
+
 impl SchedulerTimingMetrics {
+    pub fn new(id: u32) -> Self {
+        Self {
+            id: id.to_string(),
+            ..Self::default()
+        }
+    }
+
     pub fn update(&mut self, update: impl Fn(&mut SchedulerTimingMetricsInner)) {
         update(&mut self.interval.metrics);
         update(&mut self.slot.metrics);
     }
 
     pub fn maybe_report_and_reset_slot(&mut self, slot: Option<Slot>) {
-        self.slot.maybe_report_and_reset(slot);
+        self.slot.maybe_report_and_reset(slot, &self.id);
     }
 
     pub fn maybe_report_and_reset_interval(&mut self, should_report: bool) {
-        self.interval.maybe_report_and_reset(should_report);
+        self.interval
+            .maybe_report_and_reset(should_report, &self.id);
     }
 }
 
@@ -321,11 +360,12 @@ pub struct SchedulerTimingMetricsInner {
 }
 
 impl IntervalSchedulerTimingMetrics {
-    fn maybe_report_and_reset(&mut self, should_report: bool) {
+    fn maybe_report_and_reset(&mut self, should_report: bool, id: &str) {
         const REPORT_INTERVAL_MS: u64 = 1000;
         if self.interval.should_update(REPORT_INTERVAL_MS) {
             if should_report {
-                self.metrics.report("banking_stage_scheduler_timing", None);
+                self.metrics
+                    .report("banking_stage_scheduler_timing", None, id);
             }
             self.metrics.reset();
         }
@@ -333,12 +373,12 @@ impl IntervalSchedulerTimingMetrics {
 }
 
 impl SlotSchedulerTimingMetrics {
-    fn maybe_report_and_reset(&mut self, slot: Option<Slot>) {
+    fn maybe_report_and_reset(&mut self, slot: Option<Slot>, id: &str) {
         if self.slot != slot {
             // Only report if there was an assigned slot.
             if self.slot.is_some() {
                 self.metrics
-                    .report("banking_stage_scheduler_slot_timing", self.slot);
+                    .report("banking_stage_scheduler_slot_timing", self.slot, id);
             }
             self.metrics.reset();
             self.slot = slot;
@@ -347,7 +387,7 @@ impl SlotSchedulerTimingMetrics {
 }
 
 impl SchedulerTimingMetricsInner {
-    fn report(&self, name: &'static str, slot: Option<Slot>) {
+    fn report(&self, name: &'static str, slot: Option<Slot>, id: &str) {
         let &Self {
             decision_time_us: Saturating(decision_time_us),
             receive_time_us: Saturating(receive_time_us),
@@ -359,6 +399,7 @@ impl SchedulerTimingMetricsInner {
         } = self;
         let mut datapoint = create_datapoint!(
             @point name,
+            "id" => id,
             ("decision_time_us", decision_time_us, i64),
             ("receive_time_us", receive_time_us, i64),
             ("buffer_time_us", buffer_time_us, i64),
@@ -389,6 +430,7 @@ impl SchedulerTimingMetricsInner {
 }
 
 pub struct SchedulingDetails {
+    pub id: String,
     pub last_report: Instant,
     pub num_schedule_calls: usize,
 
@@ -408,6 +450,7 @@ pub struct SchedulingDetails {
 impl Default for SchedulingDetails {
     fn default() -> Self {
         Self {
+            id: 0u32.to_string(),
             last_report: Instant::now(),
             num_schedule_calls: 0,
             min_starting_queue_size: usize::MAX,
@@ -424,6 +467,13 @@ impl Default for SchedulingDetails {
 }
 
 impl SchedulingDetails {
+    pub fn new(id: u32) -> Self {
+        Self {
+            id: id.to_string(),
+            ..Self::default()
+        }
+    }
+
     pub fn update(&mut self, scheduling_summary: &SchedulingSummary) {
         self.num_schedule_calls += 1;
 
@@ -461,6 +511,7 @@ impl SchedulingDetails {
             ) {
                 let datapoint = create_datapoint!(
                     @point "scheduling_details",
+                    "id" => self.id,
                     ("num_schedule_calls", self.num_schedule_calls, i64),
                     ("min_starting_queue_size", self.min_starting_queue_size, i64),
                     ("max_starting_queue_size", self.max_starting_queue_size, i64),
