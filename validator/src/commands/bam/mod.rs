@@ -96,8 +96,8 @@ pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlErr
 }
 
 /// Empty values disable BAM node discovery. The value is the full URL of the
-/// registry's published node list rather than a base to append a path to, so it
-/// is taken as given once the scheme is known to be HTTP(S).
+/// published node list, not a base, and is passed through once the scheme is
+/// known to be HTTP(S).
 pub fn extract_bam_registry_url(
     matches: &ArgMatches,
 ) -> Result<Option<String>, BamRegistryUrlError> {
@@ -298,8 +298,7 @@ mod tests {
         app.get_matches_from(args)
     }
 
-    // The registry URL names an object, so it is passed through unchanged -
-    // no scheme defaulting and no port defaulting, unlike --bam-url.
+    // Passed through unchanged: no scheme or port defaulting, unlike --bam-url.
     #[test_case("https://registry.testnet.jito.wtf/nodes.json")]
     #[test_case("http://localhost:9000/bam-registry-serve/nodes.json")]
     #[test_case("https://registry.jito.wtf:8443/nodes.json")]
@@ -331,8 +330,7 @@ mod tests {
         );
     }
 
-    // A bare host is a base, not the node list, and there is deliberately no
-    // scheme defaulting to rescue it.
+    // A bare host is a base, not the node list, and nothing defaults the scheme.
     #[test_case("registry.jito.wtf/nodes.json", ParseError::RelativeUrlWithoutBase)]
     #[test_case("://nodes.json", ParseError::RelativeUrlWithoutBase)]
     #[test_case("https://", ParseError::EmptyHost)]

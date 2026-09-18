@@ -33,33 +33,28 @@ const RESYNC_INTERVAL_STALLED: Duration = Duration::from_secs(2);
 /// treated as bad and the ranking advances.
 const CONNECT_GRACE: Duration = Duration::from_secs(10);
 
-/// A probe round is one pass over a sample of the published.
+/// Most nodes sampled in one probe round.
 const PROBE_CAP: usize = 32;
 
 /// Most probes in flight at once.
 const PROBE_FANOUT: usize = 16;
 
-/// Round trips measured per node. The minimum is kept, so a single scheduling
-/// hiccup does not push an otherwise close node down the ranking.
+/// Round trips measured per node. The minimum of the samples is kept.
 const PROBE_SAMPLES: usize = 3;
 
-/// Connect budget for one probe. More generous than the request budget because
-/// a TLS handshake to a distant node costs several round trips.
+/// Connect budget for one probe, covering the TLS handshake.
 const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Request budget for one probe sample. The node's own admission gate rejects a
-/// validator above 30ms of mean RTT, so a sample slower than this is describing
-/// a node that would refuse the connection anyway.
+/// Request budget for one probe sample. A node's admission gate rejects a
+/// validator above 30ms of mean RTT.
 const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Backstop for an entire probe round, independent of the fan-out arithmetic.
-/// Only trips when the fleet is unreachable, and bounds how long shutdown can
-/// wait on a round in progress.
+/// Backstop for an entire probe round. Only trips when the fleet is
+/// unreachable, and bounds how long shutdown waits on a round in progress.
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
 
-/// Minimum gap between probe rounds. Load-bearing: when every candidate is
-/// unreachable a round yields an empty ranking, so without a floor the loop
-/// would re-probe the whole fleet on every poll.
+/// Minimum gap between probe rounds. An all-unreachable round yields an empty
+/// ranking, which without this floor would re-probe the fleet on every poll.
 const PROBE_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Budget for fetching the node list.
@@ -78,8 +73,8 @@ pub struct ServedNodes {
     pub nodes: Vec<ServedNode>,
 }
 
-/// The registry sends RFC 3339 on the wire. A missing or malformed value costs
-/// one metric, so it must not fail the document and take the node list with it.
+/// The registry sends RFC 3339. A missing or malformed value costs one metric
+/// rather than failing the whole document.
 fn lenient_rfc3339<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -90,8 +85,7 @@ where
         .map(|parsed| parsed.with_timezone(&Utc)))
 }
 
-/// A node the registry lists as a candidate.
-/// When its measured, it will be a `RankedNode`.
+/// A node the registry lists as a candidate. Becomes a `RankedNode` once measured.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ServedNode {
     pub ip: IpAddr,
@@ -101,16 +95,14 @@ pub struct ServedNode {
 
 impl ServedNode {
     /// gRPC target for this node. `SocketAddr` brackets IPv6 addresses, and the
-    /// registry builds the same string when it dials a node back to admit it,
-    /// so both ends agree byte for byte.
+    /// registry builds the same string when it admits a node, so both ends agree.
     pub fn url(&self) -> String {
         format!("https://{}", SocketAddr::new(self.ip, self.grpc_port))
     }
 }
 
-/// A `ServedNode` that answered a probe, carrying the round-trip time that was
-/// measured. Rankings hold only these, ordered by `rtt_us` ascending, so a node
-/// reaches a ranking only by proving it is reachable.
+/// A `ServedNode` that answered a probe, with its measured round-trip time.
+/// Rankings hold only these, ordered by `rtt_us` ascending.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RankedNode {
     url: String,
@@ -119,9 +111,7 @@ struct RankedNode {
 }
 
 /// Keeps the shared BAM url pointed at a live node from the registry's list.
-/// `BamManager` already reconnects whenever that url changes, so discovery only
-/// has to decide what belongs there. The pick advances only while the connection
-/// is disconnected.
+/// `BamManager` reconnects whenever that url changes.
 pub struct BamDiscovery {
     /// Background worker that fetches, probes and publishes.
     thread_hdl: JoinHandle<()>,
@@ -209,8 +199,7 @@ impl BamDiscovery {
                 cursor = 0;
             }
 
-            // A node can answer the probe and still refuse the scheduler stream,
-            // so walking the ranking keeps it from being a sink.
+            // A node can answer the probe and still refuse the scheduler stream.
             if stuck && !ranked.is_empty() {
                 cursor = Self::advance(cursor, ranked.len());
                 if cursor == 0 {
@@ -289,7 +278,7 @@ impl BamDiscovery {
     }
 
     /// Read the published list. `None` leaves the caller holding whatever it
-    /// already has. Better to have a stale list than no list at all.
+    /// already has.
     async fn fetch(http_client: &reqwest::Client, registry_url: &str) -> Option<ServedNodes> {
         let response = async {
             http_client
@@ -412,9 +401,8 @@ impl BamDiscovery {
             .join("\n")
     }
 
-    /// Time `GetBuilderConfig` against one node.
-    /// All samples share a single channel, so the ranking reflects round trips
-    /// rather than TLS handshakes.
+    /// Time `GetBuilderConfig` against one node. All samples share one channel,
+    /// so the measurement excludes the TLS handshake.
     async fn probe(node: &ServedNode) -> Option<RankedNode> {
         let url = node.url();
         let channel = endpoint_from_url(&url)
@@ -450,8 +438,8 @@ impl BamDiscovery {
 mod tests {
     use {super::*, test_case::test_case};
 
-    /// Byte-for-byte the object the registry pins in its own snapshot test. If
-    /// either side renames a field, this fails instead of the fleet emptying.
+    /// Byte-for-byte the object the registry pins in its own snapshot test, so a
+    /// rename on either side fails here instead of emptying the fleet.
     const GOLDEN_NODE: &str = r#"{"ip":"203.0.113.1","grpc_port":50056,"region":"fra"}"#;
 
     #[test]
@@ -485,8 +473,8 @@ mod tests {
         assert_eq!(served.nodes.len(), 1);
     }
 
-    /// The timestamp only feeds a metric, so a registry that sends a broken or
-    /// missing one must still hand us a usable node list.
+    /// The timestamp only feeds a metric, so a broken one must still yield a
+    /// usable node list.
     #[test_case(r#""not-a-timestamp""# ; "malformed")]
     #[test_case("null" ; "null")]
     #[test_case("1757419200" ; "unix seconds")]

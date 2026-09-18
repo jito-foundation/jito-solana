@@ -438,7 +438,7 @@ impl Tpu {
         // Discovery is BAM-specific. Reuse the same exclusion as above.
         let bam_discovery = match (&bam_dependencies, &bam_registry_url) {
             (Some(_), Some(registry_url)) => {
-                // An explicit --bam-url overrides connecting via the registry. Maybe change in the future?
+                // An explicit --bam-url overrides connecting via the registry.
                 if bam_url.load().is_some() {
                     warn!("BAM node discovery disabled: --bam-url overrides --bam-registry-url");
                     None
