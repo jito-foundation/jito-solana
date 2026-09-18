@@ -179,28 +179,25 @@ impl BamDiscovery {
 
         let mut time_until_resync = Duration::ZERO;
         let mut time_until_probe = Duration::ZERO;
-        let mut time_in_state = Duration::ZERO;
-        let mut state = Self::connection_state(&bam_enabled);
+        let mut stalled_for = Duration::ZERO;
 
         while !exit.load(Ordering::Relaxed) {
-            let current_state = Self::connection_state(&bam_enabled);
-            if current_state != state {
-                state = current_state;
-                time_in_state = Duration::ZERO;
-            }
+            let state = Self::connection_state(&bam_enabled);
 
-            // `Disconnected` is the only state that means the pick is bad.
-            // `Connecting` is bounded by the connection timeout and falls back
-            // to `Disconnected` on failure.
+            // Time without a live session, not time in one state. `Connecting` is
+            // not progress on its own: a node that answers the probe and then
+            // fails its health check leaves BamManager cycling `Connecting` ->
+            // `Disconnected` about once a second, so a per-state timer resets on
+            // every flip, never reaches `CONNECT_GRACE`, and pins the validator to
+            // a node it can never use.
             //
-            // Everything past it means the BAM connection is already live and
-            // authenticated: on connecting, BamManager moves to
-            // `DrainingBlockEngine` and waits for BundleStage to finish the
-            // bundles it already took from the Block Engine before BAM starts
-            // scheduling, which is the handover between the two sources. That
-            // wait is unbounded from here, so treating it as a bad pick would
-            // pull the url out from under a session that is working.
-            let stuck = state == BamConnectionState::Disconnected && time_in_state >= CONNECT_GRACE;
+            // Everything past `Connecting` means the session is live and
+            // authenticated: BamManager moves to `DrainingBlockEngine` and waits
+            // for BundleStage to finish the bundles it already took from the Block
+            // Engine before BAM starts scheduling, which is the handover between
+            // the two sources. That wait is unbounded from here, so treating it as
+            // a bad pick would pull the url out from under a session that works.
+            let stuck = stalled_for >= CONNECT_GRACE;
 
             if time_until_resync == Duration::ZERO {
                 if let Some(served) = runtime.block_on(Self::fetch(&http_client, &registry_url))
@@ -232,7 +229,7 @@ impl BamDiscovery {
                     ranked.clear();
                 }
                 // Let the new pick have a grace window of its own.
-                time_in_state = Duration::ZERO;
+                stalled_for = Duration::ZERO;
             }
 
             if (stuck || bam_url.load_full().is_none())
@@ -244,12 +241,23 @@ impl BamDiscovery {
             thread::sleep(POLL_INTERVAL);
             time_until_resync = time_until_resync.saturating_sub(POLL_INTERVAL);
             time_until_probe = time_until_probe.saturating_sub(POLL_INTERVAL);
-            time_in_state = time_in_state.saturating_add(POLL_INTERVAL);
+            stalled_for = Self::stall_after_poll(state, stalled_for);
         }
     }
 
     fn connection_state(bam_enabled: &AtomicU8) -> BamConnectionState {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
+    }
+
+    /// Advance the stall clock by one poll, or clear it once the session is
+    /// live. See the call site for why this cannot key off the current state
+    /// alone.
+    fn stall_after_poll(state: BamConnectionState, stalled_for: Duration) -> Duration {
+        if state as u8 > BamConnectionState::Connecting as u8 {
+            Duration::ZERO
+        } else {
+            stalled_for.saturating_add(POLL_INTERVAL)
+        }
     }
 
     /// Step to the next candidate, wrapping at the end of the ranking.
@@ -536,6 +544,40 @@ mod tests {
         assert!(lines[0].contains("rank") && lines[0].contains("rtt"));
         assert!(lines[1].contains(&answered.url()) && lines[1].contains("4.20ms"));
         assert!(lines[2].contains(&silent.url()) && lines[2].contains("no answer"));
+    }
+
+    fn polls_to_grace() -> usize {
+        (CONNECT_GRACE.as_millis() / POLL_INTERVAL.as_millis()) as usize
+    }
+
+    // Regression: a node that answers the probe but refuses the session leaves
+    // BamManager cycling `Connecting` -> `Disconnected` about once a second. The
+    // stall clock has to survive that churn, or the cursor never advances and the
+    // validator stays pinned to a node it can never connect to.
+    #[test]
+    fn test_stall_accumulates_across_connect_retry_churn() {
+        let stalled_for = [
+            BamConnectionState::Connecting,
+            BamConnectionState::Disconnected,
+        ]
+        .iter()
+        .cycle()
+        .take(2 * polls_to_grace())
+        .fold(Duration::ZERO, |stalled, state| {
+            BamDiscovery::stall_after_poll(*state, stalled)
+        });
+
+        assert!(stalled_for >= CONNECT_GRACE);
+    }
+
+    #[test_case(BamConnectionState::DrainingBlockEngine ; "draining")]
+    #[test_case(BamConnectionState::BlockEngineDrained ; "drained")]
+    #[test_case(BamConnectionState::Connected ; "connected")]
+    fn test_stall_clears_once_the_session_is_live(state: BamConnectionState) {
+        assert_eq!(
+            BamDiscovery::stall_after_poll(state, CONNECT_GRACE),
+            Duration::ZERO
+        );
     }
 
     #[test]
