@@ -338,11 +338,22 @@ impl BamDiscovery {
         {
             Ok(results) => results.into_iter().flatten().collect(),
             Err(_) => {
+                warn!(
+                    "BAM probe round timed out after {PROBE_ROUND_BUDGET:?}, probed {} nodes",
+                    pool.len()
+                );
                 datapoint_warn!("bam_discovery-probe_round_timeout", ("count", 1, i64));
                 return Vec::new();
             }
         };
         ranked.sort_unstable_by_key(|node| node.rtt_us);
+
+        info!(
+            "BAM probe round: {}/{} nodes answered\n{}",
+            ranked.len(),
+            pool.len(),
+            Self::probe_table(&pool, &ranked)
+        );
 
         datapoint_info!(
             "bam_discovery-probe_round",
@@ -350,6 +361,44 @@ impl BamDiscovery {
             ("responded", ranked.len() as i64, i64),
         );
         ranked
+    }
+
+    /// One row per probed node, responders first in ranking order. Nodes that did
+    /// not answer are kept rather than dropped: a node the registry publishes that
+    /// never responds is the case worth seeing, and it is absent from the ranking
+    /// by construction.
+    fn probe_table(pool: &[ServedNode], ranked: &[RankedNode]) -> String {
+        let header = format!(
+            "{:>4}  {:<30}  {:<24}  {:>10}",
+            "rank", "url", "region", "rtt"
+        );
+        let responded = ranked.iter().enumerate().map(|(index, node)| {
+            format!(
+                "{:>4}  {:<30}  {:<24}  {:>8.2}ms",
+                index + 1,
+                node.url,
+                node.region,
+                node.rtt_us as f64 / 1_000.0
+            )
+        });
+        let silent = pool
+            .iter()
+            .filter(|node| !ranked.iter().any(|entry| entry.url == node.url()))
+            .map(|node| {
+                format!(
+                    "{:>4}  {:<30}  {:<24}  {:>10}",
+                    "-",
+                    node.url(),
+                    node.region,
+                    "no answer"
+                )
+            });
+
+        std::iter::once(header)
+            .chain(responded)
+            .chain(silent)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Time `GetBuilderConfig` against one node.
@@ -463,6 +512,30 @@ mod tests {
             region: "fra".to_string(),
             rtt_us: 4_200,
         }
+    }
+
+    fn served_node(ip: &str) -> ServedNode {
+        ServedNode {
+            ip: ip.parse().unwrap(),
+            grpc_port: 50056,
+            region: "fra".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_probe_table_ranks_responders_and_keeps_silent_nodes() {
+        let answered = served_node("203.0.113.1");
+        let silent = served_node("203.0.113.2");
+        let ranked = vec![ranked_node("203.0.113.1")];
+
+        // Pool order is shuffled, so the table must order by the ranking, not the pool.
+        let table = BamDiscovery::probe_table(&[silent.clone(), answered.clone()], &ranked);
+        let lines: Vec<&str> = table.lines().collect();
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("rank") && lines[0].contains("rtt"));
+        assert!(lines[1].contains(&answered.url()) && lines[1].contains("4.20ms"));
+        assert!(lines[2].contains(&silent.url()) && lines[2].contains("no answer"));
     }
 
     #[test]
