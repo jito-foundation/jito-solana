@@ -23,11 +23,16 @@ use {
     tokio::{sync::Semaphore, time::timeout},
 };
 
-/// How often the published node list is re-read. Tight enough that draining a
-/// node from the registry moves validators off it inside a maintenance window
-/// instead of a maintenance day. A fleet of ~800 validators re-reading a small
-/// JSON document at this cadence is ~13 requests per second.
-const RESYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// How often the published node list is re-read while a session is live. Only
+/// has to be fresh enough to follow a drain inside a maintenance window; ~800
+/// validators re-reading a small JSON document at this cadence is ~13 requests
+/// per second.
+const RESYNC_INTERVAL_LIVE: Duration = Duration::from_secs(60);
+
+/// How often it is re-read with no live session. The list is the only route
+/// back to a working node, so it is read hard until one is found. Subsumes the
+/// boot-time case, which has neither a list nor a session.
+const RESYNC_INTERVAL_STALLED: Duration = Duration::from_secs(2);
 
 /// How long the connection may sit disconnected before the current pick is
 /// treated as bad and the ranking advances.
@@ -182,19 +187,7 @@ impl BamDiscovery {
         while !exit.load(Ordering::Relaxed) {
             let state = Self::connection_state(&bam_enabled);
 
-            // Time without a live session, not time in one state. `Connecting` is
-            // not progress on its own: a node that answers the probe and then
-            // fails its health check leaves BamManager cycling `Connecting` ->
-            // `Disconnected` about once a second, so a per-state timer resets on
-            // every flip, never reaches `CONNECT_GRACE`, and pins the validator to
-            // a node it can never use.
-            //
-            // Everything past `Connecting` means the session is live and
-            // authenticated: BamManager moves to `DrainingBlockEngine` and waits
-            // for BundleStage to finish the bundles it already took from the Block
-            // Engine before BAM starts scheduling, which is the handover between
-            // the two sources. That wait is unbounded from here, so treating it as
-            // a bad pick would pull the url out from under a session that works.
+            // Time without a live session, not time in one state; see `is_live`.
             let stuck = stalled_for >= CONNECT_GRACE;
 
             if time_until_resync == Duration::ZERO {
@@ -208,7 +201,11 @@ impl BamDiscovery {
                     // the next pass rather than serving out the cooldown.
                     time_until_probe = Duration::ZERO;
                 }
-                time_until_resync = RESYNC_INTERVAL;
+                time_until_resync = if Self::is_live(state) {
+                    RESYNC_INTERVAL_LIVE
+                } else {
+                    RESYNC_INTERVAL_STALLED
+                };
             }
 
             if ranked.is_empty() && !nodes.is_empty() && time_until_probe == Duration::ZERO {
@@ -247,11 +244,23 @@ impl BamDiscovery {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
     }
 
-    /// Advance the stall clock by one poll, or clear it once the session is
-    /// live. See the call site for why this cannot key off the current state
-    /// alone.
+    /// A session past `Connecting` is live and authenticated: BamManager moves to
+    /// `DrainingBlockEngine` and waits for BundleStage to finish the bundles it
+    /// already took from the Block Engine before BAM starts scheduling. That wait
+    /// is unbounded from here, so treating it as a bad pick would pull the url out
+    /// from under a session that works.
+    ///
+    /// `Connecting` is not progress on its own: a node that answers the probe and
+    /// then fails its health check leaves BamManager cycling `Connecting` ->
+    /// `Disconnected` about once a second, so anything keyed on a state *change*
+    /// resets forever and the pick never advances.
+    fn is_live(state: BamConnectionState) -> bool {
+        state as u8 > BamConnectionState::Connecting as u8
+    }
+
+    /// Advance the stall clock by one poll, or clear it once the session is live.
     fn stall_after_poll(state: BamConnectionState, stalled_for: Duration) -> Duration {
-        if state as u8 > BamConnectionState::Connecting as u8 {
+        if Self::is_live(state) {
             Duration::ZERO
         } else {
             stalled_for.saturating_add(POLL_INTERVAL)
@@ -602,12 +611,19 @@ mod tests {
         assert!(stalled_for >= CONNECT_GRACE);
     }
 
-    #[test_case(BamConnectionState::DrainingBlockEngine ; "draining")]
-    #[test_case(BamConnectionState::BlockEngineDrained ; "drained")]
-    #[test_case(BamConnectionState::Connected ; "connected")]
-    fn test_stall_clears_once_the_session_is_live(state: BamConnectionState) {
+    #[test_case(BamConnectionState::Disconnected, false ; "disconnected")]
+    #[test_case(BamConnectionState::Connecting, false ; "connecting")]
+    #[test_case(BamConnectionState::DrainingBlockEngine, true ; "draining")]
+    #[test_case(BamConnectionState::BlockEngineDrained, true ; "drained")]
+    #[test_case(BamConnectionState::Connected, true ; "connected")]
+    fn test_is_live(state: BamConnectionState, expected: bool) {
+        assert_eq!(BamDiscovery::is_live(state), expected);
+    }
+
+    #[test]
+    fn test_stall_clears_once_the_session_is_live() {
         assert_eq!(
-            BamDiscovery::stall_after_poll(state, CONNECT_GRACE),
+            BamDiscovery::stall_after_poll(BamConnectionState::Connected, CONNECT_GRACE),
             Duration::ZERO
         );
     }
