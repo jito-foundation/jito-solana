@@ -23,15 +23,10 @@ use {
     tokio::{sync::Semaphore, time::timeout},
 };
 
-/// How often the published node list is re-read while a session is live. Only
-/// has to be fresh enough to follow a drain inside a maintenance window; ~800
-/// validators re-reading a small JSON document at this cadence is ~13 requests
-/// per second.
+/// How often the published node list is re-read while a session is live.
 const RESYNC_INTERVAL_LIVE: Duration = Duration::from_secs(60);
 
-/// How often it is re-read with no live session. The list is the only route
-/// back to a working node, so it is read hard until one is found. Subsumes the
-/// boot-time case, which has neither a list nor a session.
+/// How often it is re-read with no live session, including at startup.
 const RESYNC_INTERVAL_STALLED: Duration = Duration::from_secs(2);
 
 /// How long the connection may sit disconnected before the current pick is
@@ -187,7 +182,7 @@ impl BamDiscovery {
         while !exit.load(Ordering::Relaxed) {
             let state = Self::connection_state(&bam_enabled);
 
-            // Time without a live session, not time in one state; see `is_live`.
+            // Time without a live session, not time in one state.
             let stuck = stalled_for >= CONNECT_GRACE;
 
             if time_until_resync == Duration::ZERO {
@@ -197,8 +192,8 @@ impl BamDiscovery {
                     nodes = served.nodes;
                     ranked.clear();
                     cursor = 0;
-                    // The ranking now answers a stale question, so re-probe on
-                    // the next pass rather than serving out the cooldown.
+                    // Re-probe against the new list instead of serving out the
+                    // cooldown.
                     time_until_probe = Duration::ZERO;
                 }
                 time_until_resync = if Self::is_live(state) {
@@ -244,16 +239,10 @@ impl BamDiscovery {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
     }
 
-    /// A session past `Connecting` is live and authenticated: BamManager moves to
-    /// `DrainingBlockEngine` and waits for BundleStage to finish the bundles it
-    /// already took from the Block Engine before BAM starts scheduling. That wait
-    /// is unbounded from here, so treating it as a bad pick would pull the url out
-    /// from under a session that works.
-    ///
-    /// `Connecting` is not progress on its own: a node that answers the probe and
-    /// then fails its health check leaves BamManager cycling `Connecting` ->
-    /// `Disconnected` about once a second, so anything keyed on a state *change*
-    /// resets forever and the pick never advances.
+    /// Whether the BAM session is usable. Everything past `Connecting` is an
+    /// authenticated session, including the unbounded `DrainingBlockEngine` wait.
+    /// `Connecting` is not: BamManager cycles it against `Disconnected` about once
+    /// a second while a node accepts the connection then fails its health check.
     fn is_live(state: BamConnectionState) -> bool {
         state as u8 > BamConnectionState::Connecting as u8
     }
@@ -268,13 +257,10 @@ impl BamDiscovery {
     }
 
     /// True when the shared url does not name a node the registry currently
-    /// serves: either nothing is published yet, or the pick has left the list
-    /// because it is draining for maintenance. Both want the next candidate
-    /// published, the drain early enough to beat the operator taking the node
-    /// down under a live session.
+    /// serves: nothing published yet, or a pick that has left the list.
     ///
-    /// Keyed off the served list rather than the ranking, so a node that merely
-    /// missed one probe round is not mistaken for a drain.
+    /// Reads the served list, not the ranking, so a node that missed a single
+    /// probe round is not mistaken for a drain.
     fn needs_pick(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
         !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
     }
@@ -391,9 +377,7 @@ impl BamDiscovery {
     }
 
     /// One row per probed node, responders first in ranking order. Nodes that did
-    /// not answer are kept rather than dropped: a node the registry publishes that
-    /// never responds is the case worth seeing, and it is absent from the ranking
-    /// by construction.
+    /// not answer are absent from the ranking, so they are listed after it.
     fn probe_table(pool: &[ServedNode], ranked: &[RankedNode]) -> String {
         let header = format!(
             "{:>4}  {:<30}  {:<24}  {:>10}",
@@ -590,10 +574,9 @@ mod tests {
         ));
     }
 
-    // Regression: a node that answers the probe but refuses the session leaves
-    // BamManager cycling `Connecting` -> `Disconnected` about once a second. The
-    // stall clock has to survive that churn, or the cursor never advances and the
-    // validator stays pinned to a node it can never connect to.
+    // Regression: BamManager cycles `Connecting` -> `Disconnected` about once a
+    // second while a node accepts the connection then fails its health check.
+    // The stall clock has to survive that churn.
     #[test]
     fn test_stall_accumulates_across_connect_retry_churn() {
         let stalled_for = [
