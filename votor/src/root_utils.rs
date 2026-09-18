@@ -83,16 +83,15 @@ pub(crate) fn set_root(
             .dependency_tracker
             .as_ref()
             .map(|s| s.get_current_declared_work());
-        if let Err(chanel_name) = nonblocking_send(
-            my_pubkey,
-            &config.sender,
-            (
+        if config
+            .sender
+            .send((
                 BankNotification::OptimisticallyConfirmed(new_root_slot, bank_hash),
                 dependency_work,
-            ),
-            "bank_notification_sender",
-        ) {
-            info!("{my_pubkey}: channel {chanel_name} disconnected");
+            ))
+            .is_err()
+        {
+            info!("{my_pubkey}: bank notification broadcaster has no connected subscribers");
         }
     }
 }
@@ -171,29 +170,27 @@ pub fn check_and_handle_new_root<CB>(
             .dependency_tracker
             .as_ref()
             .map(|s| s.get_current_declared_work());
-        if let Err(channel_name) = nonblocking_send(
-            my_pubkey,
-            &sender.sender,
-            (BankNotification::NewRootBank(root_bank), dependency_work),
-            "bank_notification_sender",
-        ) {
-            info!("{my_pubkey} channel {channel_name} disconnected");
+        if sender
+            .sender
+            .send((BankNotification::NewRootBank(root_bank), dependency_work))
+            .is_err()
+        {
+            info!("{my_pubkey}: bank notification broadcaster has no connected subscribers");
         }
         if let Some((new_chain, oldest_parent)) = rooted_slot_notifications {
             let dependency_work = sender
                 .dependency_tracker
                 .as_ref()
                 .map(|s| s.get_current_declared_work());
-            if let Err(channel_name) = nonblocking_send(
-                my_pubkey,
-                &sender.sender,
-                (
+            if sender
+                .sender
+                .send((
                     BankNotification::NewRootedChain(new_chain, oldest_parent),
                     dependency_work,
-                ),
-                "bank_notification_sender",
-            ) {
-                info!("{my_pubkey} channel {channel_name} disconnected");
+                ))
+                .is_err()
+            {
+                info!("{my_pubkey}: bank notification broadcaster has no connected subscribers");
             }
         }
     }
