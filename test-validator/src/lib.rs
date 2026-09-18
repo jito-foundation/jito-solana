@@ -24,6 +24,7 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
@@ -50,6 +51,7 @@ use {
     solana_net_utils::{
         PortRange, SocketAddrSpace, find_available_ports_in_range, multihomed_sockets::BindIpAddrs,
     },
+    solana_program_binaries::{jito_tip_distribution, jito_tip_payment},
     solana_program_runtime::{
         execution_budget::SVMTransactionExecutionBudget, invoke_context::InvokeContext,
     },
@@ -166,6 +168,7 @@ pub struct TestValidatorGenesis {
     pub transaction_account_lock_limit: Option<usize>,
     pub geyser_plugin_manager: Arc<ArcSwap<GeyserPluginManager>>,
     pub admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -202,6 +205,7 @@ impl Default for TestValidatorGenesis {
             geyser_plugin_manager: Arc::new(ArcSwap::new(Arc::new(GeyserPluginManager::default()))),
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 }
@@ -1205,6 +1209,16 @@ impl TestValidator {
             accounts_db_config,
             runtime_config,
             enable_scheduler_bindings: config.enable_scheduler_bindings,
+            tip_manager_config: TipManagerConfig {
+                tip_payment_program_id: jito_tip_payment::id(),
+                tip_distribution_program_id: jito_tip_distribution::id(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: validator_identity.pubkey(),
+                    vote_account: vote_account_address,
+                    commission_bps: 10,
+                },
+            },
+            bam_url: config.bam_url.clone(),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {
@@ -1480,6 +1494,35 @@ mod test {
         let (test_validator, _payer) = TestValidatorGenesis::default_for_tests().start();
         let rpc_client = test_validator.get_rpc_client();
         rpc_client.get_health().expect("health");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scheduler_bindings_prevent_bam_runtime_activation() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let ledger = tempfile::tempdir().unwrap();
+        let mut genesis = TestValidatorGenesis::default_for_tests();
+        genesis.ledger_path(ledger.path());
+        genesis.enable_scheduler_bindings = true;
+        let (_test_validator, _payer) = genesis.start();
+
+        genesis.bam_url.store(Arc::new(Some(format!(
+            "http://{}",
+            listener.local_addr().unwrap()
+        ))));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok(_) => panic!("BAM connected while external scheduler bindings were enabled"),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("failed to accept BAM connection: {err}"),
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

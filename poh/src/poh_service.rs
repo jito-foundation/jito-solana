@@ -44,7 +44,7 @@ pub const DEFAULT_PINNED_CPU_CORE: Option<usize> = Some(0);
 #[cfg(not(target_os = "linux"))]
 pub const DEFAULT_PINNED_CPU_CORE: Option<usize> = None;
 
-const TARGET_SLOT_ADJUSTMENT_NS: u64 = 50_000_000;
+const TARGET_SLOT_ADJUSTMENT_NS: u64 = 0;
 
 #[derive(Debug)]
 struct PohTiming {
@@ -818,6 +818,7 @@ mod tests {
                 mixin: Hash::new_unique(),
                 transactions: vec![VersionedTransaction::from(test_tx())],
                 bank_id: bank.bank_id(),
+                reschedule_on_sad_handover: true,
             })
             .unwrap();
 
