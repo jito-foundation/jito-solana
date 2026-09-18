@@ -645,15 +645,12 @@ impl AdminRpc for AdminRpcImpl {
     }
 
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
-        let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
         let bam_url = bam_url.filter(|url| !url.trim().is_empty());
 
         if meta.enable_scheduler_bindings && bam_url.is_some() {
             let error = Error::invalid_params("BAM conflicts with external scheduler bindings");
             return Err(error);
         }
-
-        let old_bam_url = meta.bam_url.load();
 
         // Same shape the CLI produces, so both entry points accept the same values.
         let bam_url = bam_url
@@ -662,18 +659,6 @@ impl AdminRpc for AdminRpcImpl {
                     .map_err(|err| jsonrpc_core::error::Error::invalid_params(err.to_string()))
             })
             .transpose()?;
-
-        if bam_url.is_none() && manual_disconnect {
-            datapoint_info!(
-                "bam_manually_disconnected",
-                ("count", 1, i64),
-                (
-                    "previous_bam_url",
-                    old_bam_url.as_ref().clone().unwrap_or_default(),
-                    String
-                ),
-            );
-        }
 
         meta.bam_url.store(Arc::new(bam_url));
         Ok(())
