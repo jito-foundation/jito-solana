@@ -196,7 +196,6 @@ impl Tpu {
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
-        bam_registry_url: Option<String>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -435,24 +434,18 @@ impl Tpu {
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
-        // Discovery is BAM-specific. Reuse the same exclusion as above.
-        let bam_discovery = match (&bam_dependencies, &bam_registry_url) {
-            (Some(_), Some(registry_url)) => {
-                // An explicit --bam-url overrides connecting via the registry.
-                if bam_url.load().is_some() {
-                    warn!("BAM node discovery disabled: --bam-url overrides --bam-registry-url");
-                    None
-                } else {
-                    Some(BamDiscovery::new(
-                        exit.clone(),
-                        bam_url.clone(),
-                        bam_enabled.clone(),
-                        registry_url.clone(),
-                    ))
-                }
-            }
-            _ => None,
-        };
+        // `bam_url` is what the operator asked for; this is what BamManager
+        // connects to. Discovery resolves one into the other, so it runs whenever
+        // BAM does and reuses the exclusion above.
+        let connect_url = Arc::new(ArcSwap::from_pointee(None));
+        let bam_discovery = bam_dependencies.is_some().then(|| {
+            BamDiscovery::new(
+                exit.clone(),
+                bam_url.clone(),
+                connect_url.clone(),
+                bam_enabled.clone(),
+            )
+        });
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -521,7 +514,7 @@ impl Tpu {
         let bam_manager = bam_dependencies.map(|bam_dependencies| {
             BamManager::new(
                 exit.clone(),
-                bam_url,
+                connect_url,
                 bam_dependencies,
                 bam_outbound_receiver,
                 poh_recorder.clone(),
