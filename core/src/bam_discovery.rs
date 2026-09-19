@@ -230,21 +230,21 @@ impl BamDiscovery {
             }
 
             // A node can answer the probe and still refuse the scheduler stream.
-            if stuck && !ranked.is_empty() {
+            let current_url = bam_url.load_full();
+            if stuck && Self::on_pick(current_url.as_deref(), &ranked, cursor) {
                 cursor = Self::advance(cursor, ranked.len());
                 if cursor == 0 {
                     // Ranking is stale, so clear and re-probe.
                     ranked.clear();
                 }
-                // Let the new pick have a grace window of its own.
-                stalled_for = Duration::ZERO;
             }
 
-            let current_url = bam_url.load_full();
             if (stuck || Self::needs_pick(current_url.as_deref(), &nodes))
                 && let Some(node) = ranked.get(cursor)
+                && Self::publish(&bam_url, node)
             {
-                Self::publish(&bam_url, node);
+                // Let the new pick have a grace window of its own.
+                stalled_for = Duration::ZERO;
             }
 
             thread::sleep(POLL_INTERVAL);
@@ -284,6 +284,15 @@ impl BamDiscovery {
         !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
     }
 
+    /// Whether the shared url is the candidate the cursor points at. A ranking
+    /// built since the last publish is not, so its best node is published before
+    /// the walk is allowed to move past it.
+    fn on_pick(current_url: Option<&str>, ranked: &[RankedNode], cursor: usize) -> bool {
+        ranked
+            .get(cursor)
+            .is_some_and(|node| current_url == Some(node.url.as_str()))
+    }
+
     /// Step to the next candidate, wrapping at the end of the ranking.
     fn advance(cursor: usize, len: usize) -> usize {
         let next = cursor.saturating_add(1);
@@ -307,9 +316,10 @@ impl BamDiscovery {
         }
     }
 
-    fn publish(bam_url: &ArcSwap<Option<String>>, node: &RankedNode) {
+    /// Reports whether this moved the shared url.
+    fn publish(bam_url: &ArcSwap<Option<String>>, node: &RankedNode) -> bool {
         if !Self::set_url(bam_url, Some(&node.url)) {
-            return;
+            return false;
         }
         info!(
             "BAM discovery selected {} ({}, {}us)",
@@ -321,6 +331,7 @@ impl BamDiscovery {
             ("region", node.region.clone(), String),
             ("rtt_us", node.rtt_us as i64, i64),
         );
+        true
     }
 
     /// Read the published list. `None` leaves the caller holding whatever it
@@ -642,6 +653,34 @@ mod tests {
             BamDiscovery::stall_after_poll(BamConnectionState::Connected, CONNECT_GRACE),
             Duration::ZERO
         );
+    }
+
+    // Regression: after a re-probe the cursor is back at the best node while the
+    // shared url is still the one the last walk ended on. Advancing then would
+    // step straight past the best node, and it would never be published again.
+    #[test]
+    fn test_rebuilt_ranking_is_not_the_current_pick() {
+        let ranked = vec![ranked_node("203.0.113.1"), ranked_node("203.0.113.2")];
+
+        assert!(!BamDiscovery::on_pick(
+            Some("https://203.0.113.9:50056"),
+            &ranked,
+            0
+        ));
+        assert!(BamDiscovery::on_pick(
+            Some("https://203.0.113.1:50056"),
+            &ranked,
+            0
+        ));
+    }
+
+    #[test]
+    fn test_empty_ranking_has_no_pick() {
+        assert!(!BamDiscovery::on_pick(
+            Some("https://203.0.113.1:50056"),
+            &[],
+            0
+        ));
     }
 
     #[test]
