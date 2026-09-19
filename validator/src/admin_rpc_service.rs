@@ -46,7 +46,6 @@ use {
         net::{IpAddr, SocketAddr},
         num::NonZeroUsize,
         path::{Path, PathBuf},
-        str::FromStr,
         sync::{
             Arc, RwLock,
             atomic::{AtomicBool, Ordering},
@@ -55,7 +54,6 @@ use {
         time::{Duration, Instant, SystemTime},
     },
     tokio::runtime::Runtime,
-    tonic::transport::Endpoint,
 };
 
 #[derive(Clone)]
@@ -647,7 +645,6 @@ impl AdminRpc for AdminRpcImpl {
     }
 
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
-        let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
         let bam_url = bam_url.filter(|url| !url.trim().is_empty());
 
         if meta.enable_scheduler_bindings && bam_url.is_some() {
@@ -655,27 +652,13 @@ impl AdminRpc for AdminRpcImpl {
             return Err(error);
         }
 
-        let old_bam_url = meta.bam_url.load();
-
-        if let Some(new_bam_url) = &bam_url {
-            Endpoint::from_str(new_bam_url).map_err(|e| {
-                jsonrpc_core::error::Error::invalid_params(format!(
-                    "Could not create endpoint: {e}"
-                ))
-            })?;
-        }
-
-        if bam_url.is_none() && manual_disconnect {
-            datapoint_info!(
-                "bam_manually_disconnected",
-                ("count", 1, i64),
-                (
-                    "previous_bam_url",
-                    old_bam_url.as_ref().clone().unwrap_or_default(),
-                    String
-                ),
-            );
-        }
+        // Same shape the CLI produces, so both entry points accept the same values.
+        let bam_url = bam_url
+            .map(|url| {
+                crate::commands::bam::normalize_bam_url(&url)
+                    .map_err(|err| jsonrpc_core::error::Error::invalid_params(err.to_string()))
+            })
+            .transpose()?;
 
         meta.bam_url.store(Arc::new(bam_url));
         Ok(())
@@ -1915,7 +1898,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "error": {
                     "code": -32602,
-                    "message": "Could not create endpoint: invalid URI"
+                    "message": "BAM Invalid URL format: not a url: invalid international domain name"
                 }
             }"#,
         )

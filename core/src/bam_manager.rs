@@ -207,7 +207,7 @@ impl BamManager {
                         continue;
                     }
 
-                    info!("BAM connection established");
+                    info!("BAM connection established to {}", connection.url());
                     dependencies.bam_enabled.store(
                         BamConnectionState::DrainingBlockEngine as u8,
                         Ordering::Release,
@@ -219,7 +219,10 @@ impl BamManager {
 
             let disconnect = if !connection.is_healthy() {
                 Self::set_bam_disconnected(&dependencies);
-                warn!("BAM connection unhealthy");
+                warn!(
+                    "BAM connection to {} unhealthy, disconnecting",
+                    connection.url()
+                );
                 true
             } else if Self::handle_identity_change(
                 &identity_changed,
