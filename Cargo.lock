@@ -9191,6 +9191,7 @@ dependencies = [
  "log",
  "nix",
  "pcap-file",
+ "quinn",
  "rand 0.9.4",
  "serde",
  "shuttle",
@@ -10708,7 +10709,6 @@ name = "solana-streamer"
 version = "4.4.0-alpha.5"
 dependencies = [
  "agave-logger",
- "agave-xdp",
  "anyhow",
  "assert_matches",
  "bytes",
