@@ -148,21 +148,6 @@ fn recv_slot_components_maybe_empty(
         }
     };
 
-    // Send the first entry of a new slot immediately instead of waiting for the
-    // coalescing window. If the bank is abandoned during that window, peers may
-    // now create and replay a bank on the stale fork. At an epoch boundary, a
-    // later bank with the same parent hash can reuse the cached reward
-    // calculation, but the remaining bank creation and replay work is extra.
-    if bank.slot() != current_slot {
-        process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
-        process_stats.coalesce_elapsed = 0;
-        return Ok(Some(ReceiveResults {
-            item: BroadcastItem::Component(BlockComponent::EntryBatch(entries)),
-            bank,
-            last_tick_height,
-        }));
-    }
-
     let mut serialized_batch_byte_count = serialized_size(&entries)?;
 
     // Determine the maximum batch size we will allow for coalescing. Normally
@@ -177,8 +162,9 @@ fn recv_slot_components_maybe_empty(
     // 3. We're over the max data target.
     // 4. We hit a block marker.
     // 5. We're "close enough" to tightly packing erasure batches.
-    // 6. We encounter a new slot while coalescing. Send its first entry
-    //    immediately so replicas can create the bank.
+    // 6. We encounter a new slot. Send its first entry immediately so replicas create
+    //    the bank sooner. This may replay abandoned forks; epoch rewards can be reused
+    //    for the same parent hash, but the remaining bank and replay work is extra.
     let mut coalesce_start = Instant::now();
     while bank.slot() == current_slot
         && keep_coalescing_entries(
@@ -237,6 +223,9 @@ fn recv_slot_components_maybe_empty(
         }
 
         assert!(last_tick_height <= bank.max_tick_height());
+    }
+    if bank.slot() != current_slot && !entries.is_empty() {
+        process_stats.coalesce_exited_new_slot += 1;
     }
     process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
     process_stats.coalesce_elapsed = coalesce_start.elapsed().as_micros() as u64;
@@ -390,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn test_first_shred_of_new_slot_skips_coalesce() {
+    fn test_first_entry_of_new_slot_exits_coalesce() {
         let (genesis_config, bank0, _bank_forks, tx) = setup_test();
         let bank1 = Arc::new(Bank::new_from_parent(bank0, SlotLeader::default(), 1));
         let (s, r) = bounded(1024);
@@ -409,14 +398,10 @@ mod tests {
             .collect();
 
         let mut carryover = None;
-        // current_slot != bank.slot() means this is the first shred of a new slot.
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            Slot::MAX,
-        )
-        .unwrap();
+        let mut process_stats = ProcessShredsStats::default();
+        // current_slot != bank.slot() means this is the first entry of a new slot.
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut process_stats, Slot::MAX).unwrap();
 
         assert!(matches!(
             result.item,
@@ -424,25 +409,23 @@ mod tests {
                 if batch == &entries[..1]
         ));
         assert_eq!(result.last_tick_height, 1);
+        assert_eq!(process_stats.coalesce_exited_new_slot, 1);
         assert!(carryover.is_none());
         assert_eq!(r.len(), 2);
 
         // Once broadcast advances to this slot, normal coalescing resumes.
         // Disconnect after queueing the entries so this check needs no timeout.
         drop(s);
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let mut process_stats = ProcessShredsStats::default();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot()).unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
                 if batch == &entries[1..]
         ));
         assert_eq!(result.last_tick_height, 3);
+        assert_eq!(process_stats.coalesce_exited_new_slot, 0);
         assert!(carryover.is_none());
         assert!(r.is_empty());
     }
@@ -477,13 +460,9 @@ mod tests {
                 .unwrap();
 
             let mut carryover = None;
-            let result = recv_slot_components(
-                &r,
-                &mut carryover,
-                &mut ProcessShredsStats::default(),
-                bank1.slot(),
-            )
-            .unwrap();
+            let mut process_stats = ProcessShredsStats::default();
+            let result =
+                recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot()).unwrap();
             assert_eq!(result.bank.slot(), bank2.slot());
             assert_eq!(result.last_tick_height, 2);
             assert!(matches!(
@@ -491,6 +470,7 @@ mod tests {
                 BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
                     if batch == &[first_entry]
             ));
+            assert_eq!(process_stats.coalesce_exited_new_slot, 1);
             assert!(carryover.is_none());
             assert_eq!(r.len(), 1);
             let (queued_bank, (queued_message, queued_tick_height)) = r.try_recv().unwrap();
