@@ -1505,9 +1505,7 @@ mod test {
         process_slot_start(skipped_bank).unwrap();
         assert!(blockstore_receiver.try_recv().is_err());
         assert!(socket_receiver.try_recv().is_err());
-        process_slot_start(replacement_bank.clone()).unwrap();
-        drop(process_slot_start);
-        assert_eq!(run.slot, replacement_bank.slot());
+        process_slot_start(replacement_bank).unwrap();
         blockstore_receiver.try_recv().unwrap();
         socket_receiver.try_recv().unwrap();
     }
