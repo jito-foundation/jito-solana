@@ -5,6 +5,8 @@ use {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LocalClusterConfig {
+    #[serde(skip)]
+    pub features: Option<crate::features::ResolvedFeatures>,
     pub bam_url: String,
     pub tip_payment_program_id: String,
     pub tip_distribution_program_id: String,

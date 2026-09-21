@@ -457,6 +457,7 @@ impl BamLocalCluster {
             config.hashes_per_tick,
             config.slot_time_ms,
             config.enable_tx_v1,
+            config.features.as_ref(),
         )?;
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
@@ -591,6 +592,7 @@ impl BamLocalCluster {
         hashes_per_tick: Option<u64>,
         slot_time_ms: Option<u64>,
         enable_tx_v1: bool,
+        features: Option<&crate::features::ResolvedFeatures>,
     ) -> Result<GenesisConfigInfo> {
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
@@ -627,38 +629,42 @@ impl BamLocalCluster {
             genesis_config.poh_config.hashes_per_tick = Some(hashes_per_tick);
         }
 
-        // copy features from mainnet-beta
-        let rpc_client = RpcClient::new_with_commitment(
-            "https://api.mainnet-beta.solana.com",
-            CommitmentConfig::confirmed(),
-        );
-        let feature_set_keys = FEATURE_NAMES.keys().cloned().collect::<Vec<_>>();
-        let feature_set_keys_chunks = feature_set_keys.chunks(100);
-        for chunk in feature_set_keys_chunks {
-            info!("Getting features from mainnet-beta...");
-            let response = rpc_client
-                .get_multiple_accounts(chunk)
-                .expect("Failed to get features from mainnet-beta");
-            for (pubkey, account) in chunk.iter().zip(response) {
-                if let Some(account) = account
-                    && let Some(feature) = feature::from_account(&account)
-                    && feature.activated_at.is_some()
-                {
-                    info!("Activating feature: {:?}", FEATURE_NAMES.get(pubkey));
-                    activate_feature(&mut genesis_config, *pubkey);
+        if features.is_none() {
+            // copy features from mainnet-beta
+            let rpc_client = RpcClient::new_with_commitment(
+                "https://api.mainnet-beta.solana.com",
+                CommitmentConfig::confirmed(),
+            );
+            let feature_set_keys = FEATURE_NAMES.keys().cloned().collect::<Vec<_>>();
+            let feature_set_keys_chunks = feature_set_keys.chunks(100);
+            for chunk in feature_set_keys_chunks {
+                info!("Getting features from mainnet-beta...");
+                let response = rpc_client
+                    .get_multiple_accounts(chunk)
+                    .expect("Failed to get features from mainnet-beta");
+                for (pubkey, account) in chunk.iter().zip(response) {
+                    if let Some(account) = account
+                        && let Some(feature) = feature::from_account(&account)
+                        && feature.activated_at.is_some()
+                    {
+                        info!("Activating feature: {:?}", FEATURE_NAMES.get(pubkey));
+                        activate_feature(&mut genesis_config, *pubkey);
+                    }
                 }
             }
-        }
-        // needed for afterburner program
-        info!("Activating remaining compute units syscall enabled");
-        activate_feature(
-            &mut genesis_config,
-            agave_feature_set::remaining_compute_units_syscall_enabled::id(),
-        );
+            // needed for afterburner program
+            info!("Activating remaining compute units syscall enabled");
+            activate_feature(
+                &mut genesis_config,
+                agave_feature_set::remaining_compute_units_syscall_enabled::id(),
+            );
 
-        activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
-        activate_configured_slot_time_feature(&mut genesis_config, slot_time_ms)?;
-        activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
+            activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
+            activate_configured_slot_time_feature(&mut genesis_config, slot_time_ms)?;
+            activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
+        } else if let Some(features) = features {
+            features.apply(&mut genesis_config);
+        }
 
         let mut genesis_config_info = GenesisConfigInfo {
             genesis_config,
