@@ -6,7 +6,7 @@ use {
     crate::{bam_dependencies::BamConnectionState, tonic_endpoint::endpoint_from_url},
     arc_swap::ArcSwap,
     chrono::{DateTime, Utc},
-    futures::future::join_all,
+    futures::{StreamExt, stream},
     jito_protos::proto::bam_api::{ConfigRequest, bam_node_api_client::BamNodeApiClient},
     rand::{rng, seq::SliceRandom},
     serde::{Deserialize, Deserializer},
@@ -20,7 +20,7 @@ use {
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    tokio::{sync::Semaphore, time::timeout},
+    tokio::time::timeout,
 };
 
 /// How often the published node list is re-read while a session is live.
@@ -49,8 +49,7 @@ const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// validator above 30ms of mean RTT.
 const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Backstop for an entire probe round. Only trips when the fleet is
-/// unreachable, and bounds how long shutdown waits on a round in progress.
+/// Backstop for an entire probe round, and the longest shutdown waits on one.
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
 
 /// Minimum gap between probe rounds. An all-unreachable round yields an empty
@@ -66,11 +65,11 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The node list published by the registry.
 /// By appearing in the list, a node asserts its liveness and health.
 #[derive(Clone, Debug, Deserialize)]
-pub struct ServedNodes {
+struct ServedNodes {
     /// When the registry built this list.
     #[serde(default, deserialize_with = "lenient_rfc3339")]
-    pub generated_at: Option<DateTime<Utc>>,
-    pub nodes: Vec<ServedNode>,
+    generated_at: Option<DateTime<Utc>>,
+    nodes: Vec<ServedNode>,
 }
 
 /// The registry sends RFC 3339. A missing or malformed value costs one metric
@@ -87,16 +86,16 @@ where
 
 /// A node the registry lists as a candidate. Becomes a `RankedNode` once measured.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub struct ServedNode {
-    pub ip: IpAddr,
-    pub grpc_port: u16,
-    pub region: String,
+struct ServedNode {
+    ip: IpAddr,
+    grpc_port: u16,
+    region: String,
 }
 
 impl ServedNode {
     /// gRPC target for this node. `SocketAddr` brackets IPv6 addresses, and the
     /// registry builds the same string when it admits a node, so both ends agree.
-    pub fn url(&self) -> String {
+    fn url(&self) -> String {
         format!("https://{}", SocketAddr::new(self.ip, self.grpc_port))
     }
 }
@@ -258,10 +257,10 @@ impl BamDiscovery {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
     }
 
-    /// Whether the BAM session is usable. Everything past `Connecting` is an
-    /// authenticated session, including the unbounded `DrainingBlockEngine` wait.
+    /// Whether the BAM session is usable. Everything past `Connecting` is
+    /// authenticated, including the unbounded `DrainingBlockEngine` wait.
     /// `Connecting` is not: BamManager cycles it against `Disconnected` about once
-    /// a second while a node accepts the connection then fails its health check.
+    /// a second against a node that connects then fails its health check.
     fn is_live(state: BamConnectionState) -> bool {
         state as u8 > BamConnectionState::Connecting as u8
     }
@@ -276,10 +275,9 @@ impl BamDiscovery {
     }
 
     /// True when the shared url does not name a node the registry currently
-    /// serves: nothing published yet, or a pick that has left the list.
-    ///
-    /// Reads the served list, not the ranking, so a node that missed a single
-    /// probe round is not mistaken for a drain.
+    /// serves: nothing published yet, or a pick that has left the list. Reads the
+    /// served list, not the ranking, so a node that missed one probe round is not
+    /// mistaken for a drain.
     fn needs_pick(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
         !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
     }
@@ -295,8 +293,7 @@ impl BamDiscovery {
 
     /// Step to the next candidate, wrapping at the end of the ranking.
     fn advance(cursor: usize, len: usize) -> usize {
-        let next = cursor.saturating_add(1);
-        if next >= len { 0 } else { next }
+        (cursor + 1) % len.max(1)
     }
 
     /// Point BamManager at `url`, or at nothing. Reports whether that moved it.
@@ -384,26 +381,19 @@ impl BamDiscovery {
         pool.shuffle(&mut rng());
         pool.truncate(PROBE_CAP);
 
-        let permits = Arc::new(Semaphore::new(PROBE_FANOUT));
-        let probes = pool.iter().map(|node| {
-            let permits = permits.clone();
-            async move {
-                let _permit = permits.acquire().await.ok()?;
-                Self::probe(node).await
-            }
-        });
+        let probes = stream::iter(&pool)
+            .map(Self::probe)
+            .buffer_unordered(PROBE_FANOUT)
+            .filter_map(std::future::ready)
+            .collect::<Vec<_>>();
 
-        let mut ranked: Vec<RankedNode> = match timeout(PROBE_ROUND_BUDGET, join_all(probes)).await
-        {
-            Ok(results) => results.into_iter().flatten().collect(),
-            Err(_) => {
-                warn!(
-                    "BAM probe round timed out after {PROBE_ROUND_BUDGET:?}, probed {} nodes",
-                    pool.len()
-                );
-                datapoint_warn!("bam_discovery-probe_round_timeout", ("count", 1, i64));
-                return Vec::new();
-            }
+        let Ok(mut ranked) = timeout(PROBE_ROUND_BUDGET, probes).await else {
+            warn!(
+                "BAM probe round timed out after {PROBE_ROUND_BUDGET:?}, probed {} nodes",
+                pool.len()
+            );
+            datapoint_warn!("bam_discovery-probe_round_timeout", ("count", 1, i64));
+            return Vec::new();
         };
         ranked.sort_unstable_by_key(|node| node.rtt_us);
 

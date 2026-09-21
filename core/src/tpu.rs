@@ -434,9 +434,9 @@ impl Tpu {
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
-        // `bam_url` is what the operator asked for; this is what BamManager
-        // connects to. Discovery resolves one into the other, so it runs whenever
-        // BAM does and reuses the exclusion above.
+        // `bam_url` is what the operator asked for, `connect_url` is what
+        // BamManager dials. Discovery resolves one into the other, so it runs
+        // whenever BAM does and inherits the exclusion above.
         let connect_url = Arc::new(ArcSwap::from_pointee(None));
         let bam_discovery = bam_dependencies.is_some().then(|| {
             BamDiscovery::new(

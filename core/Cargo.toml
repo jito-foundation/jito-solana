@@ -95,7 +95,6 @@ rts-alloc = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
-serde_json = { workspace = true }
 shaq = { workspace = true }
 signal-hook = { workspace = true }
 slab = { workspace = true }
@@ -204,6 +203,7 @@ bencher = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
 rcgen = { workspace = true }
+serde_json = { workspace = true }
 serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["wincode"] }
 solana-bpf-loader-program = { path = "../programs/bpf_loader", default-features = false, features = ["agave-unstable-api", "svm-internal"] }
