@@ -10,12 +10,7 @@ use {
     solana_pubkey::Pubkey,
     solana_rpc_client::rpc_client::RpcClient,
     solana_runtime::genesis_utils::{activate_alpenglow_at_genesis, activate_feature},
-    std::{
-        collections::{BTreeMap, BTreeSet},
-        fs,
-        path::Path,
-        str::FromStr,
-    },
+    std::{collections::BTreeMap, fs, path::Path, str::FromStr},
 };
 
 #[derive(Debug, Deserialize)]
@@ -70,8 +65,7 @@ fn known_id(value: &str) -> Result<Pubkey> {
 
 impl FeatureSnapshot {
     fn from_rpc(source: &str) -> Result<Self> {
-        let client =
-            RpcClient::new_with_commitment(source.to_owned(), CommitmentConfig::finalized());
+        let client = RpcClient::new(source.to_owned());
         let mut ids = FEATURE_NAMES.keys().copied().collect::<Vec<_>>();
         ids.sort();
         let mut snapshot = Self {
@@ -134,18 +128,6 @@ impl ResolvedFeatures {
 
     fn resolve(baseline: &FeatureSnapshot, config: &FeatureConfig) -> Result<Self> {
         let mut states = BTreeMap::new();
-        for (id, state) in &baseline.features {
-            // Pending features stay inactive unless explicitly requested.
-            states.insert(
-                known_id(id)?,
-                if *state == FeatureState::Active {
-                    FeatureState::Active
-                } else {
-                    FeatureState::Inactive
-                },
-            );
-        }
-        let mut seen = BTreeSet::new();
         for (ids, state) in [
             (&config.enable, FeatureState::Active),
             (&config.disable, FeatureState::Inactive),
@@ -154,11 +136,18 @@ impl ResolvedFeatures {
             for value in ids {
                 let id = known_id(value)?;
                 ensure!(
-                    seen.insert(id),
+                    states.insert(id, state).is_none(),
                     "duplicate or conflicting feature override: {id}"
                 );
-                states.insert(id, state);
             }
+        }
+        for (id, state) in &baseline.features {
+            // Pending features stay inactive unless explicitly requested.
+            let state = match state {
+                FeatureState::Active => FeatureState::Active,
+                _ => FeatureState::Inactive,
+            };
+            states.entry(known_id(id)?).or_insert(state);
         }
         // These are already required by the local-cluster vote/program fixtures.
         for id in [
@@ -186,7 +175,7 @@ impl ResolvedFeatures {
                     genesis.accounts.insert(
                         *id,
                         Account::from(feature::create_account(
-                            &Feature { activated_at: None },
+                            &Feature::default(),
                             genesis.rent.minimum_balance(Feature::size_of()).max(1),
                         )),
                     );
