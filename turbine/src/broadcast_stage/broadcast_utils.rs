@@ -148,8 +148,11 @@ fn recv_slot_components_maybe_empty(
         }
     };
 
-    // The first entry of a new slot is sent immediately, so do not size it
-    // or compute a coalescing target that this call will never use.
+    // Send the first entry of a new slot immediately instead of waiting for the
+    // coalescing window. If the bank is abandoned during that window, peers may
+    // now create and replay a bank on the stale fork. At an epoch boundary, a
+    // later bank with the same parent hash can reuse the cached reward
+    // calculation, but the remaining bank creation and replay work is extra.
     if bank.slot() != current_slot {
         process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
         process_stats.coalesce_elapsed = 0;
