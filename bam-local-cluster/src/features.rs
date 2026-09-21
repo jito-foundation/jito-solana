@@ -10,7 +10,12 @@ use {
     solana_pubkey::Pubkey,
     solana_rpc_client::rpc_client::RpcClient,
     solana_runtime::genesis_utils::{activate_alpenglow_at_genesis, activate_feature},
-    std::{collections::BTreeMap, fs, path::Path, str::FromStr},
+    std::{
+        collections::{BTreeMap, BTreeSet},
+        fs,
+        path::Path,
+        str::FromStr,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -33,15 +38,15 @@ struct FeatureConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FeatureState {
+enum FeatureState {
     Active,
     Pending,
     Inactive,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FeatureSnapshot {
+struct FeatureSnapshot {
     source: String,
     // RPC batches can observe different finalized slots; preserve the range.
     first_observed_slot: u64,
@@ -49,9 +54,8 @@ pub struct FeatureSnapshot {
     features: BTreeMap<String, FeatureState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ResolvedFeatures {
-    baseline: FeatureSnapshot,
     states: BTreeMap<Pubkey, FeatureState>,
 }
 
@@ -107,34 +111,27 @@ impl FeatureSnapshot {
 }
 
 impl ResolvedFeatures {
-    pub fn from_file(path: &Path) -> Result<Self> {
+    pub fn from_file(path: &Path, snapshot_path: &Path) -> Result<Self> {
         let file: FeatureFile = toml::from_str(&fs::read_to_string(path)?)?;
         let config = file.features;
-        // Validate overrides before making an RPC request.
-        for id in config
-            .enable
-            .iter()
-            .chain(&config.disable)
-            .chain(&config.activate_next_epoch)
-        {
-            known_id(id)?;
-        }
         let baseline = if config.baseline == "mainnet-beta" {
             FeatureSnapshot::mainnet()?
         } else {
-            let snapshot_path = path
+            let baseline_path = path
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join(&config.baseline);
             toml::from_str(
-                &fs::read_to_string(&snapshot_path)
-                    .with_context(|| format!("reading baseline {}", snapshot_path.display()))?,
+                &fs::read_to_string(&baseline_path)
+                    .with_context(|| format!("reading baseline {}", baseline_path.display()))?,
             )?
         };
-        Self::resolve(baseline, &config)
+        let resolved = Self::resolve(&baseline, &config)?;
+        fs::write(snapshot_path, toml::to_string_pretty(&baseline)?)?;
+        Ok(resolved)
     }
 
-    fn resolve(baseline: FeatureSnapshot, config: &FeatureConfig) -> Result<Self> {
+    fn resolve(baseline: &FeatureSnapshot, config: &FeatureConfig) -> Result<Self> {
         let mut states = BTreeMap::new();
         for (id, state) in &baseline.features {
             // Mainnet pending features stay inactive unless explicitly requested.
@@ -147,7 +144,7 @@ impl ResolvedFeatures {
                 },
             );
         }
-        let mut overrides = BTreeMap::new();
+        let mut seen = BTreeSet::new();
         for (ids, state) in [
             (&config.enable, FeatureState::Active),
             (&config.disable, FeatureState::Inactive),
@@ -156,7 +153,7 @@ impl ResolvedFeatures {
             for value in ids {
                 let id = known_id(value)?;
                 ensure!(
-                    overrides.insert(id, state).is_none(),
+                    seen.insert(id),
                     "duplicate or conflicting feature override: {id}"
                 );
                 states.insert(id, state);
@@ -173,12 +170,7 @@ impl ResolvedFeatures {
                 FEATURE_NAMES[&id]
             );
         }
-        Ok(Self { baseline, states })
-    }
-
-    pub fn save_baseline(&self, path: &Path) -> Result<()> {
-        fs::write(path, toml::to_string_pretty(&self.baseline)?)?;
-        Ok(())
+        Ok(Self { states })
     }
 
     pub fn apply(&self, genesis: &mut GenesisConfig) {
@@ -249,13 +241,13 @@ mod tests {
             .features
             .insert(id.to_string(), FeatureState::Pending);
         let mut config = config();
-        let resolved = ResolvedFeatures::resolve(baseline.clone(), &config).unwrap();
+        let resolved = ResolvedFeatures::resolve(&baseline, &config).unwrap();
         let mut genesis = GenesisConfig::default();
         activate_feature(&mut genesis, id);
         resolved.apply(&mut genesis);
         assert!(!genesis.accounts.contains_key(&id));
         config.enable.push(id.to_string());
-        ResolvedFeatures::resolve(baseline, &config)
+        ResolvedFeatures::resolve(&baseline, &config)
             .unwrap()
             .apply(&mut genesis);
         assert_eq!(
@@ -266,7 +258,7 @@ mod tests {
         );
         config.enable.clear();
         config.disable.push(id.to_string());
-        ResolvedFeatures::resolve(self::baseline(), &config)
+        ResolvedFeatures::resolve(&self::baseline(), &config)
             .unwrap()
             .apply(&mut genesis);
         assert!(!genesis.accounts.contains_key(&id));
@@ -277,7 +269,7 @@ mod tests {
         let mut config = config();
         config.enable.push(Pubkey::default().to_string());
         assert!(
-            ResolvedFeatures::resolve(baseline(), &config)
+            ResolvedFeatures::resolve(&baseline(), &config)
                 .unwrap_err()
                 .to_string()
                 .contains("unknown feature")
@@ -285,7 +277,7 @@ mod tests {
         config.enable = vec![agave_feature_set::alpenglow::id().to_string()];
         config.activate_next_epoch = config.enable.clone();
         assert!(
-            ResolvedFeatures::resolve(baseline(), &config)
+            ResolvedFeatures::resolve(&baseline(), &config)
                 .unwrap_err()
                 .to_string()
                 .contains("conflicting")
@@ -295,7 +287,7 @@ mod tests {
             .disable
             .push(agave_feature_set::vote_state_v4::id().to_string());
         assert!(
-            ResolvedFeatures::resolve(baseline(), &config)
+            ResolvedFeatures::resolve(&baseline(), &config)
                 .unwrap_err()
                 .to_string()
                 .contains("prerequisite")
@@ -305,14 +297,10 @@ mod tests {
     #[test]
     fn snapshot_round_trip_preserves_source_and_pending_state() {
         let mut baseline = baseline();
-        let id = agave_feature_set::alpenglow::id().to_string();
-        baseline.features.insert(id.clone(), FeatureState::Pending);
-        let decoded: FeatureSnapshot =
-            toml::from_str(&toml::to_string_pretty(&baseline).unwrap()).unwrap();
-        assert_eq!(decoded.features, baseline.features);
-        assert_eq!(decoded.first_observed_slot, 42);
-        assert_eq!(decoded.last_observed_slot, 43);
-        assert_eq!(decoded.source, "fixture");
+        let id = agave_feature_set::alpenglow::id();
+        baseline
+            .features
+            .insert(id.to_string(), FeatureState::Pending);
         let directory =
             std::env::temp_dir().join(format!("feature-snapshot-{}", Pubkey::new_unique()));
         fs::create_dir_all(&directory).unwrap();
@@ -326,15 +314,15 @@ mod tests {
             "[features]\nbaseline = \"baseline.toml\"\n",
         )
         .unwrap();
-        let replay = ResolvedFeatures::from_file(&directory.join("features.toml")).unwrap();
-        assert_eq!(replay.baseline.features, baseline.features);
+        let saved = directory.join("saved.toml");
+        let replay = ResolvedFeatures::from_file(&directory.join("features.toml"), &saved).unwrap();
+        let saved: FeatureSnapshot = toml::from_str(&fs::read_to_string(saved).unwrap()).unwrap();
+        assert_eq!(saved.features, baseline.features);
+        assert_eq!(saved.first_observed_slot, 42);
+        assert_eq!(saved.last_observed_slot, 43);
+        assert_eq!(saved.source, "fixture");
         fs::remove_dir_all(directory).unwrap();
-        assert_eq!(
-            ResolvedFeatures::resolve(decoded, &config())
-                .unwrap()
-                .states[&known_id(&id).unwrap()],
-            FeatureState::Inactive
-        );
+        assert_eq!(replay.states[&id], FeatureState::Inactive);
     }
 
     #[test]
@@ -343,11 +331,11 @@ mod tests {
         let mut config = config();
         config.enable.push(id.to_string());
         let mut genesis = GenesisConfig::default();
-        ResolvedFeatures::resolve(baseline(), &config)
+        ResolvedFeatures::resolve(&baseline(), &config)
             .unwrap()
             .apply(&mut genesis);
         let mut expected = GenesisConfig::default();
-        ResolvedFeatures::resolve(baseline(), &self::config())
+        ResolvedFeatures::resolve(&baseline(), &self::config())
             .unwrap()
             .apply(&mut expected);
         activate_alpenglow_at_genesis(&mut expected);
@@ -357,7 +345,7 @@ mod tests {
         config.enable.clear();
         config.activate_next_epoch.push(id.to_string());
         let mut pending = GenesisConfig::default();
-        ResolvedFeatures::resolve(baseline(), &config)
+        ResolvedFeatures::resolve(&baseline(), &config)
             .unwrap()
             .apply(&mut pending);
         assert_eq!(
@@ -376,7 +364,7 @@ mod tests {
         let mut config = config();
         config.activate_next_epoch.push(id.to_string());
         let mut genesis = create_genesis_config(1_000_000_000).genesis_config;
-        ResolvedFeatures::resolve(baseline(), &config)
+        ResolvedFeatures::resolve(&baseline(), &config)
             .unwrap()
             .apply(&mut genesis);
         let next_epoch = genesis.epoch_schedule.get_first_slot_in_epoch(1);

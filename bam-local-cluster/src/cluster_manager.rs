@@ -422,6 +422,7 @@ impl BamLocalCluster {
         config: LocalClusterConfig,
         quiet: bool,
         skip_last_validator: bool,
+        features: Option<&crate::features::ResolvedFeatures>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         const BOOTSTRAP_GOSSIP: &str = "127.0.0.1:8001";
         const BOOTSTRAP_GOSSIP_PORT: u16 = 8001;
@@ -457,7 +458,7 @@ impl BamLocalCluster {
             config.hashes_per_tick,
             config.slot_time_ms,
             config.enable_tx_v1,
-            config.features.as_ref(),
+            features,
         )?;
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
@@ -629,7 +630,9 @@ impl BamLocalCluster {
             genesis_config.poh_config.hashes_per_tick = Some(hashes_per_tick);
         }
 
-        if features.is_none() {
+        if let Some(features) = features {
+            features.apply(&mut genesis_config);
+        } else {
             // copy features from mainnet-beta
             let rpc_client = RpcClient::new_with_commitment(
                 "https://api.mainnet-beta.solana.com",
@@ -662,8 +665,6 @@ impl BamLocalCluster {
             activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
             activate_configured_slot_time_feature(&mut genesis_config, slot_time_ms)?;
             activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
-        } else if let Some(features) = features {
-            features.apply(&mut genesis_config);
         }
 
         let mut genesis_config_info = GenesisConfigInfo {
