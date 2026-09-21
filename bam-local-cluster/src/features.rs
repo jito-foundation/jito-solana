@@ -69,8 +69,7 @@ fn known_id(value: &str) -> Result<Pubkey> {
 }
 
 impl FeatureSnapshot {
-    fn mainnet() -> Result<Self> {
-        let source = "https://api.mainnet-beta.solana.com";
+    fn from_rpc(source: &str) -> Result<Self> {
         let client =
             RpcClient::new_with_commitment(source.to_owned(), CommitmentConfig::finalized());
         let mut ids = FEATURE_NAMES.keys().copied().collect::<Vec<_>>();
@@ -114,17 +113,19 @@ impl ResolvedFeatures {
     pub fn from_file(path: &Path, snapshot_path: &Path) -> Result<Self> {
         let file: FeatureFile = toml::from_str(&fs::read_to_string(path)?)?;
         let config = file.features;
-        let baseline = if config.baseline == "mainnet-beta" {
-            FeatureSnapshot::mainnet()?
-        } else {
-            let baseline_path = path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(&config.baseline);
-            toml::from_str(
-                &fs::read_to_string(&baseline_path)
-                    .with_context(|| format!("reading baseline {}", baseline_path.display()))?,
-            )?
+        let baseline = match config.baseline.as_str() {
+            "mainnet-beta" => FeatureSnapshot::from_rpc("https://api.mainnet-beta.solana.com")?,
+            "testnet" => FeatureSnapshot::from_rpc("https://api.testnet.solana.com")?,
+            _ => {
+                let baseline_path = path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&config.baseline);
+                toml::from_str(
+                    &fs::read_to_string(&baseline_path)
+                        .with_context(|| format!("reading baseline {}", baseline_path.display()))?,
+                )?
+            }
         };
         let resolved = Self::resolve(&baseline, &config)?;
         fs::write(snapshot_path, toml::to_string_pretty(&baseline)?)?;
@@ -134,7 +135,7 @@ impl ResolvedFeatures {
     fn resolve(baseline: &FeatureSnapshot, config: &FeatureConfig) -> Result<Self> {
         let mut states = BTreeMap::new();
         for (id, state) in &baseline.features {
-            // Mainnet pending features stay inactive unless explicitly requested.
+            // Pending features stay inactive unless explicitly requested.
             states.insert(
                 known_id(id)?,
                 if *state == FeatureState::Active {
