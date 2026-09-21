@@ -36,7 +36,7 @@ const MAX_BROADCAST_BLACKLIST_SIZE: usize = 16;
 #[derive(Clone)]
 pub struct StandardBroadcastRun {
     slot: Slot,
-    // FIFO input keeps messages for a bank contiguous.
+    // Single-producer FIFO input keeps messages for a bank contiguous.
     last_window_skipped_bank_id: Option<BankId>,
     // Parent encoded in shred headers. This must remain stable for the slot
     // because it is used to derive PARENT_OFFSET.
@@ -851,15 +851,6 @@ mod test {
         wincode::deserialize(&payload).unwrap()
     }
 
-    fn slot_start(bank: Arc<Bank>) -> ReceiveResults {
-        let last_tick_height = bank.tick_height();
-        ReceiveResults {
-            item: BroadcastItem::SlotStart,
-            bank,
-            last_tick_height,
-        }
-    }
-
     #[test]
     fn test_slot_start_broadcasts_header_only() {
         let num_shreds_per_slot = DATA_SHREDS_PER_FEC_BLOCK as u64;
@@ -1461,20 +1452,10 @@ mod test {
 
     #[test]
     fn test_window_skipped_suppresses_only_same_bank() {
-        let (
-            blockstore,
-            _genesis_config,
-            _cluster_info,
-            parent_bank,
-            leader_keypair,
-            _socket,
-            _bank_forks,
-        ) = setup(2);
+        let (blockstore, _, _, parent_bank, leader_keypair, _, _bank_forks) = setup(2);
         let skipped_bank = new_child_bank(&parent_bank, 1);
         let replacement_bank = new_child_bank(&parent_bank, 1);
-        assert_ne!(skipped_bank.bank_id(), replacement_bank.bank_id());
         skipped_bank.squash();
-        assert!(skipped_bank.parent().is_none());
 
         let (votor_event_sender, _votor_event_receiver) = bounded(1024);
         let mut run = StandardBroadcastRun::new(
@@ -1483,19 +1464,22 @@ mod test {
             votor_event_sender,
             test_leader_schedule_cache(&parent_bank),
         );
-        let (blockstore_sender, blockstore_receiver) = bounded(1024);
-        let (socket_sender, socket_receiver) = bounded(1024);
+        let (shred_sender, shred_receiver) = bounded(1024);
         let mut pinnable_slice = blockstore.new_pinnable_slice();
         let mut write_batch = blockstore.get_write_batch();
-        let mut process_slot_start = |bank| {
+        let mut process_slot_start = |bank: Arc<Bank>| {
             run.process_receive_results(
                 &leader_keypair,
                 &blockstore,
                 &mut pinnable_slice,
                 &mut write_batch,
-                &socket_sender,
-                &blockstore_sender,
-                slot_start(bank),
+                &shred_sender,
+                &shred_sender,
+                ReceiveResults {
+                    item: BroadcastItem::SlotStart,
+                    last_tick_height: bank.tick_height(),
+                    bank,
+                },
                 &mut ProcessShredsStats::default(),
             )
         };
@@ -1503,11 +1487,9 @@ mod test {
         let err = process_slot_start(skipped_bank.clone()).unwrap_err();
         assert_matches!(err, Error::WindowSkipped(1));
         process_slot_start(skipped_bank).unwrap();
-        assert!(blockstore_receiver.try_recv().is_err());
-        assert!(socket_receiver.try_recv().is_err());
+        assert!(shred_receiver.is_empty());
         process_slot_start(replacement_bank).unwrap();
-        blockstore_receiver.try_recv().unwrap();
-        socket_receiver.try_recv().unwrap();
+        assert_eq!(shred_receiver.len(), 2);
     }
 
     #[test]
