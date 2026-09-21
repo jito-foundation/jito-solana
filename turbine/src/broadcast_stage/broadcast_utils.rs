@@ -224,20 +224,19 @@ fn recv_slot_components_maybe_empty(
 
         assert!(last_tick_height <= bank.max_tick_height());
     }
-    if bank.slot() != current_slot && !entries.is_empty() {
-        process_stats.coalesce_exited_new_slot += 1;
-    }
     process_stats.receive_elapsed = recv_start.elapsed().as_micros() as u64;
     process_stats.coalesce_elapsed = coalesce_start.elapsed().as_micros() as u64;
 
-    Ok(match entries.is_empty() {
-        true => None,
-        false => Some(ReceiveResults {
+    Ok((!entries.is_empty()).then(|| {
+        if bank.slot() != current_slot {
+            process_stats.coalesce_exited_new_slot += 1;
+        }
+        ReceiveResults {
             item: BroadcastItem::Component(BlockComponent::EntryBatch(entries)),
             bank,
             last_tick_height,
-        }),
-    })
+        }
+    }))
 }
 
 // Returns the Merkle root of the last erasure batch of the parent slot.

@@ -37,7 +37,7 @@ const MAX_BROADCAST_BLACKLIST_SIZE: usize = 16;
 pub struct StandardBroadcastRun {
     slot: Slot,
     // Single-producer FIFO input keeps messages for a bank contiguous.
-    last_window_skipped_bank_id: Option<BankId>,
+    skipped_bank_id: Option<BankId>,
     // Parent encoded in shred headers. This must remain stable for the slot
     // because it is used to derive PARENT_OFFSET.
     parent: Slot,
@@ -88,7 +88,7 @@ impl StandardBroadcastRun {
         ));
         Self {
             slot: Slot::MAX,
-            last_window_skipped_bank_id: None,
+            skipped_bank_id: None,
             parent: Slot::MAX,
             parent_block_id: Hash::default(),
             parent_for_double_merkle: Block {
@@ -147,7 +147,7 @@ impl StandardBroadcastRun {
         let Some(parent_bank) = bank.parent() else {
             // If our broadcast is quite backed up, the parent bank could have already been
             // pruned from BankForks by a newer window getting rooted
-            self.last_window_skipped_bank_id = Some(bank.bank_id());
+            self.skipped_bank_id = Some(bank.bank_id());
             return Err(Error::WindowSkipped(bank.slot()));
         };
         debug_assert!(parent_bank.is_frozen());
@@ -372,17 +372,14 @@ impl StandardBroadcastRun {
             bank,
             last_tick_height,
         } = receive_results;
-        if self.last_window_skipped_bank_id == Some(bank.bank_id()) {
+        let slot = bank.slot();
+        if self.skipped_bank_id == Some(bank.bank_id()) || self.is_broadcast_blacklisted(slot) {
             return Ok(());
         }
         let component = match item {
             BroadcastItem::SlotStart => None,
             BroadcastItem::Component(component) => Some(component),
         };
-
-        if self.is_broadcast_blacklisted(bank.slot()) {
-            return Ok(());
-        }
 
         if self.is_broadcast_blacklisted(bank.parent_slot()) {
             self.blacklist_broadcast_slot(bank.slot());
