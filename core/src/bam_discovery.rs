@@ -300,7 +300,7 @@ impl BamDiscovery {
         }
         .await;
 
-        let served = match response {
+        let mut served = match response {
             Ok(served) => served,
             Err(err) => {
                 datapoint_warn!(
@@ -312,6 +312,7 @@ impl BamDiscovery {
             }
         };
 
+        served.nodes = Self::unique_nodes(served.nodes);
         if served.nodes.is_empty() {
             datapoint_warn!("bam_discovery-empty_node_list", ("count", 1, i64));
             return None;
@@ -327,6 +328,12 @@ impl BamDiscovery {
         );
 
         Some(served)
+    }
+
+    fn unique_nodes(mut nodes: Vec<ServedNode>) -> Vec<ServedNode> {
+        nodes.sort_by_key(|node| (node.ip, node.grpc_port));
+        nodes.dedup_by_key(|node| (node.ip, node.grpc_port));
+        nodes
     }
 
     async fn probe_and_rank(nodes: &[ServedNode]) -> Vec<RankedNode> {
@@ -515,6 +522,30 @@ mod tests {
             grpc_port: 50056,
             region: "fra".to_string(),
         }
+    }
+
+    #[test]
+    fn test_unique_nodes_ignores_order() {
+        let a = served_node("203.0.113.1");
+        let b = served_node("203.0.113.2");
+        assert_eq!(
+            BamDiscovery::unique_nodes(vec![b.clone(), a.clone()]),
+            BamDiscovery::unique_nodes(vec![a, b])
+        );
+    }
+
+    #[test]
+    fn test_unique_nodes_drops_duplicate_endpoints() {
+        let a = served_node("203.0.113.1");
+        let b = served_node("203.0.113.2");
+        let relabeled_a = ServedNode {
+            region: "ams".to_string(),
+            ..a.clone()
+        };
+        assert_eq!(
+            BamDiscovery::unique_nodes(vec![a.clone(), b.clone(), relabeled_a, a.clone()]),
+            vec![a, b]
+        );
     }
 
     #[test]

@@ -38,6 +38,8 @@ use {
     tokio::sync::mpsc,
 };
 
+const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<ArcSwap<Option<String>>>,
     new_identity: Arc<ArcSwap<Option<Pubkey>>>,
@@ -308,6 +310,9 @@ impl BamManager {
             // Sleep for a short duration to avoid busy-waiting
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+
+        drop(current_connection);
+        runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
     }
 
     fn handle_identity_change(
