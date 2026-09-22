@@ -148,6 +148,15 @@ pub(super) fn simulate_bundle(
         }
     }
 
+    // A bundle that loads a vote account will be filtered by the validator's bundle path and
+    // cannot land. Mirror that behavior here instead of reporting a successful simulation.
+    let vote_accounts = bank.vote_accounts();
+    let blacklisted_tx = transactions.iter().find(|tx| {
+        tx.account_keys()
+            .iter()
+            .any(|key| vote_accounts.contains_key(key))
+    });
+
     let pre_execution_accounts = account_configs_to_accounts(&pre_execution_accounts_configs)?;
     let post_execution_accounts = account_configs_to_accounts(&post_execution_accounts_configs)?;
 
@@ -158,8 +167,13 @@ pub(super) fn simulate_bundle(
         Some(1_000),
     );
     let result = RpcSimulateBundleResult {
+        summary: if let Some(tx) = blacklisted_tx {
+            RpcBundleSimulationSummary::Failed {
+                error: RpcBundleExecutionError::BundleLoadedBlacklistedAccount,
+                tx_signature: Some(tx.signature().to_string()),
+            }
         // if any of them errored out, return the first one that did
-        summary: if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
+        } else if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
             .iter()
             .zip(results.iter())
             .find(|(_tx, (_pre_accounts, result, _post_accounts))| result.result.is_err())
