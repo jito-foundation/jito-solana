@@ -92,7 +92,7 @@ struct RegistryFollower {
     http_client: reqwest::Client,
     registry_url: String,
     // Retain the last successful registry response across fetch failures.
-    nodes: Vec<ServedNode>,
+    registry_nodes: Vec<ServedNode>,
     ranked: Vec<RankedNode>,
     cursor: usize,
     resync_at: Instant,
@@ -111,7 +111,7 @@ impl RegistryFollower {
         Some(Self {
             http_client,
             registry_url,
-            nodes: Vec::new(),
+            registry_nodes: Vec::new(),
             ranked: Vec::new(),
             cursor: 0,
             resync_at: now,
@@ -125,9 +125,9 @@ impl RegistryFollower {
 
         if now >= self.resync_at {
             if let Some(served) = BamDiscovery::fetch(&self.http_client, &self.registry_url).await
-                && served.nodes != self.nodes
+                && served.nodes != self.registry_nodes
             {
-                self.nodes = served.nodes;
+                self.registry_nodes = served.nodes;
                 self.ranked.clear();
                 self.cursor = 0;
                 self.probe_at = now;
@@ -141,9 +141,9 @@ impl RegistryFollower {
             now,
         );
 
-        if self.ranked.is_empty() && !self.nodes.is_empty() && now >= self.probe_at {
+        if self.ranked.is_empty() && !self.registry_nodes.is_empty() && now >= self.probe_at {
             self.probe_at = now + PROBE_COOLDOWN;
-            self.ranked = BamDiscovery::probe_and_rank(&self.nodes).await;
+            self.ranked = BamDiscovery::probe_and_rank(&self.registry_nodes).await;
             self.cursor = 0;
         }
 
@@ -163,7 +163,7 @@ impl RegistryFollower {
             }
         }
 
-        if (stuck || BamDiscovery::needs_pick(current_url.as_deref(), &self.nodes))
+        if (stuck || BamDiscovery::needs_pick(current_url.as_deref(), &self.registry_nodes))
             && let Some(node) = self.ranked.get(self.cursor)
             && BamDiscovery::publish(bam_url, node)
         {
