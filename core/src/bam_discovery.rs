@@ -184,64 +184,46 @@ impl RegistryFollower {
     }
 }
 
-/// Selects a responsive registry node and updates the URL used by `BamManager`.
+/// Follows a registry node list on its own thread for as long as it is held.
 pub struct BamDiscovery {
-    thread_hdl: JoinHandle<()>,
+    selected_url: Arc<ArcSwap<Option<String>>>,
+    stop: Arc<AtomicBool>,
+    thread_hdl: Option<JoinHandle<()>>,
 }
 
 impl BamDiscovery {
-    pub fn new(
-        exit: Arc<AtomicBool>,
-        configured_url: Arc<ArcSwap<Option<String>>>,
-        bam_url: Arc<ArcSwap<Option<String>>>,
-        bam_enabled: Arc<AtomicU8>,
-    ) -> Self {
+    pub fn new(configured_url: &Option<String>, bam_enabled: Arc<AtomicU8>) -> Option<Self> {
+        let registry_url = Self::registry_url(configured_url)?;
+        info!("BAM discovery following registry {registry_url}");
+
+        let selected_url = Arc::new(ArcSwap::from_pointee(None));
+        let stop = Arc::new(AtomicBool::new(false));
         let thread_hdl = Builder::new()
             .name("solBamDisc".to_string())
-            .spawn(move || {
-                Self::run(exit, configured_url, bam_url, bam_enabled);
+            .spawn({
+                let selected_url = selected_url.clone();
+                let stop = stop.clone();
+                move || {
+                    let Some(mut follower) = RegistryFollower::new(registry_url) else {
+                        return;
+                    };
+                    while !stop.load(Ordering::Relaxed) {
+                        follower.step(&selected_url, &bam_enabled);
+                        thread::sleep(POLL_INTERVAL);
+                    }
+                }
             })
             .unwrap();
 
-        Self { thread_hdl }
+        Some(Self {
+            selected_url,
+            stop,
+            thread_hdl: Some(thread_hdl),
+        })
     }
 
-    fn run(
-        exit: Arc<AtomicBool>,
-        configured_url: Arc<ArcSwap<Option<String>>>,
-        bam_url: Arc<ArcSwap<Option<String>>>,
-        bam_enabled: Arc<AtomicU8>,
-    ) {
-        let mut configured = configured_url.load_full();
-        let mut follower = Self::follow(&configured, &bam_url);
-
-        while !exit.load(Ordering::Relaxed) {
-            let current = configured_url.load_full();
-            if current != configured {
-                configured = current;
-                follower = Self::follow(&configured, &bam_url);
-            }
-
-            if let Some(follower) = &mut follower {
-                follower.step(&bam_url, &bam_enabled);
-            }
-            thread::sleep(POLL_INTERVAL);
-        }
-    }
-
-    fn follow(
-        configured: &Option<String>,
-        bam_url: &ArcSwap<Option<String>>,
-    ) -> Option<RegistryFollower> {
-        let registry_url = Self::registry_url(configured);
-        Self::announce(configured.as_deref(), registry_url.as_deref());
-        match registry_url {
-            Some(registry_url) => RegistryFollower::new(registry_url),
-            None => {
-                Self::set_url(bam_url, configured.as_deref());
-                None
-            }
-        }
+    pub fn selected_url(&self) -> Arc<Option<String>> {
+        self.selected_url.load_full()
     }
 
     fn registry_url(configured: &Option<String>) -> Option<String> {
@@ -296,14 +278,6 @@ impl BamDiscovery {
         }
         bam_url.store(Arc::new(url.map(str::to_owned)));
         true
-    }
-
-    fn announce(configured: Option<&str>, registry: Option<&str>) {
-        match (registry, configured) {
-            (Some(url), _) => info!("BAM discovery following registry {url}"),
-            (None, Some(url)) => info!("BAM discovery idle, url names one node: {url}"),
-            (None, None) => info!("BAM discovery idle, no url set"),
-        }
     }
 
     fn publish(bam_url: &ArcSwap<Option<String>>, node: &RankedNode) -> bool {
@@ -460,9 +434,14 @@ impl BamDiscovery {
             rtt_us: best_us,
         })
     }
+}
 
-    pub fn join(self) -> thread::Result<()> {
-        self.thread_hdl.join()
+impl Drop for BamDiscovery {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread_hdl) = self.thread_hdl.take() {
+            let _ = thread_hdl.join();
+        }
     }
 }
 
@@ -643,15 +622,15 @@ mod tests {
 
     #[test_case(Some("https://203.0.113.1:50056"), false ; "direct node")]
     #[test_case(None, false ; "no url")]
-    #[test_case(Some("https://registry.jito.wtf/nodes"), true ; "registry")]
-    fn test_follow_only_starts_a_follower_for_a_registry(configured: Option<&str>, follows: bool) {
-        let bam_url = ArcSwap::from_pointee(Some("https://203.0.113.9:50056".to_string()));
-        let follower = BamDiscovery::follow(&configured.map(str::to_owned), &bam_url);
+    #[test_case(Some("http://127.0.0.1:1/nodes"), true ; "registry")]
+    fn test_discovery_only_runs_for_a_registry(configured: Option<&str>, runs: bool) {
+        let discovery = BamDiscovery::new(
+            &configured.map(str::to_owned),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
+        );
 
-        assert_eq!(follower.is_some(), follows);
-        if !follows {
-            assert_eq!(bam_url.load_full().as_deref(), configured);
-        }
+        assert_eq!(discovery.is_some(), runs);
+        drop(discovery);
     }
 
     // After rebuilding the ranking, the published URL can differ from the reset

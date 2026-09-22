@@ -5,7 +5,6 @@ use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         bam_dependencies::{BamConnectionState, BamDependencies},
-        bam_discovery::BamDiscovery,
         bam_manager::BamManager,
         banking_stage::{
             BankingControlMsg, BankingStage, BankingStageHandle,
@@ -134,7 +133,6 @@ pub struct Tpu {
     bundle_stage: BundleStage,
     bundle_sigverify_stage: BundleSigverifyStage,
     bam_manager: Option<BamManager>,
-    bam_discovery: Option<BamDiscovery>,
 }
 
 impl Tpu {
@@ -434,18 +432,6 @@ impl Tpu {
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
-        // Discovery uses a separate URL so the configured registry URL remains unchanged.
-        // Apply the scheduler-bindings exclusion to discovery as well as BamManager.
-        let connect_url = Arc::new(ArcSwap::from_pointee(None));
-        let bam_discovery = bam_dependencies.is_some().then(|| {
-            BamDiscovery::new(
-                exit.clone(),
-                bam_url.clone(),
-                connect_url.clone(),
-                bam_enabled.clone(),
-            )
-        });
-
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
             poh_recorder.clone(),
@@ -513,7 +499,7 @@ impl Tpu {
         let bam_manager = bam_dependencies.map(|bam_dependencies| {
             BamManager::new(
                 exit.clone(),
-                connect_url,
+                bam_url,
                 bam_dependencies,
                 bam_outbound_receiver,
                 poh_recorder.clone(),
@@ -581,7 +567,6 @@ impl Tpu {
             bundle_stage,
             bundle_sigverify_stage,
             bam_manager,
-            bam_discovery,
         }
     }
 
@@ -602,7 +587,6 @@ impl Tpu {
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
             self.bam_manager.map_or(Ok(()), BamManager::join),
-            self.bam_discovery.map_or(Ok(()), BamDiscovery::join),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

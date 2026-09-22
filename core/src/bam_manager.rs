@@ -19,6 +19,7 @@ use {
             BamConnection, MAX_DURATION_BETWEEN_NODE_HEARTBEATS, WAIT_TO_RECONNECT_DURATION,
         },
         bam_dependencies::{BamConnectionState, BamDependencies, BamOutboundMessage},
+        bam_discovery::BamDiscovery,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
     arc_swap::ArcSwap,
@@ -126,7 +127,9 @@ impl BamManager {
         let mut current_connection = None;
         let mut outbound_receiver = Some(outbound_receiver);
         let mut builder_config_version = 0;
-        let mut last_observed_bam_url = bam_url.load_full();
+        let mut configured_bam_url = Arc::new(None);
+        let mut discovery = None;
+        let mut last_observed_bam_url = Arc::new(None);
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let fallback_client_id = ClientId::JitoLabs;
@@ -134,13 +137,21 @@ impl BamManager {
         let bam_client_id = ClientId::AgaveBam;
 
         while !exit.load(Ordering::Relaxed) {
-            let configured_bam_url = bam_url.load_full();
-            if configured_bam_url != last_observed_bam_url {
-                match configured_bam_url.as_deref() {
+            let latest_bam_url = bam_url.load_full();
+            if latest_bam_url != configured_bam_url {
+                discovery = BamDiscovery::new(&latest_bam_url, dependencies.bam_enabled.clone());
+                configured_bam_url = latest_bam_url;
+            }
+
+            let connect_url = discovery
+                .as_ref()
+                .map_or_else(|| configured_bam_url.clone(), BamDiscovery::selected_url);
+            if connect_url != last_observed_bam_url {
+                match connect_url.as_deref() {
                     Some(new_url) => info!("BAM URL changed, connecting to new URL: {new_url}"),
                     None => info!("BAM URL cleared, disconnecting"),
                 }
-                last_observed_bam_url = configured_bam_url.clone();
+                last_observed_bam_url = connect_url.clone();
             }
 
             let connection = match current_connection.take() {
@@ -165,7 +176,7 @@ impl BamManager {
                     }
 
                     // Try to connect to BAM
-                    let Some(url) = configured_bam_url.as_ref() else {
+                    let Some(url) = connect_url.as_ref() else {
                         Self::set_bam_disconnected(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
@@ -233,7 +244,7 @@ impl BamManager {
             ) {
                 true
             } else {
-                if configured_bam_url.as_deref() == Some(connection.url()) {
+                if connect_url.as_deref() == Some(connection.url()) {
                     false
                 } else {
                     Self::set_bam_disconnected(&dependencies);
