@@ -3,7 +3,7 @@ use {
     agave_votor::event::{CompletedBlock, VotorEvent, VotorEventSender},
     agave_votor_messages::migration::MigrationStatus,
     crossbeam_channel::Receiver,
-    solana_clock::Slot,
+    solana_clock::{BankId, Slot},
     solana_entry::{
         block_component::BlockComponent, entry::Entry, recorder_message::RecorderMessage,
     },
@@ -92,6 +92,7 @@ pub(super) fn recv_slot_components(
     carryover_message: &mut Option<WorkingBankMessage>,
     process_stats: &mut ProcessShredsStats,
     current_slot: Slot,
+    skipped_bank_id: Option<BankId>,
 ) -> Result<ReceiveResults> {
     loop {
         if let Some(result) = recv_slot_components_maybe_empty(
@@ -99,6 +100,7 @@ pub(super) fn recv_slot_components(
             carryover_message,
             process_stats,
             current_slot,
+            skipped_bank_id,
         )? {
             return Ok(result);
         }
@@ -110,6 +112,7 @@ fn recv_slot_components_maybe_empty(
     carryover_message: &mut Option<WorkingBankMessage>,
     process_stats: &mut ProcessShredsStats,
     current_slot: Slot,
+    skipped_bank_id: Option<BankId>,
 ) -> Result<Option<ReceiveResults>> {
     let recv_start = Instant::now();
 
@@ -118,6 +121,10 @@ fn recv_slot_components_maybe_empty(
         Some((bank, (message, tick_height))) => (bank, (message, tick_height)),
         None => receiver.recv_timeout(Duration::new(1, 0))?,
     };
+    // The outer loop drains this bank without serializing its entries.
+    if skipped_bank_id == Some(bank.bank_id()) {
+        return Ok(None);
+    }
     assert!(last_tick_height <= bank.max_tick_height());
 
     let mut entries: Vec<Entry> = match message {
@@ -366,6 +373,7 @@ mod tests {
             &mut None,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         ) {
             assert_eq!(result.bank.slot(), bank1.slot());
             last_tick_height = result.last_tick_height;
@@ -400,7 +408,7 @@ mod tests {
         let mut process_stats = ProcessShredsStats::default();
         // current_slot != bank.slot() means this is the first entry of a new slot.
         let result =
-            recv_slot_components(&r, &mut carryover, &mut process_stats, Slot::MAX).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut process_stats, Slot::MAX, None).unwrap();
 
         assert!(matches!(
             result.item,
@@ -417,7 +425,8 @@ mod tests {
         drop(s);
         let mut process_stats = ProcessShredsStats::default();
         let result =
-            recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot(), None)
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
@@ -426,6 +435,50 @@ mod tests {
         assert_eq!(result.last_tick_height, 3);
         assert_eq!(process_stats.coalesce_exited_new_slot, 0);
         assert!(carryover.is_none());
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn test_recv_slot_components_drains_skipped_bank() {
+        let (genesis_config, bank0, _bank_forks, tx) = setup_test();
+        let skipped_bank = Arc::new(Bank::new_from_parent(
+            bank0.clone(),
+            SlotLeader::default(),
+            1,
+        ));
+        let replacement_bank = Arc::new(Bank::new_from_parent(bank0, SlotLeader::default(), 1));
+        let (s, r) = bounded(3);
+        let mut last_hash = genesis_config.hash();
+
+        for tick_height in 1..=2 {
+            let entry = Entry::new(&last_hash, 1, vec![tx.clone()]);
+            last_hash = entry.hash;
+            s.send((skipped_bank.clone(), (entry.into(), tick_height)))
+                .unwrap();
+        }
+        let replacement_entry = Entry::new(&last_hash, 1, vec![tx]);
+        s.send((
+            replacement_bank.clone(),
+            (replacement_entry.clone().into(), 3),
+        ))
+        .unwrap();
+        drop(s);
+
+        let result = recv_slot_components(
+            &r,
+            &mut None,
+            &mut ProcessShredsStats::default(),
+            Slot::MAX,
+            Some(skipped_bank.bank_id()),
+        )
+        .unwrap();
+
+        assert_eq!(result.bank.bank_id(), replacement_bank.bank_id());
+        assert!(matches!(
+            result.item,
+            BroadcastItem::Component(BlockComponent::EntryBatch(ref entries))
+                if entries == &[replacement_entry]
+        ));
         assert!(r.is_empty());
     }
 
@@ -461,7 +514,8 @@ mod tests {
             let mut carryover = None;
             let mut process_stats = ProcessShredsStats::default();
             let result =
-                recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot()).unwrap();
+                recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot(), None)
+                    .unwrap();
             assert_eq!(result.bank.slot(), bank2.slot());
             assert_eq!(result.last_tick_height, 2);
             assert!(matches!(
@@ -503,6 +557,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
 
@@ -567,6 +622,7 @@ mod tests {
             &mut None,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         ) {
             bank_slot = result.bank.slot();
             last_tick_height = result.last_tick_height;
@@ -609,6 +665,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
 
@@ -624,6 +681,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
         assert!(matches!(
@@ -667,6 +725,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
         assert!(matches!(
@@ -684,6 +743,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
         assert!(matches!(
@@ -698,6 +758,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
         assert!(matches!(
@@ -753,6 +814,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
         assert!(result.is_none());
@@ -771,6 +833,7 @@ mod tests {
             &mut carryover,
             &mut ProcessShredsStats::default(),
             bank1.slot(),
+            None,
         )
         .unwrap();
         assert!(matches!(

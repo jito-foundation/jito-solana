@@ -692,6 +692,7 @@ impl BroadcastRun for StandardBroadcastRun {
             &mut self.carryover_message,
             &mut process_stats,
             self.slot,
+            self.skipped_bank_id,
         )?;
         // TODO: Confirm that last chunk of coding shreds
         // will not be lost or delayed for too long.
