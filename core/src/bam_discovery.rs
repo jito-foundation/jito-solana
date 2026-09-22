@@ -4,7 +4,7 @@ use {
     chrono::{DateTime, Utc},
     futures::{StreamExt, stream},
     jito_protos::proto::bam_api::{ConfigRequest, bam_node_api_client::BamNodeApiClient},
-    rand::{Rng, rng, seq::SliceRandom},
+    rand::{Rng, rng, seq::IndexedRandom},
     reqwest::Url,
     serde::{Deserialize, Deserializer},
     solana_metrics::{datapoint_info, datapoint_warn},
@@ -49,7 +49,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ServedNodes {
     #[serde(default, deserialize_with = "lenient_rfc3339")]
     generated_at: Option<DateTime<Utc>>,
@@ -266,18 +266,11 @@ impl BamDiscovery {
         (cursor + 1) % len.max(1)
     }
 
-    fn set_url(bam_url: &ArcSwap<Option<String>>, url: Option<&str>) -> bool {
-        if bam_url.load_full().as_deref() == url {
-            return false;
-        }
-        bam_url.store(Arc::new(url.map(str::to_owned)));
-        true
-    }
-
     fn publish(bam_url: &ArcSwap<Option<String>>, node: &RankedNode) -> bool {
-        if !Self::set_url(bam_url, Some(&node.url)) {
+        if bam_url.load().as_deref() == Some(node.url.as_str()) {
             return false;
         }
+        bam_url.store(Arc::new(Some(node.url.clone())));
         info!(
             "BAM discovery selected {} ({}, {}us)",
             node.url, node.region, node.rtt_us
@@ -340,9 +333,10 @@ impl BamDiscovery {
     }
 
     async fn probe_and_rank(nodes: &[ServedNode]) -> Vec<RankedNode> {
-        let mut pool = nodes.to_vec();
-        pool.shuffle(&mut rng());
-        pool.truncate(PROBE_CAP);
+        let pool: Vec<ServedNode> = nodes
+            .choose_multiple(&mut rng(), PROBE_CAP)
+            .cloned()
+            .collect();
 
         let probes = stream::iter(&pool)
             .map(Self::probe)
@@ -359,7 +353,7 @@ impl BamDiscovery {
             return Vec::new();
         };
         ranked.sort_unstable_by_key(|node| node.rtt_us);
-        let usable = ranked.iter().filter(|node| Self::is_usable(node)).count();
+        let usable = ranked.partition_point(Self::is_usable);
 
         info!(
             "BAM probe round: {}/{} nodes answered, {usable} within {MAX_NODE_RTT:?}\n{}",
@@ -374,7 +368,7 @@ impl BamDiscovery {
             ("responded", ranked.len() as i64, i64),
             ("usable", usable as i64, i64),
         );
-        ranked.retain(Self::is_usable);
+        ranked.truncate(usable);
         ranked
     }
 
