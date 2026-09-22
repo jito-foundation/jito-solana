@@ -32,13 +32,13 @@ const PROBE_FANOUT: usize = 16;
 
 const PROBE_SAMPLES: usize = 3;
 
-const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
 // BAM nodes disconnect validators whose mean RTT exceeds this.
 const MAX_NODE_RTT: Duration = Duration::from_millis(30);
 
-// Far above `MAX_NODE_RTT`, so a timeout means the node is unusable.
-const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
+// Matches the BAM node's own ping timeout.
+const PROBE_REQUEST_TIMEOUT: Duration = MAX_NODE_RTT.saturating_mul(2);
 
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
 
@@ -418,12 +418,10 @@ impl BamDiscovery {
     // Reuse one channel so the RTT samples exclude the TLS handshake.
     async fn probe(node: &ServedNode) -> Option<RankedNode> {
         let url = node.url();
-        let channel = endpoint_from_url(&url)
-            .ok()?
-            .connect_timeout(PROBE_CONNECT_TIMEOUT)
-            .timeout(PROBE_REQUEST_TIMEOUT)
-            .connect()
+        let endpoint = endpoint_from_url(&url).ok()?.timeout(PROBE_REQUEST_TIMEOUT);
+        let channel = timeout(PROBE_CONNECT_TIMEOUT, endpoint.connect())
             .await
+            .ok()?
             .ok()?;
         let mut client = BamNodeApiClient::new(channel);
 
