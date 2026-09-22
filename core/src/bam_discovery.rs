@@ -34,7 +34,7 @@ const PROBE_SAMPLES: usize = 3;
 
 const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-// BAM nodes reject validators whose mean RTT exceeds 30 ms.
+// Far above the 30 ms mean RTT that BAM nodes accept, so a timeout means the node is unusable.
 const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
@@ -53,7 +53,7 @@ struct ServedNodes {
     nodes: Vec<ServedNode>,
 }
 
-// A malformed timestamp should not invalidate an otherwise usable node list.
+// An invalid generated_at should not prevent loading the node list.
 fn lenient_rfc3339<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -84,7 +84,6 @@ struct RankedNode {
     rtt_us: u64,
 }
 
-/// Treats any URL with a non-root path as a registry node-list URL.
 pub fn is_registry_url(url: &Url) -> bool {
     url.path() != "/"
 }
@@ -224,8 +223,8 @@ impl BamDiscovery {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
     }
 
-    // Variants ordered after `Connecting` represent authenticated sessions,
-    // including the unbounded `DrainingBlockEngine` wait.
+    // Every state after `Connecting` is an authenticated session, including
+    // `DrainingBlockEngine`, which has no time limit.
     fn is_live(state: BamConnectionState) -> bool {
         state as u8 > BamConnectionState::Connecting as u8
     }
@@ -247,7 +246,8 @@ impl BamDiscovery {
         }
     }
 
-    // A failed probe does not imply that the registry has removed the node.
+    // Checks the registry's list rather than the ranking, since a node that missed a probe is
+    // still listed.
     fn needs_pick(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
         !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
     }
@@ -617,8 +617,8 @@ mod tests {
         assert_eq!(BamDiscovery::is_live(state), expected);
     }
 
-    #[test_case(BamConnectionState::Connected, RESYNC_INTERVAL_LIVE ; "live keeps the live deadline")]
-    #[test_case(BamConnectionState::Disconnected, RESYNC_INTERVAL_STALLED ; "stalled pulls it in")]
+    #[test_case(BamConnectionState::Connected, RESYNC_INTERVAL_LIVE ; "live")]
+    #[test_case(BamConnectionState::Disconnected, RESYNC_INTERVAL_STALLED ; "stalled")]
     fn test_resync_deadline(state: BamConnectionState, expected: Duration) {
         let now = Instant::now();
         let resync_at = BamDiscovery::resync_deadline(state, now + RESYNC_INTERVAL_LIVE, now);
@@ -690,8 +690,8 @@ mod tests {
         assert_eq!(Arc::strong_count(&selected_url), 1);
     }
 
-    // After rebuilding the ranking, the published URL can differ from the reset
-    // cursor. Advancing at that point would skip the best node.
+    // After a re-probe the cursor is back at the best node while the published URL is still the
+    // last node tried. Advancing then would skip the best node.
     #[test]
     fn test_rebuilt_ranking_is_not_the_current_pick() {
         let ranked = vec![ranked_node("203.0.113.1"), ranked_node("203.0.113.2")];
