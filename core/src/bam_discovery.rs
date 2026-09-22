@@ -34,12 +34,15 @@ const PROBE_SAMPLES: usize = 3;
 
 const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-// Far above the 30 ms mean RTT that BAM nodes accept, so a timeout means the node is unusable.
+// BAM nodes disconnect validators whose mean RTT exceeds this.
+const MAX_NODE_RTT: Duration = Duration::from_millis(30);
+
+// Far above `MAX_NODE_RTT`, so a timeout means the node is unusable.
 const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
 
-// Avoid probing every poll when no nodes respond.
+// Avoid probing every poll when no node is usable.
 const PROBE_COOLDOWN: Duration = Duration::from_secs(30);
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -356,9 +359,10 @@ impl BamDiscovery {
             return Vec::new();
         };
         ranked.sort_unstable_by_key(|node| node.rtt_us);
+        let usable = ranked.iter().filter(|node| Self::is_usable(node)).count();
 
         info!(
-            "BAM probe round: {}/{} nodes answered\n{}",
+            "BAM probe round: {}/{} nodes answered, {usable} within {MAX_NODE_RTT:?}\n{}",
             ranked.len(),
             pool.len(),
             Self::format_probe_table(&pool, &ranked)
@@ -368,8 +372,14 @@ impl BamDiscovery {
             "bam_discovery-probe_round",
             ("probed", pool.len() as i64, i64),
             ("responded", ranked.len() as i64, i64),
+            ("usable", usable as i64, i64),
         );
+        ranked.retain(Self::is_usable);
         ranked
+    }
+
+    fn is_usable(node: &RankedNode) -> bool {
+        Duration::from_micros(node.rtt_us) <= MAX_NODE_RTT
     }
 
     fn format_probe_table(pool: &[ServedNode], ranked: &[RankedNode]) -> String {
@@ -378,9 +388,14 @@ impl BamDiscovery {
             "rank", "url", "region", "rtt"
         );
         let responded = ranked.iter().enumerate().map(|(index, node)| {
+            let rank = if Self::is_usable(node) {
+                (index + 1).to_string()
+            } else {
+                "-".to_string()
+            };
             format!(
                 "{:>4}  {:<30}  {:<24}  {:>8.2}ms",
-                index + 1,
+                rank,
                 node.url,
                 node.region,
                 node.rtt_us as f64 / 1_000.0
@@ -562,6 +577,31 @@ mod tests {
         assert!(lines[0].contains("rank") && lines[0].contains("rtt"));
         assert!(lines[1].contains(&answered.url()) && lines[1].contains("4.20ms"));
         assert!(lines[2].contains(&silent.url()) && lines[2].contains("no answer"));
+    }
+
+    #[test]
+    fn test_format_probe_table_leaves_slow_responders_unranked() {
+        let fast = ranked_node("203.0.113.1");
+        let slow = RankedNode {
+            rtt_us: 45_000,
+            ..ranked_node("203.0.113.2")
+        };
+
+        let table = BamDiscovery::format_probe_table(&[], &[fast.clone(), slow.clone()]);
+        let lines: Vec<&str> = table.lines().collect();
+
+        assert!(lines[1].trim_start().starts_with('1') && lines[1].contains(&fast.url));
+        assert!(lines[2].trim_start().starts_with('-') && lines[2].contains("45.00ms"));
+    }
+
+    #[test_case(30_000, true ; "at the limit")]
+    #[test_case(30_001, false ; "above the limit")]
+    fn test_is_usable(rtt_us: u64, usable: bool) {
+        let node = RankedNode {
+            rtt_us,
+            ..ranked_node("203.0.113.1")
+        };
+        assert_eq!(BamDiscovery::is_usable(&node), usable);
     }
 
     #[test]
