@@ -144,13 +144,13 @@ impl RegistryFollower {
                 self.cursor = 0;
                 self.probe_at = now;
             }
-            self.resync_at = now
-                + if BamDiscovery::is_live(BamDiscovery::connection_state(bam_enabled)) {
-                    RESYNC_INTERVAL_LIVE
-                } else {
-                    RESYNC_INTERVAL_STALLED
-                };
+            self.resync_at = now + RESYNC_INTERVAL_LIVE;
         }
+        self.resync_at = BamDiscovery::resync_deadline(
+            BamDiscovery::connection_state(bam_enabled),
+            self.resync_at,
+            now,
+        );
 
         if self.ranked.is_empty() && !self.nodes.is_empty() && now >= self.probe_at {
             self.probe_at = now + PROBE_COOLDOWN;
@@ -246,6 +246,14 @@ impl BamDiscovery {
     // including the unbounded `DrainingBlockEngine` wait.
     fn is_live(state: BamConnectionState) -> bool {
         state as u8 > BamConnectionState::Connecting as u8
+    }
+
+    fn resync_deadline(state: BamConnectionState, resync_at: Instant, now: Instant) -> Instant {
+        if Self::is_live(state) {
+            resync_at
+        } else {
+            resync_at.min(now + RESYNC_INTERVAL_STALLED)
+        }
     }
 
     // Preserve the initial failure time across BamManager connection retries.
@@ -597,6 +605,23 @@ mod tests {
     #[test_case(BamConnectionState::Connected, true ; "connected")]
     fn test_is_live(state: BamConnectionState, expected: bool) {
         assert_eq!(BamDiscovery::is_live(state), expected);
+    }
+
+    #[test_case(BamConnectionState::Connected, RESYNC_INTERVAL_LIVE ; "live keeps the live deadline")]
+    #[test_case(BamConnectionState::Disconnected, RESYNC_INTERVAL_STALLED ; "stalled pulls it in")]
+    fn test_resync_deadline(state: BamConnectionState, expected: Duration) {
+        let now = Instant::now();
+        let resync_at = BamDiscovery::resync_deadline(state, now + RESYNC_INTERVAL_LIVE, now);
+        assert_eq!(resync_at, now + expected);
+    }
+
+    #[test]
+    fn test_resync_deadline_keeps_an_earlier_stalled_deadline() {
+        let now = Instant::now();
+        assert_eq!(
+            BamDiscovery::resync_deadline(BamConnectionState::Disconnected, now, now),
+            now
+        );
     }
 
     #[test]
