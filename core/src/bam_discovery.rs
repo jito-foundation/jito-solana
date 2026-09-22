@@ -24,7 +24,8 @@ const RESYNC_INTERVAL_LIVE: Duration = Duration::from_secs(60);
 
 const RESYNC_INTERVAL_STALLED: Duration = Duration::from_secs(2);
 
-const CONNECT_GRACE: Duration = Duration::from_secs(10);
+// Must outlast the worst-case BamManager connection attempt of 16 seconds.
+const CONNECT_GRACE: Duration = Duration::from_secs(20);
 
 const PROBE_CAP: usize = 32;
 
