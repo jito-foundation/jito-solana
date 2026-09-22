@@ -4,7 +4,7 @@ use {
     chrono::{DateTime, Utc},
     futures::{StreamExt, stream},
     jito_protos::proto::bam_api::{ConfigRequest, bam_node_api_client::BamNodeApiClient},
-    rand::{rng, seq::SliceRandom},
+    rand::{Rng, rng, seq::SliceRandom},
     reqwest::Url,
     serde::{Deserialize, Deserializer},
     solana_metrics::{datapoint_info, datapoint_warn},
@@ -133,7 +133,8 @@ impl RegistryFollower {
                 self.cursor = 0;
                 self.probe_at = now;
             }
-            self.resync_at = now + RESYNC_INTERVAL_LIVE;
+            self.resync_at =
+                now + rng().random_range(RESYNC_INTERVAL_LIVE / 2..=RESYNC_INTERVAL_LIVE);
         }
         self.resync_at = BamDiscovery::resync_deadline(
             BamDiscovery::connection_state(bam_enabled),
