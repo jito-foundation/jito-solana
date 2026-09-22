@@ -434,9 +434,8 @@ impl Tpu {
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
 
-        // `bam_url` is what the operator asked for, `connect_url` is what
-        // BamManager dials. Discovery resolves one into the other, so it runs
-        // whenever BAM does and inherits the exclusion above.
+        // Discovery uses a separate URL so the configured registry URL remains unchanged.
+        // Apply the scheduler-bindings exclusion to discovery as well as BamManager.
         let connect_url = Arc::new(ArcSwap::from_pointee(None));
         let bam_discovery = bam_dependencies.is_some().then(|| {
             BamDiscovery::new(

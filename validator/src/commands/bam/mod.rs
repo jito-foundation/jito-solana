@@ -1,7 +1,7 @@
 use {
     crate::{admin_rpc_service, cli::DefaultArgs},
     clap::{App, Arg, ArgMatches, SubCommand},
-    solana_core::bam_discovery::registry_url,
+    solana_core::bam_discovery::is_registry_url,
     std::path::Path,
     thiserror::Error,
     url::{ParseError, Url},
@@ -19,7 +19,6 @@ const DEFAULT_BAM_URL_SCHEME: &str = "http";
 const DEFAULT_BAM_HTTP_PORT: u16 = 50055;
 const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 
-/// Empty values disable BAM.
 pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlError> {
     matches
         .value_of("bam_url")
@@ -29,7 +28,7 @@ pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlErr
         .transpose()
 }
 
-/// A url with a path is the registry's node list, which is an ordinary HTTP(S)
+/// A URL with a path is the registry's node list, which is an ordinary HTTP(S)
 /// document and keeps the port it was given. A bare host names one node, where a
 /// missing scheme defaults to HTTP and an omitted port to 50055 for HTTP or 50056
 /// for HTTPS. Explicit ports must be non-zero.
@@ -62,8 +61,7 @@ pub fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
         });
     }
 
-    // The registry is reached over ordinary HTTP(S), so it keeps its own port.
-    if registry_url(&parse_target).is_some() {
+    if is_registry_url(&url) {
         return Ok(parse_target);
     }
 
@@ -102,8 +100,8 @@ pub fn argument() -> Arg<'static, 'static> {
         .min_values(0)
         .max_values(1)
         .help(
-            "URL of a BAM Node, or of a BAM Registry node list to pick one by \
-             discovery; leave empty to disable BAM.",
+            "URL of a BAM Node, or of a BAM Registry node list to pick one by discovery; leave \
+             empty to disable BAM.",
         )
         .takes_value(true)
 }
@@ -236,8 +234,6 @@ mod tests {
         );
     }
 
-    // A path makes it the registry's node list, so the port is left alone. The
-    // same urls without a path would each have gained a BAM port.
     #[test_case(
         "https://dev.testnet.registry.bam.jito.wtf/v1/nodes",
         "https://dev.testnet.registry.bam.jito.wtf/v1/nodes"
@@ -266,8 +262,8 @@ mod tests {
         );
     }
 
-    // `Url::port` reports None for a scheme's default port, so it cannot stand in
-    // for "was a port written" when inserting the BAM default.
+    // `Url::port` returns None for explicit scheme-default ports, so inspect the
+    // authority to distinguish them from omitted ports.
     #[test]
     fn test_url_port_hides_scheme_defaults() {
         assert_eq!(Url::parse("http://bam:80").unwrap().port(), None);

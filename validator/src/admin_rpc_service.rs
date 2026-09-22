@@ -652,7 +652,6 @@ impl AdminRpc for AdminRpcImpl {
             return Err(error);
         }
 
-        // Same shape the CLI produces, so both entry points accept the same values.
         let bam_url = bam_url
             .map(|url| {
                 crate::commands::bam::normalize_bam_url(&url)

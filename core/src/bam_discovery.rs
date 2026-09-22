@@ -1,7 +1,3 @@
-/// Discovers BAM nodes through the BAM Registry:
-/// - Fetches the published node list
-/// - Ranks candidates by measured round-trip time
-/// - Publishes the winner into the shared BAM url that `BamManager` watches
 use {
     crate::{bam_dependencies::BamConnectionState, tonic_endpoint::endpoint_from_url},
     arc_swap::ArcSwap,
@@ -9,6 +5,7 @@ use {
     futures::{StreamExt, stream},
     jito_protos::proto::bam_api::{ConfigRequest, bam_node_api_client::BamNodeApiClient},
     rand::{rng, seq::SliceRandom},
+    reqwest::Url,
     serde::{Deserialize, Deserializer},
     solana_metrics::{datapoint_info, datapoint_warn},
     std::{
@@ -23,57 +20,40 @@ use {
     tokio::time::timeout,
 };
 
-/// How often the published node list is re-read while a session is live.
 const RESYNC_INTERVAL_LIVE: Duration = Duration::from_secs(60);
 
-/// How often it is re-read with no live session, including at startup.
 const RESYNC_INTERVAL_STALLED: Duration = Duration::from_secs(2);
 
-/// How long the connection may sit disconnected before the current pick is
-/// treated as bad and the ranking advances.
 const CONNECT_GRACE: Duration = Duration::from_secs(10);
 
-/// Most nodes sampled in one probe round.
 const PROBE_CAP: usize = 32;
 
-/// Most probes in flight at once.
 const PROBE_FANOUT: usize = 16;
 
-/// Round trips measured per node. The minimum of the samples is kept.
 const PROBE_SAMPLES: usize = 3;
 
-/// Connect budget for one probe, covering the TLS handshake.
 const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Request budget for one probe sample. A node's admission gate rejects a
-/// validator above 30ms of mean RTT.
+// BAM nodes reject validators whose mean RTT exceeds 30 ms.
 const PROBE_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Backstop for an entire probe round, and the longest shutdown waits on one.
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
 
-/// Minimum gap between probe rounds. An all-unreachable round yields an empty
-/// ranking, which without this floor would re-probe the fleet on every poll.
+// Avoid probing every poll when no nodes respond.
 const PROBE_COOLDOWN: Duration = Duration::from_secs(30);
 
-/// Budget for fetching the node list.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How often the loop wakes to poll the exit flag and the connection state.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The node list published by the registry.
-/// By appearing in the list, a node asserts its liveness and health.
 #[derive(Clone, Debug, Deserialize)]
 struct ServedNodes {
-    /// When the registry built this list.
     #[serde(default, deserialize_with = "lenient_rfc3339")]
     generated_at: Option<DateTime<Utc>>,
     nodes: Vec<ServedNode>,
 }
 
-/// The registry sends RFC 3339. A missing or malformed value costs one metric
-/// rather than failing the whole document.
+// A malformed timestamp should not invalidate an otherwise usable node list.
 fn lenient_rfc3339<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -84,7 +64,6 @@ where
         .map(|parsed| parsed.with_timezone(&Utc)))
 }
 
-/// A node the registry lists as a candidate. Becomes a `RankedNode` once measured.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct ServedNode {
     ip: IpAddr,
@@ -93,15 +72,11 @@ struct ServedNode {
 }
 
 impl ServedNode {
-    /// gRPC target for this node. `SocketAddr` brackets IPv6 addresses, and the
-    /// registry builds the same string when it admits a node, so both ends agree.
     fn url(&self) -> String {
         format!("https://{}", SocketAddr::new(self.ip, self.grpc_port))
     }
 }
 
-/// A `ServedNode` that answered a probe, with its measured round-trip time.
-/// Rankings hold only these, ordered by `rtt_us` ascending.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RankedNode {
     url: String,
@@ -109,32 +84,122 @@ struct RankedNode {
     rtt_us: u64,
 }
 
-/// The node list a `--bam-url` names, or `None` when it names one node. A node
-/// is a bare host and port; the node list carries a path.
-pub fn registry_url(bam_url: &str) -> Option<&str> {
-    reqwest::Url::parse(bam_url)
-        .is_ok_and(|url| url.path() != "/")
-        .then_some(bam_url)
+/// Treats any URL with a non-root path as a registry node-list URL.
+pub fn is_registry_url(url: &Url) -> bool {
+    url.path() != "/"
 }
 
-/// Keeps the shared BAM url pointed at a live node from the registry's list.
-/// `BamManager` reconnects whenever that url changes.
+struct RegistryFollower {
+    runtime: tokio::runtime::Runtime,
+    http_client: reqwest::Client,
+    registry_url: String,
+    // Retain the last successful registry response across fetch failures.
+    nodes: Vec<ServedNode>,
+    ranked: Vec<RankedNode>,
+    cursor: usize,
+    resync_at: Instant,
+    probe_at: Instant,
+    stalled_since: Instant,
+}
+
+impl RegistryFollower {
+    fn new(registry_url: String) -> Option<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .inspect_err(|err| error!("Failed to start BAM discovery runtime: {err}"))
+            .ok()?;
+        let http_client = reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .build()
+            .inspect_err(|err| error!("Failed to build BAM discovery http client: {err}"))
+            .ok()?;
+        let now = Instant::now();
+        Some(Self {
+            runtime,
+            http_client,
+            registry_url,
+            nodes: Vec::new(),
+            ranked: Vec::new(),
+            cursor: 0,
+            resync_at: now,
+            probe_at: now,
+            stalled_since: now,
+        })
+    }
+
+    fn step(&mut self, bam_url: &ArcSwap<Option<String>>, bam_enabled: &AtomicU8) {
+        let now = Instant::now();
+
+        if now >= self.resync_at {
+            if let Some(served) = self
+                .runtime
+                .block_on(BamDiscovery::fetch(&self.http_client, &self.registry_url))
+                && served.nodes != self.nodes
+            {
+                self.nodes = served.nodes;
+                self.ranked.clear();
+                self.cursor = 0;
+                self.probe_at = now;
+            }
+            self.resync_at = now
+                + if BamDiscovery::is_live(BamDiscovery::connection_state(bam_enabled)) {
+                    RESYNC_INTERVAL_LIVE
+                } else {
+                    RESYNC_INTERVAL_STALLED
+                };
+        }
+
+        if self.ranked.is_empty() && !self.nodes.is_empty() && now >= self.probe_at {
+            self.probe_at = now + PROBE_COOLDOWN;
+            self.ranked = self
+                .runtime
+                .block_on(BamDiscovery::probe_and_rank(&self.nodes));
+            self.cursor = 0;
+        }
+
+        // Fetching and probing may block, so read the connection state afterward.
+        self.stalled_since = BamDiscovery::stall_since(
+            BamDiscovery::connection_state(bam_enabled),
+            self.stalled_since,
+        );
+        let stuck = self.stalled_since.elapsed() >= CONNECT_GRACE;
+
+        // A node can answer the probe and still refuse the scheduler stream.
+        let current_url = bam_url.load_full();
+        if stuck && BamDiscovery::on_pick(current_url.as_deref(), &self.ranked, self.cursor) {
+            self.cursor = BamDiscovery::advance(self.cursor, self.ranked.len());
+            if self.cursor == 0 {
+                self.ranked.clear();
+            }
+        }
+
+        if (stuck || BamDiscovery::needs_pick(current_url.as_deref(), &self.nodes))
+            && let Some(node) = self.ranked.get(self.cursor)
+            && BamDiscovery::publish(bam_url, node)
+        {
+            self.stalled_since = Instant::now();
+        }
+    }
+}
+
+/// Selects a responsive registry node and updates the URL used by `BamManager`.
 pub struct BamDiscovery {
-    /// Background worker that fetches, probes and publishes.
     thread_hdl: JoinHandle<()>,
 }
 
 impl BamDiscovery {
     pub fn new(
         exit: Arc<AtomicBool>,
-        bam_config: Arc<ArcSwap<Option<String>>>,
+        configured_url: Arc<ArcSwap<Option<String>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
         bam_enabled: Arc<AtomicU8>,
     ) -> Self {
         let thread_hdl = Builder::new()
             .name("solBamDisc".to_string())
             .spawn(move || {
-                Self::run(exit, bam_config, bam_url, bam_enabled);
+                Self::run(exit, configured_url, bam_url, bam_enabled);
             })
             .unwrap();
 
@@ -143,113 +208,50 @@ impl BamDiscovery {
 
     fn run(
         exit: Arc<AtomicBool>,
-        bam_config: Arc<ArcSwap<Option<String>>>,
+        configured_url: Arc<ArcSwap<Option<String>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
         bam_enabled: Arc<AtomicU8>,
     ) {
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                error!("Failed to start BAM discovery runtime, discovery disabled: {err}");
-                return;
-            }
-        };
-        let http_client = match reqwest::Client::builder().timeout(FETCH_TIMEOUT).build() {
-            Ok(client) => client,
-            Err(err) => {
-                error!("Failed to build BAM discovery http client, discovery disabled: {err}");
-                return;
-            }
-        };
-
-        // The full published list, kept across fetch failures.
-        let mut nodes: Vec<ServedNode> = Vec::new();
-        let mut ranked: Vec<RankedNode> = Vec::new();
-        let mut cursor = 0usize;
-
-        let mut time_until_resync = Duration::ZERO;
-        let mut time_until_probe = Duration::ZERO;
-        let mut stalled_for = Duration::ZERO;
-        let mut config = bam_config.load_full();
-        Self::announce(&config);
+        let mut configured = configured_url.load_full();
+        let mut follower = Self::follow(&configured, &bam_url);
 
         while !exit.load(Ordering::Relaxed) {
-            let current = bam_config.load_full();
-            if current != config {
-                config = current;
-                Self::announce(&config);
-                // Nothing measured against the old value survives it.
-                nodes.clear();
-                ranked.clear();
-                cursor = 0;
-                time_until_resync = Duration::ZERO;
-                time_until_probe = Duration::ZERO;
-                stalled_for = Duration::ZERO;
+            let current = configured_url.load_full();
+            if current != configured {
+                configured = current;
+                follower = Self::follow(&configured, &bam_url);
             }
 
-            // Empty stays disconnected, and a single node is already the answer.
-            // Only a registry needs the fetch, probe and rank machinery below.
-            let Some(registry_url) = config.as_deref().and_then(registry_url) else {
-                Self::set_url(&bam_url, config.as_deref());
-                thread::sleep(POLL_INTERVAL);
-                continue;
-            };
-
-            let state = Self::connection_state(&bam_enabled);
-
-            // Time without a live session, not time in one state.
-            let stuck = stalled_for >= CONNECT_GRACE;
-
-            if time_until_resync == Duration::ZERO {
-                if let Some(served) = runtime.block_on(Self::fetch(&http_client, registry_url))
-                    && served.nodes != nodes
-                {
-                    nodes = served.nodes;
-                    ranked.clear();
-                    cursor = 0;
-                    // Re-probe against the new list instead of serving out the
-                    // cooldown.
-                    time_until_probe = Duration::ZERO;
-                }
-                time_until_resync = if Self::is_live(state) {
-                    RESYNC_INTERVAL_LIVE
-                } else {
-                    RESYNC_INTERVAL_STALLED
-                };
+            if let Some(follower) = &mut follower {
+                follower.step(&bam_url, &bam_enabled);
             }
-
-            if ranked.is_empty() && !nodes.is_empty() && time_until_probe == Duration::ZERO {
-                time_until_probe = PROBE_COOLDOWN;
-                ranked = runtime.block_on(Self::probe_and_rank(&nodes));
-                cursor = 0;
-            }
-
-            // A node can answer the probe and still refuse the scheduler stream.
-            let current_url = bam_url.load_full();
-            if stuck && Self::on_pick(current_url.as_deref(), &ranked, cursor) {
-                cursor = Self::advance(cursor, ranked.len());
-                if cursor == 0 {
-                    // Ranking is stale, so clear and re-probe.
-                    ranked.clear();
-                }
-            }
-
-            if (stuck || Self::needs_pick(current_url.as_deref(), &nodes))
-                && let Some(node) = ranked.get(cursor)
-                && Self::publish(&bam_url, node)
-            {
-                // Let the new pick have a grace window of its own.
-                stalled_for = Duration::ZERO;
-            }
-
             thread::sleep(POLL_INTERVAL);
-            time_until_resync = time_until_resync.saturating_sub(POLL_INTERVAL);
-            time_until_probe = time_until_probe.saturating_sub(POLL_INTERVAL);
-            stalled_for = Self::stall_after_poll(state, stalled_for);
+        }
+    }
+
+    fn follow(
+        configured: &Option<String>,
+        bam_url: &ArcSwap<Option<String>>,
+    ) -> Option<RegistryFollower> {
+        let registry_url = Self::registry_url(configured);
+        Self::announce(configured.as_deref(), registry_url.as_deref());
+        match registry_url {
+            Some(registry_url) => RegistryFollower::new(registry_url),
+            None => {
+                Self::set_url(bam_url, configured.as_deref());
+                None
+            }
+        }
+    }
+
+    fn registry_url(configured: &Option<String>) -> Option<String> {
+        let raw = configured.as_deref()?;
+        match Url::parse(raw) {
+            Ok(url) => is_registry_url(&url).then(|| raw.to_owned()),
+            Err(err) => {
+                error!("BAM url {raw} does not parse, discovery idle: {err}");
+                None
+            }
         }
     }
 
@@ -257,46 +259,37 @@ impl BamDiscovery {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
     }
 
-    /// Whether the BAM session is usable. Everything past `Connecting` is
-    /// authenticated, including the unbounded `DrainingBlockEngine` wait.
-    /// `Connecting` is not: BamManager cycles it against `Disconnected` about once
-    /// a second against a node that connects then fails its health check.
+    // Variants ordered after `Connecting` represent authenticated sessions,
+    // including the unbounded `DrainingBlockEngine` wait.
     fn is_live(state: BamConnectionState) -> bool {
         state as u8 > BamConnectionState::Connecting as u8
     }
 
-    /// Advance the stall clock by one poll, or clear it once the session is live.
-    fn stall_after_poll(state: BamConnectionState, stalled_for: Duration) -> Duration {
+    // Preserve the initial failure time across BamManager connection retries.
+    fn stall_since(state: BamConnectionState, stalled_since: Instant) -> Instant {
         if Self::is_live(state) {
-            Duration::ZERO
+            Instant::now()
         } else {
-            stalled_for.saturating_add(POLL_INTERVAL)
+            stalled_since
         }
     }
 
-    /// True when the shared url does not name a node the registry currently
-    /// serves: nothing published yet, or a pick that has left the list. Reads the
-    /// served list, not the ranking, so a node that missed one probe round is not
-    /// mistaken for a drain.
+    // A failed probe does not imply that the registry has removed the node.
     fn needs_pick(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
         !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
     }
 
-    /// Whether the shared url is the candidate the cursor points at. A ranking
-    /// built since the last publish is not, so its best node is published before
-    /// the walk is allowed to move past it.
+    // A rebuilt ranking must publish its best node before advancing the cursor.
     fn on_pick(current_url: Option<&str>, ranked: &[RankedNode], cursor: usize) -> bool {
         ranked
             .get(cursor)
             .is_some_and(|node| current_url == Some(node.url.as_str()))
     }
 
-    /// Step to the next candidate, wrapping at the end of the ranking.
     fn advance(cursor: usize, len: usize) -> usize {
         (cursor + 1) % len.max(1)
     }
 
-    /// Point BamManager at `url`, or at nothing. Reports whether that moved it.
     fn set_url(bam_url: &ArcSwap<Option<String>>, url: Option<&str>) -> bool {
         if bam_url.load_full().as_deref() == url {
             return false;
@@ -305,15 +298,14 @@ impl BamDiscovery {
         true
     }
 
-    fn announce(bam_config: &Option<String>) {
-        match (bam_config.as_deref().and_then(registry_url), bam_config) {
+    fn announce(configured: Option<&str>, registry: Option<&str>) {
+        match (registry, configured) {
             (Some(url), _) => info!("BAM discovery following registry {url}"),
             (None, Some(url)) => info!("BAM discovery idle, url names one node: {url}"),
             (None, None) => info!("BAM discovery idle, no url set"),
         }
     }
 
-    /// Reports whether this moved the shared url.
     fn publish(bam_url: &ArcSwap<Option<String>>, node: &RankedNode) -> bool {
         if !Self::set_url(bam_url, Some(&node.url)) {
             return false;
@@ -331,8 +323,6 @@ impl BamDiscovery {
         true
     }
 
-    /// Read the published list. `None` leaves the caller holding whatever it
-    /// already has.
     async fn fetch(http_client: &reqwest::Client, registry_url: &str) -> Option<ServedNodes> {
         let response = async {
             http_client
@@ -374,8 +364,6 @@ impl BamDiscovery {
         Some(served)
     }
 
-    /// Probe a sample of the published nodes and order them by round-trip time.
-    /// Nodes that do not answer are dropped.
     async fn probe_and_rank(nodes: &[ServedNode]) -> Vec<RankedNode> {
         let mut pool = nodes.to_vec();
         pool.shuffle(&mut rng());
@@ -401,7 +389,7 @@ impl BamDiscovery {
             "BAM probe round: {}/{} nodes answered\n{}",
             ranked.len(),
             pool.len(),
-            Self::probe_table(&pool, &ranked)
+            Self::format_probe_table(&pool, &ranked)
         );
 
         datapoint_info!(
@@ -412,9 +400,7 @@ impl BamDiscovery {
         ranked
     }
 
-    /// One row per probed node, responders first in ranking order. Nodes that did
-    /// not answer are absent from the ranking, so they are listed after it.
-    fn probe_table(pool: &[ServedNode], ranked: &[RankedNode]) -> String {
+    fn format_probe_table(pool: &[ServedNode], ranked: &[RankedNode]) -> String {
         let header = format!(
             "{:>4}  {:<30}  {:<24}  {:>10}",
             "rank", "url", "region", "rtt"
@@ -448,8 +434,7 @@ impl BamDiscovery {
             .join("\n")
     }
 
-    /// Time `GetBuilderConfig` against one node. All samples share one channel,
-    /// so the measurement excludes the TLS handshake.
+    // Reuse one channel so the RTT samples exclude the TLS handshake.
     async fn probe(node: &ServedNode) -> Option<RankedNode> {
         let url = node.url();
         let channel = endpoint_from_url(&url)
@@ -485,8 +470,7 @@ impl BamDiscovery {
 mod tests {
     use {super::*, test_case::test_case};
 
-    /// Byte-for-byte the object the registry pins in its own snapshot test, so a
-    /// rename on either side fails here instead of emptying the fleet.
+    // Keep this fixture in sync with the registry's snapshot test.
     const GOLDEN_NODE: &str = r#"{"ip":"203.0.113.1","grpc_port":50056,"region":"fra"}"#;
 
     #[test]
@@ -520,8 +504,6 @@ mod tests {
         assert_eq!(served.nodes.len(), 1);
     }
 
-    /// The timestamp only feeds a metric, so a broken one must still yield a
-    /// usable node list.
     #[test_case(r#""not-a-timestamp""# ; "malformed")]
     #[test_case("null" ; "null")]
     #[test_case("1757419200" ; "unix seconds")]
@@ -569,13 +551,13 @@ mod tests {
     }
 
     #[test]
-    fn test_probe_table_ranks_responders_and_keeps_silent_nodes() {
+    fn test_format_probe_table_ranks_responders_and_keeps_silent_nodes() {
         let answered = served_node("203.0.113.1");
         let silent = served_node("203.0.113.2");
         let ranked = vec![ranked_node("203.0.113.1")];
 
         // Pool order is shuffled, so the table must order by the ranking, not the pool.
-        let table = BamDiscovery::probe_table(&[silent.clone(), answered.clone()], &ranked);
+        let table = BamDiscovery::format_probe_table(&[silent.clone(), answered.clone()], &ranked);
         let lines: Vec<&str> = table.lines().collect();
 
         assert_eq!(lines.len(), 3);
@@ -600,7 +582,6 @@ mod tests {
         assert!(!BamDiscovery::needs_pick(Some(&url), &[served]));
     }
 
-    // Bootstrap: nothing published yet also wants a pick.
     #[test]
     fn test_needs_pick_when_nothing_is_published() {
         assert!(BamDiscovery::needs_pick(
@@ -609,23 +590,24 @@ mod tests {
         ));
     }
 
-    // Regression: BamManager cycles `Connecting` -> `Disconnected` about once a
-    // second while a node accepts the connection then fails its health check.
-    // The stall clock has to survive that churn.
+    // BamManager alternates between these states when connection succeeds but the
+    // health check fails. Resetting the timer would prevent failover.
     #[test]
-    fn test_stall_accumulates_across_connect_retry_churn() {
-        let stalled_for = [
+    fn test_stall_survives_connect_retry_churn() {
+        let began = Instant::now().checked_sub(CONNECT_GRACE).unwrap();
+        let stalled_since = [
             BamConnectionState::Connecting,
             BamConnectionState::Disconnected,
         ]
         .iter()
         .cycle()
-        .take(2 * (CONNECT_GRACE.as_millis() / POLL_INTERVAL.as_millis()) as usize)
-        .fold(Duration::ZERO, |stalled, state| {
-            BamDiscovery::stall_after_poll(*state, stalled)
+        .take(20)
+        .fold(began, |since, state| {
+            BamDiscovery::stall_since(*state, since)
         });
 
-        assert!(stalled_for >= CONNECT_GRACE);
+        assert_eq!(stalled_since, began);
+        assert!(stalled_since.elapsed() >= CONNECT_GRACE);
     }
 
     #[test_case(BamConnectionState::Disconnected, false ; "disconnected")]
@@ -639,15 +621,41 @@ mod tests {
 
     #[test]
     fn test_stall_clears_once_the_session_is_live() {
+        let began = Instant::now().checked_sub(CONNECT_GRACE).unwrap();
+        let cleared = BamDiscovery::stall_since(BamConnectionState::Connected, began);
+        assert!(cleared > began && cleared.elapsed() < CONNECT_GRACE);
+    }
+
+    #[test_case("https://registry.jito.wtf/nodes", true ; "path is a node list")]
+    #[test_case("https://203.0.113.1:50056", false ; "bare host is one node")]
+    #[test_case("https://203.0.113.1:50056/", false ; "trailing slash is one node")]
+    fn test_is_registry_url(url: &str, expected: bool) {
+        assert_eq!(is_registry_url(&Url::parse(url).unwrap()), expected);
+    }
+
+    #[test]
+    fn test_registry_url_ignores_an_unparseable_url() {
         assert_eq!(
-            BamDiscovery::stall_after_poll(BamConnectionState::Connected, CONNECT_GRACE),
-            Duration::ZERO
+            BamDiscovery::registry_url(&Some("not a url".to_string())),
+            None
         );
     }
 
-    // Regression: after a re-probe the cursor is back at the best node while the
-    // shared url is still the one the last walk ended on. Advancing then would
-    // step straight past the best node, and it would never be published again.
+    #[test_case(Some("https://203.0.113.1:50056"), false ; "direct node")]
+    #[test_case(None, false ; "no url")]
+    #[test_case(Some("https://registry.jito.wtf/nodes"), true ; "registry")]
+    fn test_follow_only_starts_a_follower_for_a_registry(configured: Option<&str>, follows: bool) {
+        let bam_url = ArcSwap::from_pointee(Some("https://203.0.113.9:50056".to_string()));
+        let follower = BamDiscovery::follow(&configured.map(str::to_owned), &bam_url);
+
+        assert_eq!(follower.is_some(), follows);
+        if !follows {
+            assert_eq!(bam_url.load_full().as_deref(), configured);
+        }
+    }
+
+    // After rebuilding the ranking, the published URL can differ from the reset
+    // cursor. Advancing at that point would skip the best node.
     #[test]
     fn test_rebuilt_ranking_is_not_the_current_pick() {
         let ranked = vec![ranked_node("203.0.113.1"), ranked_node("203.0.113.2")];
