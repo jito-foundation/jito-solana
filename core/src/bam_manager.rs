@@ -139,7 +139,11 @@ impl BamManager {
         while !exit.load(Ordering::Relaxed) {
             let latest_bam_url = bam_url.load_full();
             if latest_bam_url != configured_bam_url {
-                discovery = BamDiscovery::new(&latest_bam_url, dependencies.bam_enabled.clone());
+                discovery = BamDiscovery::new(
+                    &latest_bam_url,
+                    dependencies.bam_enabled.clone(),
+                    runtime.handle(),
+                );
                 configured_bam_url = latest_bam_url;
             }
 

@@ -12,12 +12,11 @@ use {
         net::{IpAddr, SocketAddr},
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicU8, Ordering},
+            atomic::{AtomicU8, Ordering},
         },
-        thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    tokio::time::timeout,
+    tokio::{runtime, task::JoinHandle, time::timeout},
 };
 
 const RESYNC_INTERVAL_LIVE: Duration = Duration::from_secs(60);
@@ -91,7 +90,6 @@ pub fn is_registry_url(url: &Url) -> bool {
 }
 
 struct RegistryFollower {
-    runtime: tokio::runtime::Runtime,
     http_client: reqwest::Client,
     registry_url: String,
     // Retain the last successful registry response across fetch failures.
@@ -105,12 +103,6 @@ struct RegistryFollower {
 
 impl RegistryFollower {
     fn new(registry_url: String) -> Option<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .inspect_err(|err| error!("Failed to start BAM discovery runtime: {err}"))
-            .ok()?;
         let http_client = reqwest::Client::builder()
             .timeout(FETCH_TIMEOUT)
             .build()
@@ -118,7 +110,6 @@ impl RegistryFollower {
             .ok()?;
         let now = Instant::now();
         Some(Self {
-            runtime,
             http_client,
             registry_url,
             nodes: Vec::new(),
@@ -130,13 +121,11 @@ impl RegistryFollower {
         })
     }
 
-    fn step(&mut self, bam_url: &ArcSwap<Option<String>>, bam_enabled: &AtomicU8) {
+    async fn step(&mut self, bam_url: &ArcSwap<Option<String>>, bam_enabled: &AtomicU8) {
         let now = Instant::now();
 
         if now >= self.resync_at {
-            if let Some(served) = self
-                .runtime
-                .block_on(BamDiscovery::fetch(&self.http_client, &self.registry_url))
+            if let Some(served) = BamDiscovery::fetch(&self.http_client, &self.registry_url).await
                 && served.nodes != self.nodes
             {
                 self.nodes = served.nodes;
@@ -154,13 +143,11 @@ impl RegistryFollower {
 
         if self.ranked.is_empty() && !self.nodes.is_empty() && now >= self.probe_at {
             self.probe_at = now + PROBE_COOLDOWN;
-            self.ranked = self
-                .runtime
-                .block_on(BamDiscovery::probe_and_rank(&self.nodes));
+            self.ranked = BamDiscovery::probe_and_rank(&self.nodes).await;
             self.cursor = 0;
         }
 
-        // Fetching and probing may block, so read the connection state afterward.
+        // Fetching and probing can take seconds, so read the connection state afterward.
         self.stalled_since = BamDiscovery::stall_since(
             BamDiscovery::connection_state(bam_enabled),
             self.stalled_since,
@@ -185,42 +172,36 @@ impl RegistryFollower {
     }
 }
 
-/// Follows a registry node list on its own thread for as long as it is held.
+/// Follows a registry node list for as long as it is held.
 pub struct BamDiscovery {
     selected_url: Arc<ArcSwap<Option<String>>>,
-    stop: Arc<AtomicBool>,
-    thread_hdl: Option<JoinHandle<()>>,
+    task: JoinHandle<()>,
 }
 
 impl BamDiscovery {
-    pub fn new(configured_url: &Option<String>, bam_enabled: Arc<AtomicU8>) -> Option<Self> {
+    pub fn new(
+        configured_url: &Option<String>,
+        bam_enabled: Arc<AtomicU8>,
+        runtime: &runtime::Handle,
+    ) -> Option<Self> {
         let registry_url = Self::registry_url(configured_url)?;
         info!("BAM discovery following registry {registry_url}");
 
         let selected_url = Arc::new(ArcSwap::from_pointee(None));
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_hdl = Builder::new()
-            .name("solBamDisc".to_string())
-            .spawn({
-                let selected_url = selected_url.clone();
-                let stop = stop.clone();
-                move || {
-                    let Some(mut follower) = RegistryFollower::new(registry_url) else {
-                        return;
-                    };
-                    while !stop.load(Ordering::Relaxed) {
-                        follower.step(&selected_url, &bam_enabled);
-                        thread::sleep(POLL_INTERVAL);
-                    }
+        let task = runtime.spawn({
+            let selected_url = selected_url.clone();
+            async move {
+                let Some(mut follower) = RegistryFollower::new(registry_url) else {
+                    return;
+                };
+                loop {
+                    follower.step(&selected_url, &bam_enabled).await;
+                    tokio::time::sleep(POLL_INTERVAL).await;
                 }
-            })
-            .unwrap();
+            }
+        });
 
-        Some(Self {
-            selected_url,
-            stop,
-            thread_hdl: Some(thread_hdl),
-        })
+        Some(Self { selected_url, task })
     }
 
     pub fn selected_url(&self) -> Arc<Option<String>> {
@@ -447,10 +428,7 @@ impl BamDiscovery {
 
 impl Drop for BamDiscovery {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread_hdl) = self.thread_hdl.take() {
-            let _ = thread_hdl.join();
-        }
+        self.task.abort();
     }
 }
 
@@ -650,13 +628,34 @@ mod tests {
     #[test_case(None, false ; "no url")]
     #[test_case(Some("http://127.0.0.1:1/nodes"), true ; "registry")]
     fn test_discovery_only_runs_for_a_registry(configured: Option<&str>, runs: bool) {
+        let runtime = runtime::Runtime::new().unwrap();
         let discovery = BamDiscovery::new(
             &configured.map(str::to_owned),
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
+            runtime.handle(),
         );
 
         assert_eq!(discovery.is_some(), runs);
+    }
+
+    #[test]
+    fn test_dropping_discovery_stops_its_task() {
+        let runtime = runtime::Runtime::new().unwrap();
+        let discovery = BamDiscovery::new(
+            &Some("http://127.0.0.1:1/nodes".to_string()),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
+            runtime.handle(),
+        )
+        .unwrap();
+        let selected_url = discovery.selected_url.clone();
+
         drop(discovery);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Arc::strong_count(&selected_url) > 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(Arc::strong_count(&selected_url), 1);
     }
 
     // After rebuilding the ranking, the published URL can differ from the reset
