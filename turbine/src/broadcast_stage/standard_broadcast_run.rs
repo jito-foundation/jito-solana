@@ -1464,7 +1464,7 @@ mod test {
         );
         let (shred_sender, shred_receiver) = bounded(1024);
         let mut pinnable_slice = blockstore.new_pinnable_slice();
-        let mut write_batch = blockstore.get_write_batch();
+        let mut write_batch = blockstore.get_write_batch().unwrap();
         let mut process_slot_start = |bank: Arc<Bank>| {
             run.process_receive_results(
                 &leader_keypair,
