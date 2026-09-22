@@ -23,8 +23,8 @@ defaults to `v<Cargo.toml version>_<shortsha>[-dirty]`. Artifacts land in
 
 | Path | Contents |
 |------|----------|
-| `dist/<basename>-<tag>_<target>.tar.bz2` | Release tarball |
-| `dist/<basename>-<tag>_<target>.yml` | Version manifest |
+| `dist/<basename>-<tag>[-<profile-suffix>]_<target>.tar.bz2` | Release tarball |
+| `dist/<basename>-<tag>[-<profile-suffix>]_<target>.yml` | Version manifest |
 | `docker-output/<bin>` | Loose binaries (legacy layout) |
 
 Example local artifact:
@@ -57,6 +57,9 @@ The platform target is joined with `_` (not `-`):
 ```text
 <basename>-<tag>_<target>.tar.bz2
 ```
+
+Artifact suffixes are `-debug-symbols`, `-debug`, and `-release-with-lto` for
+`release-with-debug`, `debug`, and `release-with-lto`, respectively.
 
 - **tag** -- see rules above
 - **target** -- derived inside the container from the build platform
@@ -91,6 +94,16 @@ git fetch --tags origin
 # x86_64 artifact from a non-x86 host (emulation or remote builder)
 ./f --platform linux/amd64 --tag v4.0.3-jito
 ```
+
+## Debug symbols
+
+`./f --debug-symbols` selects `release-with-debug`: release optimization and
+thin LTO with full embedded DWARF. Cargo's debug setting also gives native
+dependencies built with cc-rs debug information and frame pointers. Docker
+additionally forces Rust frame pointers; direct Cargo builds use the profile
+without that added Rust flag. Expect larger binaries, higher build costs, and
+possible frame-pointer overhead. The last profile selection wins. Manifests for
+profiles other than `release` record the selected `profile`.
 
 ## How it works
 
