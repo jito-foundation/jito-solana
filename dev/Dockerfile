@@ -16,7 +16,7 @@
 #                   `docker buildx build --output type=local,dest=...`.
 #
 # Driven by the `f` wrapper at the repo root. Artifact names use
-# <basename>-<tag>_<target> (underscore before the platform triple).
+# <basename>-<tag>[-<profile-suffix>]_<target>.
 # See dev/BUILD.md for tag resolution and naming rules.
 
 # Pin the OS layer; the actual rustc/cargo version is resolved at build time
@@ -78,14 +78,6 @@ ARG CI_COMMIT=
 # derived at run time from uname inside the container.
 ARG TARGETARCH
 
-# Promote build-args to env vars so the heredoc-form RUN below sees them.
-ENV CHANNEL_OR_TAG=${CHANNEL_OR_TAG} \
-    TARBALL_BASENAME=${TARBALL_BASENAME} \
-    BUILD_PROFILE=${BUILD_PROFILE} \
-    INCLUDE_VAL_BINS=${INCLUDE_VAL_BINS} \
-    INCLUDE_TIP_ROUTER=${INCLUDE_TIP_ROUTER} \
-    CI_COMMIT=${CI_COMMIT}
-
 # Cache mounts are keyed by arch+profile so concurrent/sequential builds
 # across different platforms/profiles don't trash each other's incremental
 # state.
@@ -105,6 +97,11 @@ esac
 # running as, so artifact names cannot lie about the binaries inside.
 # cargo builds natively (no --target), making this exact by construction.
 TARGET_TRIPLE="$(uname -m)-unknown-linux-gnu"
+
+if [ "$BUILD_PROFILE" = "release-with-debug" ]; then
+  triple_env="${TARGET_TRIPLE^^}"
+  export "CARGO_TARGET_${triple_env//-/_}_RUSTFLAGS=-Cforce-frame-pointers=yes"
+fi
 
 # The host .git is intentionally excluded from the build context (see
 # .dockerignore) to keep the COPY layer cheap. Upstream scripts still call
@@ -175,20 +172,30 @@ fi
 sed -i "s#\"\${binArgs\[@\]}\" --workspace#\"\${binArgs[@]}\" --workspace${dcou_exclude_args}${tip_router_feature_arg}#g" \
   scripts/cargo-install-all.sh
 
-# 3. Patch scripts/create-release-tarball.sh to:
-#    (a) pass --no-spl-token / --no-build-platform-tools / --no-perf-libs to
-#        cargo-install-all.sh, trimming an operator artifact down to just
-#        cargo-built binaries (no spl-token-cli install, no SBF SDK, no CUDA
-#        perf-libs fetch);
-#    (b) drop the line that copies bin/agave-install-init out alongside the
-#        tarball, since we don't build it anymore;
-#    (c) join basename and target with '_' so local tags like
-#        v4.3.0-alpha.0_<sha> stay readable before x86_64-unknown-linux-gnu.
+# 3. Patch scripts/create-release-tarball.sh to select the profile, skip unused
+#    components and agave-install, and join basename to target with `_`.
+cargo_profile_arg=""
+if [ "$BUILD_PROFILE" != "release" ]; then
+  cargo_profile_arg="--${BUILD_PROFILE} "
+  sed -i "/^target:/a profile: ${BUILD_PROFILE}" \
+    scripts/create-release-tarball.sh
+fi
 sed -i \
-  -e 's#scripts/cargo-install-all.sh stable "${build_dir}"#scripts/cargo-install-all.sh --no-spl-token --no-build-platform-tools --no-perf-libs stable "${build_dir}"#' \
+  -e "s#scripts/cargo-install-all.sh stable \"\${build_dir}\"#scripts/cargo-install-all.sh ${cargo_profile_arg}--no-spl-token --no-build-platform-tools --no-perf-libs stable \"\${build_dir}\"#" \
   -e '/agave-install-init/d' \
   -e 's#"${tarball_basename}-${target}#"${tarball_basename}_${target}#g' \
   scripts/create-release-tarball.sh
+# Fail immediately if an upstream script change leaves a patch incomplete.
+test "$(grep -Fxc "scripts/cargo-install-all.sh ${cargo_profile_arg}--no-spl-token --no-build-platform-tools --no-perf-libs stable \"\${build_dir}\"" scripts/create-release-tarball.sh)" = 1
+test "$(grep -Fxc 'cp "${build_dir}/version.yml" "${tarball_basename}_${target}.yml"' scripts/create-release-tarball.sh)" = 1
+test "$(grep -Fxc 'output_tar="${tarball_basename}_${target}.tar.bz2"' scripts/create-release-tarball.sh)" = 1
+test "$(grep -Fc '${tarball_basename}-${target}' scripts/create-release-tarball.sh)" = 0
+test "$(grep -Fc 'cp "${build_dir}/bin/agave-install-init"' scripts/create-release-tarball.sh)" = 0
+if [ "$BUILD_PROFILE" != "release" ]; then
+  test "$(grep -Fxc "profile: ${BUILD_PROFILE}" scripts/create-release-tarball.sh)" = 1
+else
+  test "$(grep -c '^profile:' scripts/create-release-tarball.sh)" = 0
+fi
 # ----------------------------------------------------------------------------
 
 extra_args=()
@@ -196,43 +203,12 @@ if [ "$INCLUDE_VAL_BINS" = "1" ]; then
   extra_args+=(--include-val-bins)
 fi
 
-if [ "$BUILD_PROFILE" = "release" ]; then
-  # Fast path: drive the (now-patched) upstream tarball script.
-  scripts/create-release-tarball.sh \
-    --build-dir jito-solana-release \
-    --channel-or-tag "$CHANNEL_OR_TAG" \
-    --target "$TARGET_TRIPLE" \
-    --tarball-basename "$TARBALL_BASENAME" \
-    "${extra_args[@]}"
-else
-  # Non-release profiles: replicate scripts/create-release-tarball.sh inline
-  # so we can pass --$BUILD_PROFILE through to cargo-install-all.sh.
-  build_dir="jito-solana-release"
-  rm -rf "${build_dir:?}"
-  mkdir -p "$build_dir"
-
-  printf 'channel: %s\ncommit: %s\ntarget: %s\n' \
-    "$CHANNEL_OR_TAG" "$(git rev-parse HEAD)" "$TARGET_TRIPLE" \
-    > "$build_dir/version.yml"
-
-  source ci/rust-version.sh stable
-  scripts/cargo-install-all.sh \
-    "--${BUILD_PROFILE}" \
-    --no-spl-token --no-build-platform-tools --no-perf-libs \
-    stable "$build_dir"
-
-  tmp_excludes="$(mktemp)"
-  trap 'rm -f "$tmp_excludes"' EXIT
-  if [ "$INCLUDE_VAL_BINS" = "0" ]; then
-    for bin in "${AGAVE_BINS_VAL_OP[@]}"; do
-      find "$build_dir" -type f -name "$bin" -print -quit >> "$tmp_excludes" || true
-    done
-  fi
-
-  cp "$build_dir/version.yml" "${TARBALL_BASENAME}_${TARGET_TRIPLE}.yml"
-  tar -cjvf "${TARBALL_BASENAME}_${TARGET_TRIPLE}.tar.bz2" \
-    -X "$tmp_excludes" "$build_dir"
-fi
+scripts/create-release-tarball.sh \
+  --build-dir jito-solana-release \
+  --channel-or-tag "$CHANNEL_OR_TAG" \
+  --target "$TARGET_TRIPLE" \
+  --tarball-basename "$TARBALL_BASENAME" \
+  "${extra_args[@]}"
 
 # Stage outputs to a non-cache-mounted dir so the scratch export stage can
 # COPY them out.
