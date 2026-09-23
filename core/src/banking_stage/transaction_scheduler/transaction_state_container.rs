@@ -437,7 +437,9 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
             BatchIdOrTransactionState::Batch(batch_info) => {
                 if let Some(batch) = self.batch_id_to_transaction_ids.remove(&id) {
                     for transaction_id in batch {
-                        self.remove_state(transaction_id);
+                        if self.id_to_transaction_state.contains(transaction_id) {
+                            self.remove_state(transaction_id);
+                        }
                     }
                 }
                 TransactionPriorityId::new(batch_info.priority, id)

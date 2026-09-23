@@ -4,11 +4,10 @@
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
-        bam_dependencies::{BamConnectionState, BamDependencies},
+        bam_dependencies::{BamConnectionState, BamDependencies, TipProcessingDependencies},
         bam_manager::BamManager,
         banking_stage::{
             BankingControlMsg, BankingStage, BankingStageHandle,
-            consumer::TipProcessingDependencies,
             transaction_scheduler::scheduler_controller::SchedulerConfig,
         },
         banking_trace::{Channels, TracerThread},
