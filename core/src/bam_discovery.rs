@@ -37,7 +37,6 @@ const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 // BAM nodes disconnect validators whose mean RTT exceeds this.
 const MAX_NODE_RTT: Duration = Duration::from_millis(30);
 
-// Matches the BAM node's own ping timeout.
 const PROBE_REQUEST_TIMEOUT: Duration = MAX_NODE_RTT.saturating_mul(2);
 
 const PROBE_ROUND_BUDGET: Duration = Duration::from_secs(10);
@@ -175,7 +174,8 @@ impl RegistryFollower {
     }
 }
 
-/// Follows a registry node list for as long as it is held.
+/// Discovery is the process of fetching, probing, and selecting
+/// the nearest BAM node (lowest RTT) to the validator.
 pub struct BamDiscovery {
     selected_url: Arc<ArcSwap<Option<String>>>,
     task: JoinHandle<()>,
@@ -183,6 +183,7 @@ pub struct BamDiscovery {
 
 impl BamDiscovery {
     pub fn new(
+        // Discovery only runs when the configured BAM url points to a registry.
         configured_url: &Option<String>,
         bam_enabled: Arc<AtomicU8>,
         runtime: &runtime::Handle,
@@ -226,8 +227,9 @@ impl BamDiscovery {
         BamConnectionState::from_u8(bam_enabled.load(Ordering::Acquire))
     }
 
-    // Every state after `Connecting` is an authenticated session, including
-    // `DrainingBlockEngine`, which has no time limit.
+    // We define a "live" connection as a connection who's state is past
+    // 'Connecting'. This is used to determine whether a successful connection
+    // has been established to a selected BAM node.
     fn is_live(state: BamConnectionState) -> bool {
         state as u8 > BamConnectionState::Connecting as u8
     }

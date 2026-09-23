@@ -4,6 +4,7 @@
 /// - Updates TPU config
 /// - Updates block builder fee info
 /// - Coordinates the switch between Block Engine bundle processing and BAM
+/// - Starts BAM discovery process should a registry URL be provided for BAM
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
@@ -140,6 +141,7 @@ impl BamManager {
 
         while !exit.load(Ordering::Relaxed) {
             let latest_bam_url = bam_url.load_full();
+            // Handles a validator being connected to BAM via the registry during runtime.
             if latest_bam_url != configured_bam_url {
                 discovery = BamDiscovery::new(
                     &latest_bam_url,
@@ -149,6 +151,8 @@ impl BamManager {
                 configured_bam_url = latest_bam_url;
             }
 
+            // When BAM registry URL is configured, the URL used to connect to BAM
+            // is dynamically chosen from the discovery process.
             let connect_url = discovery
                 .as_ref()
                 .map_or_else(|| configured_bam_url.clone(), BamDiscovery::selected_url);
