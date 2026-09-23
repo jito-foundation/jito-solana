@@ -687,6 +687,19 @@ impl BroadcastRun for StandardBroadcastRun {
         socket_sender: &Sender<(Arc<Vec<Shred>>, Option<BroadcastShredBatchInfo>)>,
         blockstore_sender: &Sender<(Arc<Vec<Shred>>, Option<BroadcastShredBatchInfo>)>,
     ) -> Result<()> {
+        // Drain the skipped bank before recv_slot_components serializes its entries.
+        while let Some(skipped_bank_id) = self.skipped_bank_id {
+            let message = match self.carryover_message.take() {
+                Some(message) => message,
+                None => receiver.recv_timeout(Duration::from_secs(1))?,
+            };
+            if message.0.bank_id() != skipped_bank_id {
+                // FIFO input keeps messages for a bank contiguous.
+                self.carryover_message = Some(message);
+                self.skipped_bank_id = None;
+            }
+        }
+
         let mut process_stats = ProcessShredsStats::default();
         let receive_results = broadcast_utils::recv_slot_components(
             receiver,
@@ -758,7 +771,7 @@ mod test {
         super::*,
         assert_matches::assert_matches,
         rand::Rng,
-        solana_entry::entry::create_ticks,
+        solana_entry::{entry::create_ticks, recorder_message::RecorderMessage},
         solana_genesis_config::GenesisConfig,
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_hash::Hash,
@@ -1450,10 +1463,15 @@ mod test {
 
     #[test]
     fn test_window_skipped_suppresses_only_same_bank() {
-        let (blockstore, _, _, parent_bank, leader_keypair, _, _bank_forks) = setup(2);
-        let skipped_bank = new_child_bank(&parent_bank, 1);
-        let replacement_bank = new_child_bank(&parent_bank, 1);
+        let (blockstore, genesis_config, _, parent_bank, leader_keypair, _, _bank_forks) = setup(2);
+        let skipped_parent = new_child_bank(&parent_bank, 1);
+        skipped_parent.set_tick_height(skipped_parent.max_tick_height());
+        Bank::calculate_and_set_block_id_for_dcou(&skipped_parent);
+        let skipped_bank = new_child_bank(&skipped_parent, 2);
+        let replacement_bank = new_child_bank(&parent_bank, 2);
         skipped_bank.squash();
+        assert!(skipped_bank.parent().is_none());
+        assert!(replacement_bank.parent().is_some());
 
         let (votor_event_sender, _votor_event_receiver) = bounded(1024);
         let mut run = StandardBroadcastRun::new(
@@ -1463,30 +1481,41 @@ mod test {
             test_leader_schedule_cache(&parent_bank),
         );
         let (shred_sender, shred_receiver) = bounded(1024);
+        let (working_sender, working_receiver) = bounded(1024);
         let mut pinnable_slice = blockstore.new_pinnable_slice();
         let mut write_batch = blockstore.get_write_batch().unwrap();
         let mut process_slot_start = |bank: Arc<Bank>| {
-            run.process_receive_results(
+            working_sender
+                .send((
+                    bank.clone(),
+                    (RecorderMessage::SlotStart, bank.tick_height()),
+                ))
+                .unwrap();
+            run.run(
                 &leader_keypair,
                 &blockstore,
                 &mut pinnable_slice,
                 &mut write_batch,
+                &working_receiver,
                 &shred_sender,
                 &shred_sender,
-                ReceiveResults {
-                    item: BroadcastItem::SlotStart,
-                    last_tick_height: bank.tick_height(),
-                    bank,
-                },
-                &mut ProcessShredsStats::default(),
             )
         };
 
         let err = process_slot_start(skipped_bank.clone()).unwrap_err();
-        assert_matches!(err, Error::WindowSkipped(1));
-        process_slot_start(skipped_bank).unwrap();
-        assert!(shred_receiver.is_empty());
+        assert_matches!(err, Error::WindowSkipped(2));
+
+        let tick = create_ticks(1, 0, genesis_config.hash()).pop().unwrap();
+        working_sender
+            .send((
+                skipped_bank,
+                (tick.into(), skipped_parent.tick_height() + 1),
+            ))
+            .unwrap();
         process_slot_start(replacement_bank).unwrap();
+
+        assert!(working_receiver.is_empty());
+        assert!(run.skipped_bank_id.is_none());
         assert_eq!(shred_receiver.len(), 2);
     }
 
