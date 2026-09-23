@@ -162,34 +162,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        exit: Arc<AtomicBool>,
-        config: SchedulerConfig,
-        decision_maker: DecisionMaker,
-        receive_and_buffer: R,
-        sharable_banks: SharableBanks,
-        scheduler: S,
-        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        priority_floor: Arc<SchedulerPriorityFloor>,
-        bam_controller: bool,
-        bam_enabled: Arc<AtomicU8>,
-    ) -> Self {
-        Self::new_with_metrics_id(
-            0,
-            exit,
-            config,
-            decision_maker,
-            receive_and_buffer,
-            sharable_banks,
-            scheduler,
-            worker_metrics,
-            priority_floor,
-            bam_controller,
-            bam_enabled,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_metrics_id(
         metrics_id: u32,
         exit: Arc<AtomicBool>,
         config: SchedulerConfig,
@@ -198,39 +170,6 @@ where
         sharable_banks: SharableBanks,
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        priority_floor: Arc<SchedulerPriorityFloor>,
-        bam_controller: bool,
-        bam_enabled: Arc<AtomicU8>,
-    ) -> Self {
-        SchedulerController::new_with_metrics(
-            exit,
-            config,
-            decision_maker,
-            receive_and_buffer,
-            sharable_banks,
-            scheduler,
-            SchedulerCountMetrics::new(metrics_id),
-            SchedulerTimingMetrics::new(metrics_id),
-            worker_metrics,
-            SchedulingDetails::new(metrics_id),
-            priority_floor,
-            bam_controller,
-            bam_enabled,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_metrics(
-        exit: Arc<AtomicBool>,
-        config: SchedulerConfig,
-        decision_maker: DecisionMaker,
-        receive_and_buffer: R,
-        sharable_banks: SharableBanks,
-        scheduler: S,
-        count_metrics: SchedulerCountMetrics,
-        timing_metrics: SchedulerTimingMetrics,
-        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        scheduling_details: SchedulingDetails,
         priority_floor: Arc<SchedulerPriorityFloor>,
         bam_controller: bool,
         bam_enabled: Arc<AtomicU8>,
@@ -246,10 +185,10 @@ where
             sharable_banks,
             container: R::Container::with_capacity(container_capacity),
             scheduler,
-            count_metrics,
-            timing_metrics,
+            count_metrics: SchedulerCountMetrics::new(metrics_id),
+            timing_metrics: SchedulerTimingMetrics::new(metrics_id),
             worker_metrics,
-            scheduling_details,
+            scheduling_details: SchedulingDetails::new(metrics_id),
             recheck_cursor: None,
             recheck_chunk: Vec::with_capacity(CHECK_CHUNK),
             saturation_state,
@@ -792,6 +731,7 @@ mod tests {
         );
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
+            0,
             exit,
             SchedulerConfig::default(),
             decision_maker,
@@ -1039,13 +979,13 @@ mod tests {
         finished_consume_work_sender
             .send(FinishedConsumeWork {
                 work: ConsumeWork {
+                    target_slot: None,
                     batch_id: TransactionBatchId::new(0),
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
                     revert_on_error: false,
                     respond_with_extra_info: false,
-                    max_schedule_slot: None,
                     admission: None,
                 },
                 retryable_indexes: vec![],
@@ -1461,6 +1401,7 @@ mod tests {
         );
 
         let mut controller = SchedulerController::new(
+            0,
             exit.clone(),
             SchedulerConfig::default(),
             decision_maker,
