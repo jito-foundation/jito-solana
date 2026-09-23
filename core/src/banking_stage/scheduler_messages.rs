@@ -50,6 +50,8 @@ impl MaxAge {
 /// Message: [Scheduler -> Worker]
 /// Transactions to be consumed (i.e. executed, recorded, and committed)
 pub struct ConsumeWork<Tx> {
+    /// BAM pins admitted work to its prepared Bank's slot. Greedy work has no such reservation.
+    pub target_slot: Option<Slot>,
     pub batch_id: TransactionBatchId,
     pub ids: Vec<TransactionId>,
     pub transactions: Vec<Tx>,

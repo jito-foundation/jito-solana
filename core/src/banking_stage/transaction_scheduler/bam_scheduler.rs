@@ -39,7 +39,7 @@ use {
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
-    solana_runtime_transaction::transaction_with_meta::{TransactionWithMeta, writable_accounts},
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_transaction_error::{TransactionError, TransactionResult as CostResult},
     std::{
@@ -120,10 +120,10 @@ pub(in crate::banking_stage) fn try_admit_transactions(
     let mut results = SmallVec::with_capacity(transaction_costs.len());
     let mut cost_tracker = bank.write_cost_tracker().unwrap();
     let mut reserved_cost = 0;
-    for (transaction, cost_result) in transactions.iter().zip(&transaction_costs) {
+    for cost_result in &transaction_costs {
         results.push(match cost_result {
             Err(err) => Err(err.clone()),
-            Ok(cost) => match cost_tracker.try_add(cost, writable_accounts(transaction)) {
+            Ok(cost) => match cost_tracker.try_add(cost) {
                 Ok(_) => {
                     reserved_cost += cost.sum();
                     Ok(())
@@ -142,11 +142,9 @@ pub(in crate::banking_stage) fn try_admit_transactions(
                                 |total, cost| total.saturating_add(cost.sum()),
                             ) <= cost_tracker.block_cost_limit()) =>
                 {
-                    for ((result, cost), transaction) in
-                        results.iter().zip(&transaction_costs).zip(transactions)
-                    {
+                    for (result, cost) in results.iter().zip(&transaction_costs) {
                         if let (Ok(()), Ok(cost)) = (result, cost) {
-                            cost_tracker.remove(cost, writable_accounts(transaction));
+                            cost_tracker.remove(cost);
                         }
                     }
                     return None;
@@ -157,11 +155,9 @@ pub(in crate::banking_stage) fn try_admit_transactions(
     }
     if revert_on_error && results.iter().any(Result::is_err) {
         // These transactions cannot commit; do not hold capacity until the worker responds.
-        for ((result, cost), transaction) in
-            results.iter_mut().zip(&transaction_costs).zip(transactions)
-        {
+        for (result, cost) in results.iter_mut().zip(&transaction_costs) {
             if let (Ok(()), Ok(cost)) = (&*result, cost) {
-                cost_tracker.remove(cost, writable_accounts(transaction));
+                cost_tracker.remove(cost);
                 *result = Err(TransactionError::CommitCancelled);
             }
         }
@@ -204,25 +200,11 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         }
     }
 
-<<<<<<< HEAD
     #[cfg(test)]
     pub(crate) fn has_in_flight_transactions(&self) -> bool {
         !self.inflight_batch_info.is_empty()
     }
 
-    fn get_transactions_account_access<'a>(
-        transactions: impl Iterator<Item = &'a (impl SVMMessage + 'a)> + 'a,
-    ) -> impl Iterator<Item = (Pubkey, AccessKind)> + 'a {
-        transactions.flat_map(|txn| {
-            txn.account_keys().iter().enumerate().map(|(index, key)| {
-                if txn.is_writable(index) {
-                    (*key, AccessKind::Write)
-                } else {
-                    (*key, AccessKind::Read)
-                }
-            })
-        })
-=======
     #[inline]
     fn check_transactions(
         &self,
@@ -233,18 +215,17 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             return None;
         }
         let lock_results = SmallVec::<[_; MAX_PACKETS_PER_BUNDLE]>::from_elem(Ok(()), txns.len());
-        let check_results = Consumer::check_transactions_for_scheduling::<Tx>(
-            bank,
+        let check_results = bank.check_transactions::<Tx>(
             txns,
             &lock_results,
             MAX_PROCESSING_AGE,
+            true,
             &mut TransactionErrorMetrics::default(),
         );
         check_results
             .into_iter()
             .enumerate()
             .find_map(|(i, res)| res.err().map(|err| (i, err)))
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
     }
 
     /// Insert all incoming transactions into the `PrioGraph`.
@@ -276,30 +257,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
                 .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
-<<<<<<< HEAD
-            if self.extra_checks_enabled {
-                let lock_results: SmallVec<
-                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
-                > = SmallVec::from_elem(Ok(()), txns.len());
-                let check_result = working_bank.check_transactions::<Tx>(
-                    &txns,
-                    &lock_results,
-                    MAX_PROCESSING_AGE,
-                    true,
-                    &mut TransactionErrorMetrics::default(),
-                );
-                if let Some((index, err)) = check_result
-                    .iter()
-                    .enumerate()
-                    .find_map(|(i, res)| res.as_ref().err().cloned().map(|err| (i, err)))
-                {
-                    drop(txns);
-                    container.remove_by_id(next_batch_id.id);
-=======
             if let Some((index, err)) = self.check_transactions(working_bank, &txns) {
                 drop(txns);
                 container.remove_by_id(next_batch_id.id);
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
 
                 self.send_back_result(
                     seq_id,
@@ -438,47 +398,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 continue;
             }
 
-<<<<<<< HEAD
-            // Filter on check_transactions
-            if self.extra_checks_enabled {
-                let mut sanitized_txs: SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]> = SmallVec::new();
-                let mut lock_results: SmallVec<
-                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
-                > = SmallVec::new();
-                for txn_id in batch_ids.iter() {
-                    if let Some(txn) = container.get_transaction(*txn_id) {
-                        sanitized_txs.push(txn.borrow());
-                        lock_results.push(Ok(()));
-                    }
-                }
-                let check_result = admission_bank.check_transactions::<Tx>(
-                    &sanitized_txs,
-                    &lock_results,
-                    MAX_PROCESSING_AGE,
-                    true,
-                    &mut TransactionErrorMetrics::default(),
-                );
-                if let Some((index, err)) = check_result
-                    .iter()
-                    .enumerate()
-                    .find_map(|(i, res)| res.as_ref().err().cloned().map(|err| (i, err)))
-                {
-                    drop(sanitized_txs);
-                    container.remove_by_id(id.id);
-                    self.prio_graph.unblock(&id);
-
-                    let result = atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Self::convert_reason_to_proto(
-                                index,
-                                NotCommittedReason::Error(err),
-                            )),
-                        },
-                    );
-                    self.send_back_result(seq_id, result);
-                    continue;
-                };
-=======
             let mut work = self
                 .reusable_consume_work
                 .pop()
@@ -489,7 +408,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
                     revert_on_error: false,
                     respond_with_extra_info: true,
-                    target_slot: 0,
+                    target_slot: None,
                     admission: None,
                 });
             work.ids.extend(batch_ids);
@@ -501,7 +420,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             }) {
                 work.transactions.push(transaction);
                 work.max_ages.push(max_age);
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
             }
 
             // Admit cost here, in pop order, so eight workers racing for the cost tracker cannot
@@ -540,67 +458,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             };
             work.batch_id = batch_id;
             work.revert_on_error = revert_on_error;
-            work.target_slot = slot;
+            work.target_slot = Some(slot);
             work.admission = Some((Arc::clone(admission_bank), results));
             num_scheduled += work.ids.len();
-<<<<<<< HEAD
-            self.send_to_worker(SmallVec::from([(id, seq_id)]), work, slot, reserved_cost)?;
-        }
-    }
-
-    fn send_to_worker(
-        &mut self,
-        // SmallVec 1: scheduler currently sends a single batch id per work item.
-        priority_ids: SmallVec<[(TransactionPriorityId, u32); 1]>,
-        work: ConsumeWork<Tx>,
-        slot: Slot,
-        reserved_cost: u64,
-    ) -> Result<(), SchedulerError> {
-        let batch_id = work.batch_id;
-        if let Err(err) = self.consume_work_sender.send(work) {
-            self.recycle_work_object(err.0);
-            return Err(SchedulerError::DisconnectedSendChannel(
-                "BAM worker disconnected",
-            ));
-        }
-        self.inflight_reserved_cost += reserved_cost;
-        self.inflight_batch_info.insert(
-            batch_id,
-            InflightBatchInfo {
-                schedule_time: Instant::now(),
-                batch_priority_ids: priority_ids,
-                slot,
-                reserved_cost,
-            },
-        );
-        Ok(())
-    }
-
-    fn get_next_schedule_id(&mut self) -> TransactionBatchId {
-        let result = TransactionBatchId::new(self.next_batch_id);
-        self.next_batch_id += 1;
-        result
-    }
-
-    fn get_or_create_work_object(&mut self) -> ConsumeWork<Tx> {
-        self.reusable_consume_work.pop().unwrap_or_else(|| {
-            // These values will be overwritten by `populate_consume_work`
-            ConsumeWork {
-                batch_id: TransactionBatchId::new(0),
-                ids: Vec::with_capacity(1),
-                transactions: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
-                max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
-                revert_on_error: false,
-                respond_with_extra_info: false,
-                max_schedule_slot: None,
-                admission: None,
-=======
             if let Err(err) = self.consume_work_sender.send(work) {
                 self.recycle_work_object(err.0);
                 return Err(SchedulerError::DisconnectedSendChannel(
                     "BAM worker disconnected",
                 ));
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
             }
             self.inflight_reserved_cost += reserved_cost;
             self.inflight_batch_info.insert(
@@ -634,45 +499,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         self.reusable_consume_work.push(work);
     }
 
-<<<<<<< HEAD
-    /// Populates a reusable `ConsumeWork` from scheduled `priority_ids` and stamps
-    /// scheduling metadata for worker execution.
-    fn populate_consume_work(
-        output: &mut ConsumeWork<Tx>,
-        batch_id: TransactionBatchId,
-        priority_ids: &[TransactionPriorityId],
-        revert_on_error: bool,
-        container: &mut impl StateContainer<Tx>,
-        slot: Slot,
-    ) {
-        output.ids.clear();
-        output.ids.extend(
-            priority_ids
-                .iter()
-                .filter_map(|priority_id| container.get_batch(priority_id.id))
-                .flat_map(|(batch_ids, _, _, _)| batch_ids.into_iter())
-                .copied(),
-        );
-
-        output.transactions.clear();
-        output.max_ages.clear();
-        for (txn, max_age) in output.ids.iter().filter_map(|txn_id| {
-            let result = container.get_mut_transaction_state(*txn_id)?;
-            let result = result.take_transaction_for_scheduling();
-            Some(result)
-        }) {
-            output.transactions.push(txn);
-            output.max_ages.push(max_age);
-        }
-
-        output.batch_id = batch_id;
-        output.revert_on_error = revert_on_error;
-        output.max_schedule_slot = Some(slot);
-        output.respond_with_extra_info = true;
-    }
-
-=======
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
     fn send_no_leader_slot_bundle_result(&self, seq_id: u32) {
         self.send_back_result(
             seq_id,
@@ -956,7 +782,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
 
             let retry_on_replacement = work.admission.as_ref().is_some_and(|(owner, _)| {
                 let leader_state = self.shared_leader_state.load();
-                Some(work.target_slot) == self.slot
+                work.target_slot == self.slot
                     && leader_state.bank_slot() == self.slot
                     && retryable_indexes.len() == work.transactions.len()
                     && leader_state
@@ -1280,16 +1106,8 @@ mod tests {
             1
         );
         assert_eq!(
-<<<<<<< HEAD
-            test.consume_work_receivers[0]
-                .try_recv()
-                .unwrap()
-                .max_schedule_slot,
-            Some(bank.slot())
-=======
             test.consume_work_receiver.try_recv().unwrap().target_slot,
-            bank.slot()
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
+            Some(bank.slot())
         );
         assert!(test.response_receiver.try_recv().is_err());
     }
@@ -1620,7 +1438,7 @@ mod tests {
                 max_ages: Vec::with_capacity(super::MAX_PACKETS_PER_BUNDLE),
                 revert_on_error: false,
                 respond_with_extra_info: true,
-                target_slot: bank.slot(),
+                target_slot: Some(bank.slot()),
                 admission: None,
             });
         }
@@ -1955,7 +1773,7 @@ mod tests {
         let decision = BufferedPacketsDecision::Consume(bank.clone());
         test.receive_completed(&mut container, &decision);
 
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         let mut high_work = test.consume_work_receiver.try_recv().unwrap();
         let high_info = &test.scheduler.inflight_batch_info[&high_work.batch_id];
         assert_eq!(high_info.seq_id, 0);
@@ -1979,7 +1797,7 @@ mod tests {
         assert!(matches!(result, Committed(_)));
 
         // Only after the earlier reservation settles can the lower-priority work be dispatched.
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         let mut low_work = test.consume_work_receiver.try_recv().unwrap();
         let low_info = &test.scheduler.inflight_batch_info[&low_work.batch_id];
         assert_eq!(low_info.seq_id, 1);
@@ -2006,7 +1824,7 @@ mod tests {
         let estimate = estimated_cost(&bank);
         set_block_cost_limit(&bank, estimate * second_batch_size as u64 + estimate / 2);
 
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         let mut work_a = test.consume_work_receiver.try_recv().unwrap();
         assert!(!test.scheduler.pending_admission.is_empty());
         // B must roll back any earlier admissions in its batch without touching A's reservation.
@@ -2028,7 +1846,7 @@ mod tests {
 
         // Nothing inflight can cover the shortfall any more, so B is dispatched with the final
         // per-transaction error, exactly as the worker would have produced it.
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         assert!(test.scheduler.pending_admission.is_empty());
         let work_b = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(
@@ -2172,7 +1990,7 @@ mod tests {
         let decision = BufferedPacketsDecision::Consume(bank.clone());
         test.receive_completed(&mut container, &decision);
 
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         test.consume_work_receiver.try_recv().unwrap();
         assert!(!test.scheduler.pending_admission.is_empty());
 
@@ -2378,7 +2196,7 @@ mod tests {
             test.scheduler
                 .receive_completed(&mut container, &decision)
                 .unwrap();
-            test.scheduler.schedule(&mut container, 0, 0).unwrap();
+            test.scheduler.schedule(&mut container, 0).unwrap();
             assert!(test.consume_work_receiver.try_recv().is_err());
             assert_eq!(test.scheduler.slot, None);
             finish_committed(&mut test, &mut container, &decision, work, 150);
@@ -2395,7 +2213,7 @@ mod tests {
         test.scheduler
             .receive_completed(&mut container, &decision)
             .unwrap();
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         let work_c = test.consume_work_receiver.try_recv().unwrap();
         let admission = work_c.admission.as_ref().unwrap();
         assert_eq!(admission.0.bank_id(), bank_1b.bank_id());
@@ -2423,7 +2241,7 @@ mod tests {
             return;
         }
 
-        test.scheduler.schedule(&mut container, 0, 0).unwrap();
+        test.scheduler.schedule(&mut container, 0).unwrap();
         let work_a = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
 

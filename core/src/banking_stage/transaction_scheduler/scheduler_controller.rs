@@ -979,6 +979,7 @@ mod tests {
         finished_consume_work_sender
             .send(FinishedConsumeWork {
                 work: ConsumeWork {
+                    target_slot: None,
                     batch_id: TransactionBatchId::new(0),
                     ids: vec![],
                     transactions: vec![],

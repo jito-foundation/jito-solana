@@ -101,12 +101,7 @@ impl TipProcessingDependencies {
                 return true;
             }
             let results = consumer
-                .process_and_record_transactions_with_policy(
-                    bank,
-                    &bundle,
-                    Some(&self.bundle_account_locker),
-                    true,
-                )
+                .process_and_record_transactions(bank, &bundle, &self.bundle_account_locker, true)
                 .execute_and_commit_transactions_output
                 .commit_transactions_result;
             debug!("tip bundle result for bank {bank_key:?}: {results:?}");

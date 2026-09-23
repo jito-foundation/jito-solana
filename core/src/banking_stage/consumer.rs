@@ -105,63 +105,6 @@ pub struct LeaderProcessedTransactionCounts {
 }
 
 #[derive(Clone)]
-<<<<<<< HEAD
-pub struct TipProcessingDependencies {
-    pub tip_manager: TipManager,
-    pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
-    pub cluster_info: Arc<ClusterInfo>,
-    pub bundle_account_locker: BundleAccountLocker,
-}
-
-impl TipProcessingDependencies {
-    /// Prepare this exact Bank on the scheduler thread before admitting BAM work.
-    pub(super) fn process_tip_programs(&self, consumer: &Consumer, bank: &Arc<Bank>) -> bool {
-        let bank_key = (bank.slot(), bank.bank_id());
-        // Match BundleStage's local-cluster policy: free-rent PDAs are discarded by AccountsDb.
-        if bank.rent_collector().rent.minimum_balance(0) == 0 {
-            return true;
-        }
-        let builder = self.block_builder_fee_info.load();
-        if builder.block_builder == Pubkey::default() {
-            return false;
-        }
-        let keypair = self.cluster_info.keypair();
-        let process = |bundle: crate::tip_manager::Result<SmallVec<[_; 2]>>| {
-            let Ok(bundle) = bundle else {
-                debug!("tip bundle construction failed for bank {bank_key:?}: {bundle:?}");
-                return false;
-            };
-            if bundle.is_empty() {
-                return true;
-            }
-            let results = consumer
-                .process_and_record_transactions(bank, &bundle, &self.bundle_account_locker, true)
-                .execute_and_commit_transactions_output
-                .commit_transactions_result;
-            debug!("tip bundle result for bank {bank_key:?}: {results:?}");
-            results.is_ok_and(|results| {
-                results.iter().all(|result| {
-                    matches!(
-                        result,
-                        CommitTransactionDetails::Committed { result: Ok(()), .. }
-                    )
-                })
-            })
-        };
-        // Crank construction reads the accounts created by initialization; keep it lazy.
-        process(
-            self.tip_manager
-                .get_initialize_tip_programs_bundle(bank, &keypair),
-        ) && process(
-            self.tip_manager
-                .get_tip_programs_crank_bundle(bank, &keypair, &builder),
-        )
-    }
-}
-
-#[derive(Clone)]
-=======
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
 pub struct Consumer {
     committer: Committer,
     transaction_recorder: TransactionRecorder,

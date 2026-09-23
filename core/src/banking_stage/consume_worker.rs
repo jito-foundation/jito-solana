@@ -118,24 +118,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         mut work: ConsumeWork<Tx>,
     ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError> {
         let leader_state = self.shared_leader_state.load();
-        let Some(bank) = leader_state
-            .working_bank()
-            .filter(|bank| !bank.is_complete() && bank.slot() == work.target_slot)
-        else {
+        let Some(bank) = leader_state.working_bank().filter(|bank| {
+            !bank.is_complete() && work.target_slot.is_none_or(|slot| bank.slot() == slot)
+        }) else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
         };
-<<<<<<< HEAD
-        let bank = leader_state
-            .working_bank()
-            .expect("active_leader_state should only return an active bank");
-
-        if let Some(max_schedule_slot) = work.max_schedule_slot
-            && max_schedule_slot < bank.slot()
-        {
-            return self.retry(work);
-        }
-=======
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
 
         self.metrics
             .count_metrics
@@ -3312,6 +3299,7 @@ mod tests {
             (None, (0, 0))
         };
         let work = ConsumeWork {
+            target_slot: None,
             batch_id: bid,
             ids: vec![id],
             transactions,
@@ -3368,6 +3356,7 @@ mod tests {
             )]);
             consume_sender
                 .send(ConsumeWork {
+                    target_slot: None,
                     batch_id: TransactionBatchId::new(i as u64),
                     ids: vec![i],
                     transactions,
@@ -3401,8 +3390,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-=======
     fn test_worker_consume_wrong_slot() {
         let (mut test_frame, worker) = setup_test_frame(false);
         let metrics = worker.metrics_handle();
@@ -3431,7 +3418,7 @@ mod tests {
         )]);
         consume_sender
             .send(ConsumeWork {
-                target_slot: bank.slot() + 1,
+                target_slot: Some(bank.slot() + 1),
                 batch_id: TransactionBatchId::new(0),
                 ids: vec![0],
                 transactions,
@@ -3446,7 +3433,7 @@ mod tests {
             .unwrap();
 
         let consumed = consumed_receiver.recv().unwrap();
-        assert_eq!(consumed.work.target_slot, bank.slot() + 1);
+        assert_eq!(consumed.work.target_slot, Some(bank.slot() + 1));
         assert_eq!(
             consumed.retryable_indexes,
             vec![RetryableIndex::new(0, true)]
@@ -3464,7 +3451,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
     fn test_worker_consume_simple() {
         let (mut test_frame, worker) = setup_test_frame(false);
         let TestFrame {
@@ -3501,6 +3487,7 @@ mod tests {
             alt_invalidation_slot: bank.slot(),
         };
         let work = ConsumeWork {
+            target_slot: None,
             batch_id: bid,
             ids: vec![id],
             transactions,
@@ -3559,6 +3546,7 @@ mod tests {
         };
         consume_sender
             .send(ConsumeWork {
+                target_slot: None,
                 batch_id: bid,
                 ids: vec![id1, id2],
                 transactions: txs,
@@ -3628,6 +3616,7 @@ mod tests {
         };
         consume_sender
             .send(ConsumeWork {
+                target_slot: None,
                 batch_id: bid1,
                 ids: vec![id1],
                 transactions: txs1,
@@ -3640,6 +3629,7 @@ mod tests {
 
         consume_sender
             .send(ConsumeWork {
+                target_slot: None,
                 batch_id: bid2,
                 ids: vec![id2],
                 transactions: txs2,
@@ -3760,6 +3750,7 @@ mod tests {
 
         consume_sender
             .send(ConsumeWork {
+                target_slot: None,
                 batch_id: TransactionBatchId::new(1),
                 ids: vec![0, 1, 2, 3, 4, 5],
                 transactions: txs,
@@ -4135,7 +4126,7 @@ mod tests {
         let schedule = |scheduler: &mut BamScheduler<_>,
                         container: &mut TransactionStateContainer<_>| {
             scheduler
-                .schedule(container, bank.slot(), u64::MAX)
+                .schedule(container, u64::MAX)
                 .unwrap()
                 .num_scheduled
         };

@@ -209,6 +209,7 @@ impl<Tx> SchedulingCommon<Tx> {
 
         let num_scheduled = ids.len();
         let work = ConsumeWork {
+            target_slot: None,
             batch_id,
             ids,
             transactions,
