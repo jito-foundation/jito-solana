@@ -1695,3 +1695,53 @@ fn tip_manager_config_from_matches(
         tip_distribution_account_signer,
     }
 }
+
+#[cfg(test)]
+mod tip_manager_config_tests {
+    use {
+        super::*,
+        crate::{cli::DefaultArgs, commands::run::args::add_args},
+    };
+
+    #[test]
+    fn test_tip_distribution_account_signer_flag() {
+        let default_args = DefaultArgs::default();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file = tmp_dir.path().join("tda-signer.json");
+        let keypair = solana_keypair::Keypair::new();
+        solana_keypair::write_keypair_file(&keypair, &file).unwrap();
+
+        // Not passed: no signer.
+        let app = add_args(clap::App::new("agave-validator"), &default_args);
+        let matches = app.get_matches_from(vec!["agave-validator"]);
+        assert!(
+            tip_manager_config_from_matches(&matches, true)
+                .tip_distribution_account_signer
+                .is_none()
+        );
+
+        // Passed: the keypair reaches the tip manager config.
+        let app = add_args(clap::App::new("agave-validator"), &default_args);
+        let matches = app.get_matches_from(vec![
+            "agave-validator",
+            "--tip-distribution-account-signer",
+            file.to_str().unwrap(),
+        ]);
+        let config = tip_manager_config_from_matches(&matches, true);
+        assert_eq!(
+            config.tip_distribution_account_signer.unwrap().pubkey(),
+            keypair.pubkey()
+        );
+
+        // An unreadable keypair is rejected at argument parsing.
+        let app = add_args(clap::App::new("agave-validator"), &default_args);
+        assert!(
+            app.get_matches_from_safe(vec![
+                "agave-validator",
+                "--tip-distribution-account-signer",
+                tmp_dir.path().join("missing.json").to_str().unwrap(),
+            ])
+            .is_err()
+        );
+    }
+}

@@ -393,7 +393,7 @@ impl TipManager {
         if bank.get_balance(&signer.pubkey()) == 0 {
             warn!(
                 "--tip-distribution-account-signer {} has no lamports; it pays the tip \
-                 distribution account rent",
+                 distribution account rent (the exact amount is defined by the program)",
                 signer.pubkey()
             );
         }

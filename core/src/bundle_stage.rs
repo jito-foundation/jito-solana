@@ -1371,6 +1371,23 @@ mod tests {
         assert_eq!(steady_state_crank.len(), 2);
         assert_eq!(steady_state_crank[0].signatures().len(), 1);
 
+        // Without a readable vote account there is nothing to check against: keep the old
+        // single-signer transaction and leave the decision to the program.
+        let no_vote_account_crank = TipManager::new(TipManagerConfig {
+            tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+            tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: old_identity.pubkey(),
+                vote_account: Pubkey::new_unique(),
+                commission_bps: 10,
+            },
+            tip_distribution_account_signer: Some(Arc::new(new_identity.insecure_clone())),
+        })
+        .get_tip_programs_crank_bundle(&bank, &old_identity, &block_builder_fee_info)
+        .unwrap();
+        assert_eq!(no_vote_account_crank.len(), 2);
+        assert_eq!(no_vote_account_crank[0].signatures().len(), 1);
+
         // What the validator used to submit, signed by its own identity, is rejected on-chain by
         // the tip-distribution program's identity check (`Unauthorized`).
         let old_init_tx = tip_manager(None)
