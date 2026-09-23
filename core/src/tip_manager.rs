@@ -28,7 +28,8 @@ use {
         sanitized::{MessageHash, SanitizedTransaction},
         versioned::VersionedTransaction,
     },
-    std::collections::HashSet,
+    solana_vote::vote_account::VoteAccount,
+    std::{collections::HashSet, sync::Arc},
     thiserror::Error,
 };
 
@@ -43,6 +44,23 @@ pub enum TipManagerError {
     TipPaymentError(#[from] TipPaymentError),
     #[error("Tip distribution error: {0}")]
     TipDistributionError(#[from] TipDistributionError),
+    #[error(
+        "Vote account node identity {vote_account_node_pubkey} differs from the validator \
+         identity {identity} and no --tip-distribution-account-signer is configured"
+    )]
+    TipDistributionAccountSignerNotConfigured {
+        vote_account_node_pubkey: Pubkey,
+        identity: Pubkey,
+    },
+    #[error(
+        "Vote account node identity {vote_account_node_pubkey} matches neither the validator \
+         identity {identity} nor --tip-distribution-account-signer {configured_signer}"
+    )]
+    TipDistributionAccountSignerMismatch {
+        vote_account_node_pubkey: Pubkey,
+        identity: Pubkey,
+        configured_signer: Pubkey,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, TipManagerError>;
@@ -101,6 +119,7 @@ pub struct TipManager {
     tip_payment_program_info: TipPaymentProgramInfo,
     tip_distribution_program_info: TipDistributionProgramInfo,
     tip_distribution_account_config: TipDistributionAccountConfig,
+    tip_distribution_account_signer: Option<Arc<Keypair>>,
     tip_accounts: HashSet<Pubkey>,
 }
 
@@ -109,6 +128,11 @@ pub struct TipManagerConfig {
     pub tip_payment_program_id: Pubkey,
     pub tip_distribution_program_id: Pubkey,
     pub tip_distribution_account_config: TipDistributionAccountConfig,
+    /// Optional keypair used to sign `initialize_tip_distribution_account` when the vote account's
+    /// node identity differs from the validator identity. This happens during an identity rotation:
+    /// the vote account already points to the new identity while the old identity keeps producing
+    /// blocks for the leader slots it was scheduled for.
+    pub tip_distribution_account_signer: Option<Arc<Keypair>>,
 }
 
 impl Default for TipManagerConfig {
@@ -117,6 +141,7 @@ impl Default for TipManagerConfig {
             tip_payment_program_id: Pubkey::new_unique(),
             tip_distribution_program_id: Pubkey::new_unique(),
             tip_distribution_account_config: TipDistributionAccountConfig::default(),
+            tip_distribution_account_signer: None,
         }
     }
 }
@@ -127,6 +152,7 @@ impl TipManager {
             tip_payment_program_id,
             tip_distribution_program_id,
             tip_distribution_account_config,
+            tip_distribution_account_signer,
         } = config;
 
         // https://github.com/jito-foundation/jito-programs/blob/8f55af0a9b31ac2192415b59ce2c47329ee255a2/mev-programs/programs/tip-payment/src/lib.rs#L33C42-L33C56
@@ -158,6 +184,7 @@ impl TipManager {
                 config_pda_and_bump: tip_distribution_config_pubkey_bump,
             },
             tip_distribution_account_config,
+            tip_distribution_account_signer,
             tip_accounts,
         }
     }
@@ -322,11 +349,65 @@ impl TipManager {
         .unwrap())
     }
 
+    /// Returns the keypair the tip-distribution program accepts as the signer of
+    /// `initialize_tip_distribution_account`: the vote account's current node identity.
+    ///
+    /// On an identity rotation the vote account moves to the new identity right away, while the old
+    /// identity keeps producing blocks for the leader slots it was already scheduled for (up to ~2
+    /// epochs). In that window the validator identity can't initialize its tip distribution account,
+    /// so the new identity can be configured as a dedicated signer.
+    fn tip_distribution_account_signer<'a>(
+        &'a self,
+        bank: &Bank,
+        identity: &'a Keypair,
+    ) -> Result<&'a Keypair> {
+        let vote_account = self.tip_distribution_account_config.vote_account;
+        let Some(vote_account_node_pubkey) = bank
+            .get_account(&vote_account)
+            .and_then(|account| VoteAccount::try_from(account).ok())
+            .map(|vote_account| *vote_account.node_pubkey())
+        else {
+            // Nothing to check against; leave the decision to the on-chain program.
+            warn!("vote account {vote_account} not found or not a vote account");
+            return Ok(identity);
+        };
+
+        if vote_account_node_pubkey == identity.pubkey() {
+            return Ok(identity);
+        }
+        let Some(signer) = &self.tip_distribution_account_signer else {
+            return Err(TipManagerError::TipDistributionAccountSignerNotConfigured {
+                vote_account_node_pubkey,
+                identity: identity.pubkey(),
+            });
+        };
+        if signer.pubkey() != vote_account_node_pubkey {
+            return Err(TipManagerError::TipDistributionAccountSignerMismatch {
+                vote_account_node_pubkey,
+                identity: identity.pubkey(),
+                configured_signer: signer.pubkey(),
+            });
+        }
+        // The signer pays the rent of the tip distribution account on-chain. The account size is
+        // defined by the program, so only the obvious case is caught here.
+        if bank.get_balance(&signer.pubkey()) == 0 {
+            warn!(
+                "--tip-distribution-account-signer {} has no lamports; it pays the tip \
+                 distribution account rent",
+                signer.pubkey()
+            );
+        }
+        Ok(signer)
+    }
+
     /// Creates an [InitializeTipDistributionAccount] transaction object using the provided Epoch.
+    /// `kp` pays the transaction fee. `vote_node_identity` must be the vote account's node identity:
+    /// the program requires its signature and takes the rent of the new account from it.
     pub fn initialize_tip_distribution_account_tx(
         &self,
         bank: &Bank,
         kp: &Keypair,
+        vote_node_identity: &Keypair,
     ) -> Result<RuntimeTransaction<SanitizedTransaction>> {
         let (tip_distribution_account, bump) = TipDistributionAccount::find_program_address(
             &self.tip_distribution_program_info.program_id,
@@ -349,17 +430,27 @@ impl TipManager {
                 ),
                 AccountMeta::new(tip_distribution_account, false),
                 AccountMeta::new_readonly(self.tip_distribution_account_config.vote_account, false),
-                AccountMeta::new(kp.pubkey(), true),
+                AccountMeta::new(vote_node_identity.pubkey(), true),
                 AccountMeta::new_readonly(system_program::id(), false),
             ],
         };
 
-        let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-            &[ix],
-            Some(&kp.pubkey()),
-            &[kp],
-            bank.last_blockhash(),
-        ));
+        let tx = if vote_node_identity.pubkey() == kp.pubkey() {
+            Transaction::new_signed_with_payer(
+                &[ix],
+                Some(&kp.pubkey()),
+                &[kp],
+                bank.last_blockhash(),
+            )
+        } else {
+            Transaction::new_signed_with_payer(
+                &[ix],
+                Some(&kp.pubkey()),
+                &[kp, vote_node_identity],
+                bank.last_blockhash(),
+            )
+        };
+        let tx = VersionedTransaction::from(tx);
         Ok(RuntimeTransaction::try_create(
             tx,
             MessageHash::Compute,
@@ -491,7 +582,12 @@ impl TipManager {
         let mut transactions = SmallVec::with_capacity(2);
         if self.should_init_tip_distribution_account(bank) {
             info!("should_init_tip_distribution_account=true");
-            transactions.push(self.initialize_tip_distribution_account_tx(bank, keypair)?);
+            let vote_node_identity = self.tip_distribution_account_signer(bank, keypair)?;
+            transactions.push(self.initialize_tip_distribution_account_tx(
+                bank,
+                keypair,
+                vote_node_identity,
+            )?);
         }
 
         let tip_payment_config = self.get_tip_payment_config_account(bank)?;

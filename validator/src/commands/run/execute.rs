@@ -1653,6 +1653,14 @@ fn tip_manager_config_from_matches(
     matches: &ArgMatches,
     voting_disabled: bool,
 ) -> TipManagerConfig {
+    let tip_distribution_account_signer = matches
+        .is_present("tip_distribution_account_signer")
+        .then(|| {
+            Arc::new(
+                keypair_of(matches, "tip_distribution_account_signer")
+                    .expect("--tip-distribution-account-signer keypair could not be loaded"),
+            )
+        });
     if voting_disabled {
         return TipManagerConfig {
             tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey")
@@ -1665,6 +1673,7 @@ fn tip_manager_config_from_matches(
                 vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(Pubkey::new_unique),
                 commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_default(),
             },
+            tip_distribution_account_signer,
         };
     }
 
@@ -1683,5 +1692,6 @@ fn tip_manager_config_from_matches(
             commission_bps: value_t!(matches, "commission_bps", u16)
                 .expect("--commission-bps argument required when validator is voting"),
         },
+        tip_distribution_account_signer,
     }
 }

@@ -1220,6 +1220,7 @@ impl TestValidator {
                     vote_account: vote_account_address,
                     commission_bps: 10,
                 },
+                tip_distribution_account_signer: None,
             },
             bam_url: config.bam_url.clone(),
             ..ValidatorConfig::default_for_test()

@@ -2476,6 +2476,7 @@ mod tests {
                             vote_account: voting_keypair.pubkey(),
                             commission_bps: 0,
                         },
+                        tip_distribution_account_signer: None,
                     }),
                     block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                         block_builder: mint_keypair.pubkey(),
