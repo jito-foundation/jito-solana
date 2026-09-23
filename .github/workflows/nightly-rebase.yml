@@ -6,9 +6,10 @@ name: Nightly Agave Rebase
 # get a bot-owned draft PR for a human to land.
 #
 # Secrets: REBASE_APP_ID, REBASE_APP_PRIVATE_KEY (GitHub App with contents,
-# issues and pull-requests write), GPG_PRIVATE_KEY, GPG_PASSPHRASE (may be
-# empty; the key's uid is the committer identity and must be registered on
-# that GitHub account), SLACK_WEBHOOK_URL.
+# issues, pull-requests, and workflows write plus commit-statuses read),
+# GPG_PRIVATE_KEY, GPG_PASSPHRASE (may be empty; the key's uid is the
+# committer identity and must be registered on that GitHub account),
+# SLACK_WEBHOOK_URL.
 
 on:
   schedule:

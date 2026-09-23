@@ -17,15 +17,15 @@ weekdays 19:00 UTC, one job per channel in rebase-channels.json
         ┌──────────┴──────────┐
         │ conflict            │ clean
         ▼                     ▼
-  git rebase --abort     push ci/rebase/<channel>  (reused if same tree)
+  git rebase --abort     push ci/rebase/<channel>  (reuse if carry + CI match)
   open/refresh issue          │
   "Nightly rebase             ├─────────────────────────┐
    conflict: <channel>"       │ landing: draft          │ landing: auto
   assign owner                ▼                         ▼
         │              open/refresh draft PR     poll buildkite/jito-solana
         │              · carry commits                  │
-        │              · range-diff             ┌───────┴────────┐
-        │              · force-push command     │ green          │ red / 4h
+        │              · range-diff             ┌───────┴─────────┐
+        │              · force-push command     │ green          │ red / 45m
         │                     │                 ▼                ▼
         │                     ▼          git push --force-   report ci_failure
         │              human reviews,    with-lease=<old      staging left
@@ -60,7 +60,7 @@ git fetch origin
 git rebase --onto origin/master <previous tip>
 ```
 
-## v4.2, v4.3 (`landing: draft`)
+## v4.3, v4.4 (`landing: draft`)
 
 The bot pushes `ci/rebase/vX.Y` and opens or refreshes one draft PR titled
 `Nightly rebase: vX.Y onto agave/vX.Y`. Do not merge it. To land:
@@ -103,7 +103,7 @@ in depth, including the consensus-path rules for `svm/`, `runtime/`,
 | `draft_pr` | Draft channel staged | land it when reviewed |
 | `conflict` | Rebase stopped, issue filed | owner resolves by hand |
 | `ci_failure` | Buildkite red on the staging head | check the build; staging branch is left in place |
-| `ci_timeout` | Buildkite did not report within 4 hours | check Buildkite, rerun the workflow |
+| `ci_timeout` | Buildkite did not report within 45 minutes | check Buildkite, rerun the workflow |
 | `stale` | Channel moved during CI, landing skipped | none, next run retries |
 | `failed` | Script crashed | read the run log |
 
@@ -115,9 +115,9 @@ Agave cuts a release branch; drop it when Agave stops backporting to it.
 
 ## Setup
 
-The workflow needs a GitHub App (Contents, Issues, Pull requests: write)
-installed on the repo, with `REBASE_APP_ID` and `REBASE_APP_PRIVATE_KEY` as
-secrets, plus `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`, and `SLACK_WEBHOOK_URL`.
-For every `auto` channel the App must be an `always` bypass actor on the
-rulesets protecting that branch. Keep it off the `v*.*` rulesets so the bot
-cannot rewrite release lines.
+The workflow needs a GitHub App (Contents, Issues, Pull requests, Workflows:
+write; Commit statuses: read) installed on the repo, with `REBASE_APP_ID` and
+`REBASE_APP_PRIVATE_KEY` as secrets, plus `GPG_PRIVATE_KEY`,
+`GPG_PASSPHRASE`, and `SLACK_WEBHOOK_URL`. For every `auto` channel the App
+must be an `always` bypass actor on the rulesets protecting that branch. Keep
+it off the `v*.*` rulesets so the bot cannot rewrite release lines.

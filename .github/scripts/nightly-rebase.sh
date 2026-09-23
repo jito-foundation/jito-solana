@@ -25,7 +25,8 @@ set -o errtrace   # Ensure that any error traps are inherited by functions
 : "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL is required}"
 : "${UPSTREAM_REPO:=https://github.com/anza-xyz/agave.git}"
 : "${CI_CONTEXT:=buildkite/jito-solana}"
-: "${CI_TIMEOUT_MINUTES:=240}"
+# GitHub App installation tokens expire after one hour; leave time to land.
+: "${CI_TIMEOUT_MINUTES:=45}"
 : "${CI_POLL_SECONDS:=60}"
 
 declare -g result_status="failed"
@@ -238,6 +239,17 @@ upsert_pr() {
     close_conflict_issue "${pr_url}"
 }
 
+ci_state() {
+    gh api "repos/${GH_REPO}/commits/$1/status" \
+        --jq "[.statuses[] | select(.context == \"${CI_CONTEXT}\")][0].state // \"missing\""
+}
+
+has_ci_status() {
+    local state
+    state="$(ci_state "$1")" || return
+    [[ "${state}" != "missing" ]]
+}
+
 # Poll the commit status Buildkite reports to GitHub for the staging head.
 # Prints success, failure, or timeout.
 wait_for_ci() {
@@ -246,8 +258,7 @@ wait_for_ci() {
     local state
 
     while (( SECONDS < deadline )); do
-        state="$(gh api "repos/${GH_REPO}/commits/${sha}/status" \
-            --jq "[.statuses[] | select(.context == \"${CI_CONTEXT}\")][0].state // \"pending\"")"
+        state="$(ci_state "${sha}")"
         case "${state}" in
             success) echo success; return ;;
             failure | error) echo failure; return ;;
@@ -255,6 +266,14 @@ wait_for_ci() {
         sleep "${CI_POLL_SECONDS}"
     done
     echo timeout
+}
+
+same_carry_series() {
+    local range_diff
+    range_diff="$(git range-diff --no-color --no-patch \
+        "agave/${UPSTREAM_CHANNEL}..$1" \
+        "agave/${UPSTREAM_CHANNEL}..$2" 2>/dev/null)" || return 1
+    [[ -n "${range_diff}" ]] && ! grep -Eq ' [!<>] ' <<< "${range_diff}"
 }
 
 land_channel() {
@@ -294,6 +313,8 @@ main() {
     local carry_file
     local range_diff_file
     local body_file
+    local rebase_status
+    local old_carry_base
 
     git remote add agave "${UPSTREAM_REPO}"
     git -c http.https://github.com/.extraheader= fetch --no-tags agave \
@@ -328,11 +349,20 @@ main() {
     fi
 
     git checkout -B "rebase-candidate/${CHANNEL}" "origin/${CHANNEL}"
-    if ! git rebase --gpg-sign "agave/${UPSTREAM_CHANNEL}"; then
-        write_conflict_report "${staging_sha}"
-        git rebase --abort
-        open_pr_action comment --body "Tonight's rebase conflicted: ${result_url}. This staging head is still valid, just stale."
-        return
+    if git rebase --gpg-sign "agave/${UPSTREAM_CHANNEL}"; then
+        :
+    else
+        rebase_status="$?"
+        if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+            write_conflict_report "${staging_sha}"
+            git rebase --abort
+            open_pr_action comment --body "Tonight's rebase conflicted: ${result_url}. This staging head is still valid, just stale."
+            return
+        fi
+        result_detail="Rebase failed without conflicts"
+        write_result
+        git rebase --abort || true
+        return "${rebase_status}"
     fi
     candidate_sha="$(git rev-parse HEAD)"
 
@@ -340,7 +370,9 @@ main() {
     # tree on the same upstream tip, so its Buildkite result stays attached.
     if [[ -n "${staging_sha}" ]] &&
         git diff --quiet "${staging_sha}" "${candidate_sha}" &&
-        git merge-base --is-ancestor "agave/${UPSTREAM_CHANNEL}" "${staging_sha}"; then
+        git merge-base --is-ancestor "agave/${UPSTREAM_CHANNEL}" "${staging_sha}" &&
+        same_carry_series "${staging_sha}" "${candidate_sha}" &&
+        has_ci_status "${staging_sha}"; then
         candidate_sha="${staging_sha}"
     else
         git push --force-with-lease="refs/heads/${staging_branch}:${staging_sha}" \
@@ -355,9 +387,15 @@ main() {
     upstream_count="$(git rev-list --count \
         "origin/${CHANNEL}..agave/${UPSTREAM_CHANNEL}")"
     range_diff_file="$(mktemp)"
-    git range-diff --no-color \
-        "$(git merge-base "origin/${CHANNEL}" "agave/${UPSTREAM_CHANNEL}")..origin/${CHANNEL}" \
-        "agave/${UPSTREAM_CHANNEL}..${candidate_sha}" >| "${range_diff_file}"
+    old_carry_base="$(git merge-base "origin/${CHANNEL}" "agave/${UPSTREAM_CHANNEL}")"
+    if [[ -z "$(git rev-list --max-count=1 "${old_carry_base}..origin/${CHANNEL}")" ||
+        -z "$(git rev-list --max-count=1 "agave/${UPSTREAM_CHANNEL}..${candidate_sha}")" ]]; then
+        echo "No comparable range: at least one side has no Jito carry commits." >| "${range_diff_file}"
+    else
+        git range-diff --no-color \
+            "${old_carry_base}..origin/${CHANNEL}" \
+            "agave/${UPSTREAM_CHANNEL}..${candidate_sha}" >| "${range_diff_file}"
+    fi
     body_file="$(mktemp)"
     write_pr_body "${carry_file}" "${upstream_count}" "${range_diff_file}" \
         "${candidate_sha}" "${body_file}"
