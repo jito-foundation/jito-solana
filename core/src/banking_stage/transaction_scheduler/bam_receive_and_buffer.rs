@@ -694,7 +694,8 @@ impl BamReceiveAndBuffer {
                     continue;
                 }
 
-                let Ok(revert_on_error) = atomic_txn_batch
+                // Partial commits cannot be represented by a batch-wide BAM response.
+                let Some(revert_on_error) = atomic_txn_batch
                     .packets
                     .iter()
                     .map(|p| {
@@ -704,6 +705,8 @@ impl BamReceiveAndBuffer {
                             .is_some_and(|flags| flags.revert_on_error)
                     })
                     .all_equal_value()
+                    .ok()
+                    .filter(|&revert| revert || atomic_txn_batch.packets.len() == 1)
                 else {
                     stats.num_dropped_without_parsing += 1;
                     prevalidated.push(Err((
@@ -1146,7 +1149,7 @@ pub(super) mod tests {
         std::sync::atomic::AtomicU8,
     };
 
-    fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
+    pub(crate) fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -1944,6 +1947,13 @@ pub(super) mod tests {
     fn test_batch_deserialize_seeded_later_fee_payer() {
         let (bank_forks, mint_keypair) = test_bank_forks();
         let later_fee_payer = Keypair::new();
+        let revert_on_error_meta = Some(jito_protos::proto::bam_types::Meta {
+            flags: Some(jito_protos::proto::bam_types::PacketFlags {
+                revert_on_error: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
         let batch = AtomicTxnBatch {
             seq_id: 1,
             packets: vec![
@@ -1956,7 +1966,7 @@ pub(super) mod tests {
                     ))
                     .unwrap()
                     .into(),
-                    meta: None,
+                    meta: revert_on_error_meta,
                 },
                 Packet {
                     data: bincode::serialize(&transfer(
@@ -1967,7 +1977,7 @@ pub(super) mod tests {
                     ))
                     .unwrap()
                     .into(),
-                    meta: None,
+                    meta: revert_on_error_meta,
                 },
             ],
             max_schedule_slot: Slot::MAX,
@@ -1999,6 +2009,32 @@ pub(super) mod tests {
             let parsed_batch = result.unwrap();
             assert_eq!(parsed_batch.txns_max_age.len(), 2);
         }
+    }
+
+    #[test]
+    fn test_prevalidate_rejects_nonreverting_multi_packet_batch() {
+        let batches = [MultipleAtomicTxnBatch {
+            batches: vec![AtomicTxnBatch {
+                seq_id: 42,
+                packets: vec![Packet::default(), Packet::default()],
+                max_schedule_slot: Slot::MAX,
+            }],
+        }];
+        let mut prevalidated = Vec::new();
+        let (stats, packet_count) =
+            BamReceiveAndBuffer::prevalidate_batches(&batches, 0, &mut prevalidated);
+
+        assert_eq!(packet_count, 0);
+        assert_eq!(stats.num_dropped_without_parsing, 1);
+        let [Err((Reason::DeserializationError(error), seq_id))] = prevalidated.as_slice() else {
+            panic!("expected one deserialization error");
+        };
+        assert_eq!(*seq_id, 42);
+        assert_eq!(error.index, 0);
+        assert_eq!(
+            error.reason,
+            DeserializationErrorReason::InconsistentBundle as i32
+        );
     }
 
     #[test]
