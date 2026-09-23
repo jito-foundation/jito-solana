@@ -3,7 +3,7 @@
 # Build jito-solana release artifacts inside a container and export them to
 # the host. See dev/BUILD.md for the full workflow.
 #
-# Bundled binaries (in <basename>-<tag>_<target>.tar.bz2 under bin/):
+# Bundled binaries (under bin/ in the exported tarball):
 #   agave-validator          [Jito-patched: BAM, bundles, tip-distribution]
 #   agave-ledger-tool        [Jito-patched ledger inspection]
 #   agave-watchtower         monitoring
@@ -14,9 +14,9 @@
 #   solana-keygen            keypair tooling
 #
 # Output (default ./dist/):
-#   <basename>-<tag>_<target>.tar.bz2   release tarball (bzip2)
-#   <basename>-<tag>_<target>.yml       version manifest: channel, commit,
-#                                       target
+#   <basename>-<tag>[-<profile-suffix>]_<target>.tar.bz2   release tarball
+#   <basename>-<tag>[-<profile-suffix>]_<target>.yml       version manifest
+# Profiles other than release also record the profile in the manifest.
 #
 # The <target> triple is derived inside the container from the platform the
 # build actually runs as, so it always matches the binaries. It is joined
@@ -75,7 +75,9 @@ with a Jito-curated operator binary set.
 
 Output (default ./dist/):
   <basename>-<tag>_<target>.tar.bz2   release tarball (bzip2)
-  <basename>-<tag>_<target>.yml       version manifest: channel, commit, target
+  <basename>-<tag>_<target>.yml       version manifest
+
+Other profiles suffix artifact names and record the profile in the manifest.
 
 The <target> triple is derived inside the container from the actual build
 platform, so it always matches the binaries. The platform suffix is joined
@@ -90,6 +92,8 @@ Usage: ./f [options]
 Options:
   --profile PROFILE       release | release-with-debug | release-with-lto | debug
                           (default: release)
+  --debug-symbols         optimized build with embedded symbols and Rust frame pointers
+                          alias for --profile release-with-debug; last selection wins
   --tag VALUE             channel/tag to embed in version.yml
                           (default: --checkout-derived tag; else the exact git
                           tag at HEAD when present; else
@@ -108,7 +112,7 @@ Options:
                           emulation (slow) or a buildx builder node of that
                           platform.
   --basename NAME         tarball/yml base name (default: jito-solana-release);
-                          channel/tag and _<target> are appended automatically
+                          tag, optional profile suffix, and target are appended
   --no-val-bins           drop validator/operator binaries from the tarball
                           (defaults to including them, since they are the point
                           of a Jito release artifact)
@@ -158,6 +162,7 @@ while [[ $# -gt 0 ]]; do
       profile="$2"
       shift 2
       ;;
+    --debug-symbols) profile=release-with-debug; shift ;;
     --tag)
       require_arg "$1" "${2:-}"
       tag="$2"
@@ -211,7 +216,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$profile" in
-  release|release-with-debug|release-with-lto|debug) ;;
+  release) profile_suffix="" ;;
+  release-with-debug) profile_suffix="-debug-symbols" ;;
+  debug|release-with-lto) profile_suffix="-$profile" ;;
   *)
     echo "Invalid --profile: $profile" >&2
     echo "Expected one of: release, release-with-debug, release-with-lto, debug" >&2
@@ -293,7 +300,7 @@ fi
 # tarball's internal jito-solana-release/ prefix is unaffected (it comes
 # from --build-dir, not the basename). The target triple is joined with '_'
 # inside the container (e.g. ..._<sha>_x86_64-unknown-linux-gnu).
-artifact_basename="${basename}-${tag//\//_}"
+artifact_basename="${basename}-${tag//\//_}${profile_suffix}"
 
 # Read rust-toolchain.toml from the build context (worktree if --checkout was
 # used, else the current checkout) just for the informational banner. The
