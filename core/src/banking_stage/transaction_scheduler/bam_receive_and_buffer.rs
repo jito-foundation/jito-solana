@@ -1966,7 +1966,7 @@ pub(super) mod tests {
                     ))
                     .unwrap()
                     .into(),
-                    meta: revert_on_error_meta.clone(),
+                    meta: revert_on_error_meta,
                 },
                 Packet {
                     data: bincode::serialize(&transfer(
