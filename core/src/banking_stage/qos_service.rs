@@ -8,9 +8,7 @@ use {
     agave_feature_set::FeatureSet,
     smallvec::SmallVec,
     solana_cost_model::{
-        cost_model::CostModel,
-        cost_tracker::{CostTrackerError, UpdatedCosts},
-        transaction_cost::TransactionCost,
+        cost_model::CostModel, cost_tracker::UpdatedCosts, transaction_cost::TransactionCost,
     },
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -56,6 +54,7 @@ impl QosService {
         )
     }
 
+<<<<<<< HEAD
     /// Reserves transaction costs in order and returns the decisions and reserved-cost sum.
     /// A block-limit shortfall covered by unsettled estimates rolls back this attempt and returns
     /// `None`. Atomic batches only defer if their known costs could fit after refunds;
@@ -120,6 +119,8 @@ impl QosService {
         Some((results, reserved_cost))
     }
 
+=======
+>>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
     // invoke cost_model to calculate cost for the given list of transactions that have not
     // been filtered out already.
     pub(super) fn compute_transaction_costs<'a, Tx: TransactionWithMeta>(

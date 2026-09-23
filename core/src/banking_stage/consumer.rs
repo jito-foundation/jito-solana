@@ -5,20 +5,14 @@ use {
         qos_service::QosService,
         scheduler_messages::MaxAge,
     },
-    crate::{
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
-        proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager,
-    },
-    arc_swap::ArcSwap,
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     smallvec::SmallVec,
     solana_accounts_db::accounts::TransactionAccountLocksIterator,
-    solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
     solana_poh::{
         poh_recorder::PohRecorderError,
         transaction_recorder::{RecordTransactionsTimings, TransactionRecorder},
     },
-    solana_pubkey::Pubkey,
     solana_runtime::{
         bank::{
             Bank, LoadAndExecuteTransactionsOutput, entry_bytes_budget::EntryBytesReserveError,
@@ -34,7 +28,7 @@ use {
     },
     solana_transaction_error::TransactionError,
     solana_vote::vote_parser,
-    std::{num::Saturating, sync::Arc},
+    std::num::Saturating,
 };
 
 /// Consumer will create chunks of transactions from buffer with up to this size.
@@ -111,6 +105,7 @@ pub struct LeaderProcessedTransactionCounts {
 }
 
 #[derive(Clone)]
+<<<<<<< HEAD
 pub struct TipProcessingDependencies {
     pub tip_manager: TipManager,
     pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
@@ -165,6 +160,8 @@ impl TipProcessingDependencies {
 }
 
 #[derive(Clone)]
+=======
+>>>>>>> 13bdebd86a (banking_stage: fix BAM tip refresh and simplify scheduler plumbing (#1626))
 pub struct Consumer {
     committer: Committer,
     transaction_recorder: TransactionRecorder,
@@ -718,7 +715,10 @@ impl Consumer {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::tests::{create_slow_genesis_config, sanitize_transactions},
+        crate::banking_stage::{
+            tests::{create_slow_genesis_config, sanitize_transactions},
+            transaction_scheduler::bam_scheduler::try_admit_transactions,
+        },
         agave_reserved_account_keys::ReservedAccountKeys,
         crossbeam_channel::{bounded, unbounded},
         solana_account::{AccountSharedData, state_traits::StateMutWincode as _},
@@ -1712,7 +1712,7 @@ mod tests {
                     max_age.alt_invalidation_slot,
                 )
             };
-            let (admission_results, _) = QosService::try_admit_transactions(
+            let (admission_results, _) = try_admit_transactions(
                 &bank,
                 transactions,
                 std::iter::once(resanitize()),
@@ -1804,7 +1804,7 @@ mod tests {
             system_transaction::transfer(&low_payer, &low_recipient, 1, bank.last_blockhash()),
         ]);
         // A scheduler rejection stays final even if the bank has room when the worker runs.
-        let (admission_results, _) = QosService::try_admit_transactions(
+        let (admission_results, _) = try_admit_transactions(
             &bank,
             &transactions,
             [Err(TransactionError::WouldExceedMaxBlockCostLimit), Ok(())].into_iter(),
