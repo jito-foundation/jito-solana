@@ -55,6 +55,10 @@ head, the bot pushes a signed, tree-identical commit to
 `ci/rebase/<channel>-trigger`. Buildkite tests that commit, but landing still
 uses the clean `ci/rebase/<channel>` head.
 
+The workflow holds its Actions runner while polling Buildkite. Moving landing
+to a status-triggered workflow is deferred until the saved state and branch
+lease can be handed off durably without weakening the landing checks.
+
 Merging your PR to master works as before: squash-merge it. It becomes a carry
 commit and is replayed every night. Keep carry commits few and self-contained;
 they are what conflicts with upstream.
@@ -112,6 +116,7 @@ in depth, including the consensus-path rules for `svm/`, `runtime/`,
 | `conflict` | Rebase stopped, issue filed | owner resolves by hand |
 | `ci_failure` | Buildkite red on the staging head | check the build; staging branch is left in place |
 | `ci_timeout` | Buildkite did not report within 150 minutes | check Buildkite, rerun the workflow |
+| `ci_changed` | Buildkite was no longer green immediately before landing | inspect or retry; channel is unchanged |
 | `stale` | Channel moved during CI, landing skipped | none, next run retries |
 | `failed` | Script crashed | read the run log |
 
@@ -129,5 +134,7 @@ write; Commit statuses: read) installed on the repo, with `REBASE_APP_ID` and
 `GPG_PASSPHRASE`, and `SLACK_WEBHOOK_URL`. For every `auto` channel the App
 must be an `always` bypass actor on the rulesets protecting that branch. The
 workflow mints one App token for staging and a fresh token after CI passes for
-landing. Keep the App off the `v*.*` rulesets so the bot cannot rewrite release
-lines.
+landing. Buildkite must trigger on both `ci/rebase/<channel>` and
+`ci/rebase/<channel>-trigger`; confirm on the first live no-carry retry that it
+reports the `buildkite/jito-solana` status on the trigger commit. Keep the App
+off the `v*.*` rulesets so the bot cannot rewrite release lines.

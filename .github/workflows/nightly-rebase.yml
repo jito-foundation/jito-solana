@@ -47,6 +47,12 @@ jobs:
     name: Rebase ${{ matrix.channel.channel }}
     needs: channels
     runs-on: ubuntu-24.04
+    env:
+      CHANNEL: ${{ matrix.channel.channel }}
+      CHANNEL_OWNER: ${{ matrix.channel.owner }}
+      LANDING: ${{ matrix.channel.landing }}
+      GH_REPO: ${{ github.repository }}
+      UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
     # All writes go through the App token; GITHUB_TOKEN stays read-only.
     permissions:
       contents: read
@@ -110,14 +116,9 @@ jobs:
         id: stage
         working-directory: channel
         env:
-          CHANNEL: ${{ matrix.channel.channel }}
-          CHANNEL_OWNER: ${{ matrix.channel.owner }}
-          LANDING: ${{ matrix.channel.landing }}
-          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ steps.stage-token.outputs.token }}
           RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
           STATE_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}-state.json
-          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
         run: ../workflow-source/.github/scripts/nightly-rebase.sh stage
 
       - name: Wait for Buildkite
@@ -125,14 +126,9 @@ jobs:
         if: steps.stage.outputs.needs-landing == 'true'
         working-directory: channel
         env:
-          CHANNEL: ${{ matrix.channel.channel }}
-          CHANNEL_OWNER: ${{ matrix.channel.owner }}
-          LANDING: ${{ matrix.channel.landing }}
-          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
           STATE_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}-state.json
-          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
         run: ../workflow-source/.github/scripts/nightly-rebase.sh wait
 
       - name: Mint landing App token
@@ -158,14 +154,9 @@ jobs:
         if: steps.wait.outputs.ready-to-land == 'true'
         working-directory: channel
         env:
-          CHANNEL: ${{ matrix.channel.channel }}
-          CHANNEL_OWNER: ${{ matrix.channel.owner }}
-          LANDING: ${{ matrix.channel.landing }}
-          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ steps.land-token.outputs.token }}
           RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
           STATE_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}-state.json
-          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
         run: ../workflow-source/.github/scripts/nightly-rebase.sh land
 
       - name: Upload channel result

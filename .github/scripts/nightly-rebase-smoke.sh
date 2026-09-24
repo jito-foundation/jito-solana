@@ -159,11 +159,13 @@ run_stage reordered-series draft_pr LANDING=draft
     exit 1
 }
 reviewed_channel="$(git -C origin.git rev-parse master)"
+reviewed_staging="$(git -C origin.git rev-parse ci/rebase/master)"
 awk '/^```bash$/ { command = 1; next } command && /^```$/ { exit } command' \
     "${GH_PR_BODY}" > "${t}/reviewed-command"
 run_stage statusless draft_pr LANDING=draft GH_STATUS=missing \
     GIT_COMMITTER_DATE=2000-01-01T00:00:00Z
 [[ "$(git -C origin.git rev-parse ci/rebase/master)" != "${staging}" ]] || { echo "FAIL: statusless staging reused"; exit 1; }
+git -C work update-ref refs/remotes/origin/ci/rebase/master "${reviewed_staging}"
 if (cd work && bash "${t}/reviewed-command" > "${t}/reviewed-command.log" 2>&1); then
     echo "FAIL: saved draft command accepted moved staging"
     exit 1
@@ -179,6 +181,10 @@ run_stage auto staged LANDING=auto
 staging="$(jq -r .staging_sha "${t}/auto-state.json")"
 run_wait auto failed LANDING=auto GH_STATUS=success
 grep -qx 'ready-to-land=true' "${t}/auto-wait-output" || { echo "FAIL: auto not ready to land"; exit 1; }
+auto_channel="$(git -C origin.git rev-parse master)"
+cp "${t}/auto-state.json" "${t}/ci-regressed-state.json"
+run_land ci-regressed ci_changed LANDING=auto GH_STATUS=failure
+[[ "$(git -C origin.git rev-parse master)" == "${auto_channel}" ]] || { echo "FAIL: CI regression landed"; exit 1; }
 run_land auto landed LANDING=auto
 [[ "$(git -C origin.git rev-parse master)" == "${staging}" ]] || { echo "FAIL: master != staging"; exit 1; }
 git -C origin.git cat-file commit master | grep -q 'SSH SIGNATURE' || { echo "FAIL: landed commit unsigned"; exit 1; }

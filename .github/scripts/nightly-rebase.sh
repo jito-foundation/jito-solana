@@ -165,9 +165,7 @@ EOF
 }
 
 write_pr_body() {
-    local -r body_file="$3"
-    local -r pr_staging_sha="$1"
-    local -r pr_ci_sha="$2"
+    local -r body_file="$1"
     local carry_text upstream_count range_diff_text old_carry_base
 
     carry_text="$(git log --format="- \`%h\` %s" \
@@ -177,12 +175,12 @@ write_pr_body() {
         "origin/${CHANNEL}..agave/${UPSTREAM_CHANNEL}")"
     old_carry_base="$(git merge-base "origin/${CHANNEL}" "agave/${UPSTREAM_CHANNEL}")"
     if [[ "${old_carry_base}" == "${channel_sha}" ||
-        "${upstream_sha}" == "${pr_staging_sha}" ]]; then
+        "${upstream_sha}" == "${staging_sha}" ]]; then
         range_diff_text="No comparable range: at least one side has no Jito carry commits."
     else
         range_diff_text="$(git range-diff --no-color \
             "${old_carry_base}..origin/${CHANNEL}" \
-            "agave/${UPSTREAM_CHANNEL}..${pr_staging_sha}")"
+            "agave/${UPSTREAM_CHANNEL}..${staging_sha}")"
     fi
 
     cat >| "${body_file}" <<EOF
@@ -193,20 +191,20 @@ Automated nightly rebase of \`${CHANNEL}\` onto
 - Agave tip: \`${upstream_sha}\`
 - Upstream delta: ${upstream_count} commits
 - Staging branch: \`${staging_branch}\`
-- [Buildkite](https://buildkite.com/jito/jito-solana/builds?commit=${pr_ci_sha})
+- [Buildkite](https://buildkite.com/jito/jito-solana/builds?commit=${ci_sha})
 
 Do not merge this PR. Landing rewrites \`${CHANNEL}\` to keep Agave
 ancestry, so a jito-solana team member force-pushes the approved
 staging head:
 
 \`\`\`bash
-git fetch origin ${staging_branch}:refs/remotes/origin/${staging_branch}
-test "\$(git rev-parse origin/${staging_branch})" = ${pr_staging_sha} || {
+git fetch origin +${staging_branch}:refs/remotes/origin/${staging_branch} || exit 1
+test "\$(git rev-parse origin/${staging_branch})" = ${staging_sha} || {
     echo "Staging moved; refresh this PR before landing." >&2
     exit 1
 }
 git push --force-with-lease=refs/heads/${CHANNEL}:${channel_sha} origin \\
-    ${pr_staging_sha}:refs/heads/${CHANNEL}
+    ${staging_sha}:refs/heads/${CHANNEL}
 \`\`\`
 
 Jito carry commits:
@@ -270,22 +268,31 @@ has_ci_status() {
     [[ "${state}" != "missing" ]]
 }
 
-# Poll the commit status Buildkite reports to GitHub for the staging head.
-# Prints success, failure, or timeout.
-wait_for_ci() {
-    local -r sha="$1"
+wait_for_landing() {
     local -r deadline=$((SECONDS + CI_TIMEOUT_MINUTES * 60))
     local state
 
+    load_state
+    result_url="https://buildkite.com/jito/jito-solana/builds?commit=${ci_sha}"
+
+    # ponytail: polling holds this runner; use a status-event workflow only if
+    # its durable state and lease handoff become cheaper than the idle time.
     while (( SECONDS < deadline )); do
-        state="$(ci_state "${sha}")"
+        state="$(ci_state "${ci_sha}")"
         case "${state}" in
-            success) echo success; return ;;
-            failure | error) echo failure; return ;;
+            success)
+                write_result failed "Buildkite passed but landing did not complete"
+                echo 'ready-to-land=true' >> "${GITHUB_OUTPUT}"
+                return
+                ;;
+            failure | error)
+                write_result ci_failure "Buildkite failure; ${staging_branch} left for review"
+                return
+                ;;
         esac
         sleep "${CI_POLL_SECONDS}"
     done
-    echo timeout
+    write_result ci_timeout "Buildkite timeout; ${staging_branch} left for review"
 }
 
 same_carry_series() {
@@ -297,25 +304,9 @@ same_carry_series() {
         awk '$3 != "=" || $1 != $4 { exit 1 }' <<< "${range_diff}"
 }
 
-wait_for_landing() {
-    load_state
-    result_url="https://buildkite.com/jito/jito-solana/builds?commit=${ci_sha}"
-
-    case "$(wait_for_ci "${ci_sha}")" in
-        success)
-            write_result failed "Buildkite passed but landing did not complete"
-            echo 'ready-to-land=true' >> "${GITHUB_OUTPUT}"
-            ;;
-        failure)
-            write_result ci_failure "Buildkite failure; ${staging_branch} left for review"
-            ;;
-        timeout)
-            write_result ci_timeout "Buildkite timeout; ${staging_branch} left for review"
-            ;;
-    esac
-}
-
 land_channel() {
+    local state
+
     load_state
     result_url="https://buildkite.com/jito/jito-solana/builds?commit=${ci_sha}"
 
@@ -335,6 +326,12 @@ land_channel() {
             write_result failed "CI trigger no longer matches staging; landing skipped"
             return
         fi
+    fi
+
+    state="$(ci_state "${ci_sha}")" || state=unavailable
+    if [[ "${state}" != "success" ]]; then
+        write_result ci_changed "Buildkite changed to ${state}; landing skipped"
+        return
     fi
 
     # The lease pins the channel tip we rebased from: a merge that landed
@@ -443,7 +440,7 @@ stage() {
     fi
 
     body_file="$(mktemp)"
-    write_pr_body "${staging_sha}" "${ci_sha}" "${body_file}"
+    write_pr_body "${body_file}"
     upsert_pr "${body_file}"
 }
 
