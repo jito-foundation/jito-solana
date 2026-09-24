@@ -363,10 +363,10 @@ impl BamConnection {
     pub fn wait_until_healthy_and_config_received(
         &self,
         duration: std::time::Duration,
-        exit: &AtomicBool,
+        should_stop: impl Fn() -> bool,
     ) -> bool {
         let start = std::time::Instant::now();
-        while start.elapsed() < duration && !exit.load(Relaxed) {
+        while start.elapsed() < duration && !should_stop() {
             if self.connection_task.is_finished() {
                 return false;
             }

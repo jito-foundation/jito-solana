@@ -4,6 +4,7 @@
 /// - Updates TPU config
 /// - Updates block builder fee info
 /// - Coordinates the switch between Block Engine bundle processing and BAM
+/// - Starts BAM discovery process should a registry URL be provided for BAM
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
@@ -19,6 +20,7 @@ use {
             BamConnection, MAX_DURATION_BETWEEN_NODE_HEARTBEATS, WAIT_TO_RECONNECT_DURATION,
         },
         bam_dependencies::{BamConnectionState, BamDependencies, BamOutboundMessage},
+        bam_discovery::BamDiscovery,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
     arc_swap::ArcSwap,
@@ -36,6 +38,10 @@ use {
     solana_version::ClientId,
     tokio::sync::mpsc,
 };
+
+const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+const STALE_ATTEMPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<ArcSwap<Option<String>>>,
@@ -126,7 +132,10 @@ impl BamManager {
         let mut current_connection = None;
         let mut outbound_receiver = Some(outbound_receiver);
         let mut builder_config_version = 0;
-        let mut last_observed_bam_url = bam_url.load_full();
+        let mut configured_bam_url = Arc::new(None);
+        let mut discovery = None;
+        let mut discovery_runtime = None;
+        let mut last_observed_bam_url = Arc::new(None);
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let fallback_client_id = ClientId::JitoLabs;
@@ -134,13 +143,30 @@ impl BamManager {
         let bam_client_id = ClientId::AgaveBam;
 
         while !exit.load(Ordering::Relaxed) {
-            let configured_bam_url = bam_url.load_full();
-            if configured_bam_url != last_observed_bam_url {
-                match configured_bam_url.as_deref() {
+            let latest_bam_url = bam_url.load_full();
+            // Handles a validator being connected to BAM via the registry during runtime.
+            if latest_bam_url != configured_bam_url {
+                discovery =
+                    BamDiscovery::new(&latest_bam_url, dependencies.bam_enabled.clone(), || {
+                        discovery_runtime
+                            .get_or_insert_with(Self::build_discovery_runtime)
+                            .handle()
+                            .clone()
+                    });
+                configured_bam_url = latest_bam_url;
+            }
+
+            // When BAM registry URL is configured, the URL used to connect to BAM
+            // is dynamically chosen from the discovery process.
+            let connect_url = discovery
+                .as_ref()
+                .map_or_else(|| configured_bam_url.clone(), BamDiscovery::selected_url);
+            if connect_url != last_observed_bam_url {
+                match connect_url.as_deref() {
                     Some(new_url) => info!("BAM URL changed, connecting to new URL: {new_url}"),
                     None => info!("BAM URL cleared, disconnecting"),
                 }
-                last_observed_bam_url = configured_bam_url.clone();
+                last_observed_bam_url = connect_url.clone();
             }
 
             let connection = match current_connection.take() {
@@ -165,25 +191,53 @@ impl BamManager {
                     }
 
                     // Try to connect to BAM
-                    let Some(url) = configured_bam_url.as_ref() else {
+                    let Some(url) = connect_url.as_ref() else {
                         Self::set_bam_disconnected(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
+                    };
+
+                    let should_stop = || {
+                        exit.load(Ordering::Relaxed)
+                            || bam_url.load_full() != configured_bam_url
+                            || discovery
+                                .as_ref()
+                                .is_some_and(|discovery| discovery.selected_url() != connect_url)
                     };
 
                     dependencies
                         .bam_enabled
                         .store(BamConnectionState::Connecting as u8, Ordering::Release);
                     builder_config_version = 0;
-                    let result = runtime.block_on(BamConnection::try_init(
-                        url.clone(),
-                        dependencies.cluster_info.clone(),
-                        dependencies.batch_sender.clone(),
-                        &mut outbound_receiver,
-                    ));
+                    let result = runtime.block_on(async {
+                        tokio::select! {
+                            result = BamConnection::try_init(
+                                url.clone(),
+                                dependencies.cluster_info.clone(),
+                                dependencies.batch_sender.clone(),
+                                &mut outbound_receiver,
+                            ) => Some(result),
+                            _ = async {
+                                while !should_stop() {
+                                    tokio::time::sleep(STALE_ATTEMPT_POLL_INTERVAL).await;
+                                }
+                            } => None,
+                        }
+                    });
                     let connection = match result {
-                        Ok(connection) => connection,
-                        Err(e) => {
+                        Some(Ok(connection)) => connection,
+                        None => {
+                            if exit.load(Ordering::Relaxed) {
+                                info!(
+                                    "Validator exiting, abandoning BAM connection attempt to {url}"
+                                );
+                            } else {
+                                info!("BAM URL changed while connecting to {url}, abandoning it");
+                            }
+                            Self::set_bam_disconnected(&dependencies);
+                            continue;
+                        }
+                        Some(Err(e)) => {
                             error!("Failed to connect to BAM with url: {url}: {e}");
                             Self::set_bam_disconnected(&dependencies);
                             std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
@@ -194,20 +248,26 @@ impl BamManager {
                     // Wait until connection is healthy
                     if !connection.wait_until_healthy_and_config_received(
                         MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
-                        &exit,
+                        should_stop,
                     ) {
-                        warn!(
-                            "BAM connection not healthy after waiting for \
-                             {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and will \
-                             retry",
-                        );
                         Self::set_bam_disconnected(&dependencies);
                         outbound_receiver = Some(runtime.block_on(connection.shutdown()));
-                        std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                        if exit.load(Ordering::Relaxed) {
+                            info!("Validator exiting, abandoning BAM connection attempt to {url}");
+                        } else if should_stop() {
+                            info!("BAM URL changed while waiting on {url}, abandoning it");
+                        } else {
+                            warn!(
+                                "BAM connection not healthy after waiting for \
+                                 {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and will \
+                                 retry",
+                            );
+                            std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                        }
                         continue;
                     }
 
-                    info!("BAM connection established");
+                    info!("BAM connection established to {}", connection.url());
                     dependencies.bam_enabled.store(
                         BamConnectionState::DrainingBlockEngine as u8,
                         Ordering::Release,
@@ -219,7 +279,10 @@ impl BamManager {
 
             let disconnect = if !connection.is_healthy() {
                 Self::set_bam_disconnected(&dependencies);
-                warn!("BAM connection unhealthy");
+                warn!(
+                    "BAM connection to {} unhealthy, disconnecting",
+                    connection.url()
+                );
                 true
             } else if Self::handle_identity_change(
                 &identity_changed,
@@ -230,7 +293,7 @@ impl BamManager {
             ) {
                 true
             } else {
-                if configured_bam_url.as_deref() == Some(connection.url()) {
+                if connect_url.as_deref() == Some(connection.url()) {
                     false
                 } else {
                     Self::set_bam_disconnected(&dependencies);
@@ -290,6 +353,21 @@ impl BamManager {
             // Sleep for a short duration to avoid busy-waiting
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+
+        drop(current_connection);
+        runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+        if let Some(discovery_runtime) = discovery_runtime {
+            discovery_runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+        }
+    }
+
+    fn build_discovery_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("solBamDisc")
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     fn handle_identity_change(
