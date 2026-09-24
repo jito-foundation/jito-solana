@@ -45,7 +45,7 @@ use {
     std::{
         borrow::Borrow,
         collections::BTreeMap,
-        sync::Arc,
+        sync::{Arc, Mutex},
         time::{Duration, Instant},
     },
     tokio::sync::mpsc::Sender as TokioSender,
@@ -59,6 +59,53 @@ type SchedulerPrioGraph = PrioGraph<
 >;
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
+pub(in crate::banking_stage) const NUM_BAM_WORKERS: usize = 8;
+const VOTE_ADMISSION_GRACE: Duration = Duration::from_millis(1);
+// An ineligible retained vote must not delay every BAM refill on one Bank.
+const MAX_VOTE_ADMISSION_WAIT_US_PER_BANK: u64 = 2_000;
+
+#[derive(Default)]
+pub(in crate::banking_stage) struct VoteAdmissionGate(Mutex<VoteAdmissionState>);
+
+#[derive(Default)]
+struct VoteAdmissionState {
+    pending_bank: Option<BankId>,
+    pending: bool,
+    success_bank: Option<BankId>,
+    success_seq: u64,
+}
+
+impl VoteAdmissionGate {
+    pub(in crate::banking_stage) fn publish(&self, bank: Option<BankId>, pending: bool) {
+        let mut state = self.0.lock().unwrap();
+        state.pending = pending;
+        state.pending_bank = bank;
+    }
+
+    pub(in crate::banking_stage) fn report_success(&self, bank: BankId) {
+        let mut state = self.0.lock().unwrap();
+        state.success_bank = Some(bank);
+        state.success_seq = state.success_seq.wrapping_add(1);
+    }
+
+    pub(in crate::banking_stage) fn snapshot(&self, bank: BankId) -> Option<u64> {
+        let state = self.0.lock().unwrap();
+        (state.pending
+            && state
+                .pending_bank
+                .is_none_or(|pending_bank| pending_bank == bank))
+        .then_some(state.success_seq)
+    }
+
+    fn waiting(&self, bank: BankId, baseline: u64) -> bool {
+        let state = self.0.lock().unwrap();
+        state.pending
+            && state
+                .pending_bank
+                .is_none_or(|pending_bank| pending_bank == bank)
+            && !(state.success_bank == Some(bank) && state.success_seq != baseline)
+    }
+}
 
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
@@ -92,6 +139,13 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     inflight_reserved_cost: u64,
     /// Deferred or returned batches in original dispatch order, with their last attempted estimate.
     pending_admission: BTreeMap<u64, (TransactionPriorityId, Option<u64>)>,
+    vote_gate: Option<Arc<VoteAdmissionGate>>,
+    vote_turn: Option<(BankId, u64, Option<Instant>)>,
+    vote_turns: u64,
+    vote_turn_timeouts: u64,
+    vote_turn_wait_us: u64,
+    vote_budget_bank: Option<BankId>,
+    vote_budget_start_us: u64,
 }
 
 // Each work item contains one BAM batch, which may contain multiple transactions.
@@ -197,12 +251,24 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             prepared_tip_config: None,
             inflight_reserved_cost: 0,
             pending_admission: BTreeMap::new(),
+            vote_gate: None,
+            vote_turn: None,
+            vote_turns: 0,
+            vote_turn_timeouts: 0,
+            vote_turn_wait_us: 0,
+            vote_budget_bank: None,
+            vote_budget_start_us: 0,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn has_in_flight_transactions(&self) -> bool {
         !self.inflight_batch_info.is_empty()
+    }
+
+    pub(in crate::banking_stage) fn with_vote_gate(mut self, gate: Arc<VoteAdmissionGate>) -> Self {
+        self.vote_gate = Some(gate);
+        self
     }
 
     #[inline]
@@ -302,6 +368,44 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             _ => false,
         };
 
+        if let Some((bank_id, success_seq, deadline)) = self.vote_turn {
+            let still_waiting = bank_id == admission_bank.bank_id()
+                && self
+                    .vote_gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.waiting(bank_id, success_seq));
+            if !still_waiting {
+                if let Some(deadline) = deadline {
+                    self.vote_turn_wait_us += Instant::now()
+                        .saturating_duration_since(deadline - VOTE_ADMISSION_GRACE)
+                        .as_micros() as u64;
+                }
+                self.vote_turn = None;
+            } else if !self.prio_graph.is_empty()
+                || !self.pending_admission.is_empty()
+                || (tip_processing.is_some()
+                    && (self.admission_bank != Some((admission_bank.bank_id(), slot))
+                        || !same_tip_config))
+            {
+                let deadline = deadline.unwrap_or_else(|| {
+                    let deadline = Instant::now() + VOTE_ADMISSION_GRACE;
+                    self.vote_turn = Some((bank_id, success_seq, Some(deadline)));
+                    self.vote_turns += 1;
+                    deadline
+                });
+                let now = Instant::now();
+                if now < deadline {
+                    std::thread::yield_now();
+                    return Ok(0);
+                }
+                self.vote_turn_timeouts += 1;
+                self.vote_turn_wait_us += now
+                    .saturating_duration_since(deadline - VOTE_ADMISSION_GRACE)
+                    .as_micros() as u64;
+                self.vote_turn = None;
+            }
+        }
+
         if self.admission_bank != Some((admission_bank.bank_id(), slot)) || !same_tip_config {
             // Outstanding work finishes against the old configuration. Drain its reservations
             // before changing Banks or cranking new metadata ahead of the next admission pass.
@@ -341,7 +445,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
         let now = Instant::now();
         let mut num_scheduled = 0;
-        loop {
+        // Do not preadmit more batches than BAM workers.
+        while self.inflight_batch_info.len() < NUM_BAM_WORKERS {
             // A deferred batch holds the head of the line until work on its bank settles or the
             // bank itself changes; either way it gets the next attempt before anything else.
             let (batch_id, id) = if let Some((&batch_id, &(id, attempted_inflight_cost))) =
@@ -478,6 +583,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 },
             );
         }
+        Ok(num_scheduled)
     }
 
     fn release_admission(work: &mut ConsumeWork<Tx>) {
@@ -592,6 +698,23 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             return;
         }
         let prev_slot = self.slot;
+        if let Some((_, _, Some(deadline))) = self.vote_turn.take() {
+            self.vote_turn_wait_us += Instant::now()
+                .saturating_duration_since(deadline - VOTE_ADMISSION_GRACE)
+                .as_micros() as u64;
+        }
+        if let Some(prev_slot) = prev_slot {
+            datapoint_info!(
+                "bam_vote_admission_turn",
+                ("slot", prev_slot, i64),
+                ("turns", self.vote_turns, i64),
+                ("timeouts", self.vote_turn_timeouts, i64),
+                ("wait_us", self.vote_turn_wait_us, i64),
+            );
+            self.vote_turns = 0;
+            self.vote_turn_timeouts = 0;
+            self.vote_turn_wait_us = 0;
+        }
         match bank_slot {
             Some(bank_slot) => {
                 debug!("Bank boundary detected: slot changed from {prev_slot:?} to {bank_slot}")
@@ -599,6 +722,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             None => debug!("Bank boundary detected: slot changed to None"),
         }
         self.slot = bank_slot;
+        self.vote_budget_bank = None;
+        self.vote_budget_start_us = 0;
 
         // Drain container and send back 'retryable'
         if self.slot.is_none() {
@@ -759,6 +884,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
 
         let mut num_transactions = 0;
         let now = Instant::now();
+        let mut completed_on_bank = false;
         while let Ok(result) = self.finished_consume_work_receiver.try_recv() {
             let FinishedConsumeWork {
                 mut work,
@@ -772,6 +898,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 self.recycle_work_object(work);
                 continue;
             };
+            completed_on_bank |= decision
+                .bank()
+                .is_some_and(|bank| self.admission_bank == Some((bank.bank_id(), bank.slot())));
 
             // Settled work may have freed budget for a batch deferred on this bank's block limit.
             // Dispatch is held across a bank change until the old work drains, so everything in
@@ -838,6 +967,24 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             container.remove_by_id(inflight_batch_info.priority_id.id);
         }
 
+        if completed_on_bank
+            && self.vote_turn.is_none()
+            && let (Some(gate), Some(bank)) = (&self.vote_gate, decision.bank())
+        {
+            if self.vote_budget_bank != Some(bank.bank_id()) {
+                self.vote_budget_bank = Some(bank.bank_id());
+                self.vote_budget_start_us = self.vote_turn_wait_us;
+            }
+            if self
+                .vote_turn_wait_us
+                .saturating_sub(self.vote_budget_start_us)
+                < MAX_VOTE_ADMISSION_WAIT_US_PER_BANK
+                && let Some(success_seq) = gate.snapshot(bank.bank_id())
+            {
+                self.vote_turn = Some((bank.bank_id(), success_seq, None));
+            }
+        }
+
         Ok((num_transactions, 0))
     }
 
@@ -860,7 +1007,10 @@ mod tests {
                 },
                 transaction_scheduler::{
                     bam_receive_and_buffer::tests::{set_leader_bank, test_bank_forks},
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{
+                        BamScheduler, MAX_PACKETS_PER_BUNDLE, MAX_VOTE_ADMISSION_WAIT_US_PER_BANK,
+                        NUM_BAM_WORKERS, VoteAdmissionGate,
+                    },
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -1718,6 +1868,147 @@ mod tests {
         let decision = BufferedPacketsDecision::Consume(bank.clone());
         test.receive_completed(&mut container, &decision);
         (test, container, bank, decision)
+    }
+
+    #[test]
+    fn test_admission_stops_at_worker_capacity() {
+        let (mut test, bank) = admission_scheduler();
+        set_block_cost_limit(&bank, u64::MAX);
+        let batch_size = MAX_PACKETS_PER_BUNDLE;
+        let mut container =
+            TransactionStateContainer::with_capacity((NUM_BAM_WORKERS + 2) * (batch_size + 1));
+        for seq_id in 0..NUM_BAM_WORKERS + 2 {
+            insert_admission_batch(
+                &mut container,
+                (0..batch_size).map(|_| {
+                    prioritized_tranfers(&Keypair::new(), [Pubkey::new_unique()], 1_000, 0)
+                }),
+                seq_id as u32,
+            );
+        }
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.receive_completed(&mut container, &decision);
+
+        assert_eq!(test.schedule(&mut container), NUM_BAM_WORKERS * batch_size);
+        assert_eq!(
+            block_cost_and_in_flight(&bank),
+            (
+                estimated_cost(&bank) * (NUM_BAM_WORKERS * batch_size) as u64,
+                NUM_BAM_WORKERS * batch_size
+            )
+        );
+        let mut work: Vec<_> = test.consume_work_receiver.try_iter().collect();
+        assert_eq!(work.len(), NUM_BAM_WORKERS);
+
+        // A worker settling cost does not free capacity until its completion is received.
+        let mut completed = work.pop().unwrap();
+        settle_committed(&bank, &mut completed, 150);
+        assert_eq!(test.schedule(&mut container), 0);
+
+        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        assert_eq!(test.schedule(&mut container), batch_size);
+        let next = test.consume_work_receiver.try_recv().unwrap();
+        assert_eq!(
+            test.scheduler.inflight_batch_info[&next.batch_id].seq_id,
+            NUM_BAM_WORKERS as u32
+        );
+    }
+
+    #[test]
+    fn test_vote_turn_coalesces_completions_and_expires() {
+        let (mut test, bank) = admission_scheduler();
+        let gate = Arc::new(VoteAdmissionGate::default());
+        test.scheduler = test.scheduler.with_vote_gate(gate.clone());
+        set_block_cost_limit(&bank, u64::MAX);
+        let mut container = TransactionStateContainer::with_capacity((NUM_BAM_WORKERS + 4) * 2);
+        for seq_id in 0..NUM_BAM_WORKERS + 4 {
+            insert_admission_batch(
+                &mut container,
+                [prioritized_tranfers(
+                    &Keypair::new(),
+                    [Pubkey::new_unique()],
+                    1_000,
+                    0,
+                )],
+                seq_id as u32,
+            );
+        }
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.receive_completed(&mut container, &decision);
+        assert_eq!(test.schedule(&mut container), NUM_BAM_WORKERS);
+        let mut work: Vec<_> = test.consume_work_receiver.try_iter().collect();
+        gate.publish(Some(bank.bank_id()), true);
+
+        let mut completed = work.pop().unwrap();
+        settle_committed(&bank, &mut completed, 150);
+        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        let mut completed = work.pop().unwrap();
+        settle_committed(&bank, &mut completed, 150);
+        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        test.scheduler.vote_turn.as_mut().unwrap().2 =
+            Some(Instant::now() + Duration::from_secs(1));
+        assert_eq!(test.schedule(&mut container), 0);
+        gate.report_success(bank.bank_id().wrapping_add(1));
+        assert_eq!(test.schedule(&mut container), 0);
+        gate.report_success(bank.bank_id());
+        assert_eq!(test.schedule(&mut container), 2);
+        let first = test.consume_work_receiver.try_recv().unwrap();
+        let second = test.consume_work_receiver.try_recv().unwrap();
+        assert_eq!(
+            test.scheduler.inflight_batch_info[&first.batch_id].seq_id,
+            NUM_BAM_WORKERS as u32
+        );
+        assert_eq!(
+            test.scheduler.inflight_batch_info[&second.batch_id].seq_id,
+            NUM_BAM_WORKERS as u32 + 1
+        );
+
+        let mut completed = work.pop().unwrap();
+        settle_committed(&bank, &mut completed, 150);
+        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        test.scheduler.vote_turn.as_mut().unwrap().2 =
+            Some(Instant::now() + Duration::from_secs(1));
+        assert_eq!(test.schedule(&mut container), 0);
+        test.scheduler.vote_turn.as_mut().unwrap().2 =
+            Some(Instant::now() - Duration::from_millis(1));
+        assert_eq!(test.schedule(&mut container), 1);
+
+        test.scheduler.vote_turn_wait_us =
+            test.scheduler.vote_budget_start_us + MAX_VOTE_ADMISSION_WAIT_US_PER_BANK;
+        let mut completed = work.pop().unwrap();
+        settle_committed(&bank, &mut completed, 150);
+        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        assert!(test.scheduler.vote_turn.is_none());
+        assert_eq!(test.schedule(&mut container), 1);
+        test.receive_completed(&mut container, &BufferedPacketsDecision::Forward);
+        assert_eq!(test.scheduler.vote_turn_wait_us, 0);
+        assert_eq!(test.scheduler.vote_budget_start_us, 0);
+    }
+
+    #[test]
+    fn test_vote_turn_starts_when_refill_arrives() {
+        let (mut test, bank) = admission_scheduler();
+        let gate = Arc::new(VoteAdmissionGate::default());
+        test.scheduler = test.scheduler.with_vote_gate(gate.clone());
+        let mut container = TransactionStateContainer::with_capacity(4);
+        let make_tx = || prioritized_tranfers(&Keypair::new(), [Pubkey::new_unique()], 1_000, 0);
+        insert_admission_batch(&mut container, [make_tx()], 0);
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.receive_completed(&mut container, &decision);
+        assert_eq!(test.schedule(&mut container), 1);
+        let mut work = test.consume_work_receiver.try_recv().unwrap();
+
+        gate.publish(Some(bank.bank_id()), true);
+        settle_committed(&bank, &mut work, 150);
+        finish_committed(&mut test, &mut container, &decision, work, 150);
+        assert_eq!(test.schedule(&mut container), 0);
+        assert!(test.scheduler.vote_turn.unwrap().2.is_none());
+
+        insert_admission_batch(&mut container, [make_tx()], 1);
+        assert_eq!(test.schedule(&mut container), 0);
+        assert!(test.scheduler.vote_turn.unwrap().2.is_some());
+        gate.report_success(bank.bank_id());
+        assert_eq!(test.schedule(&mut container), 1);
     }
 
     /// JSA-72: later cheap work must wait for the earlier high-CU reservation to settle.
