@@ -4,6 +4,7 @@ use {
     solana_core::bam_discovery::is_registry_url,
     std::path::Path,
     thiserror::Error,
+    tonic::transport::Endpoint,
     url::{ParseError, Url},
 };
 
@@ -13,6 +14,8 @@ pub enum BamUrlError {
     InvalidUrlFormat { url: String, source: ParseError },
     #[error("BAM URL unsupported scheme '{scheme}', only http and https are allowed")]
     UnsupportedScheme { scheme: String },
+    #[error("BAM URL {url} is not a valid gRPC endpoint: {reason}")]
+    InvalidEndpoint { url: String, reason: String },
 }
 
 const DEFAULT_BAM_URL_SCHEME: &str = "http";
@@ -33,6 +36,7 @@ pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlErr
 /// missing scheme defaults to HTTP and an omitted port to 50055 for HTTP or 50056
 /// for HTTPS. Explicit ports must be non-zero.
 pub fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
+    let url_str = url_str.trim();
     let parse_target = if url_str.contains("://") {
         url_str.to_owned()
     } else {
@@ -79,19 +83,24 @@ pub fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
         host_port.rsplit_once(':').map(|(_, port)| port)
     };
 
-    match port {
-        Some("") => Ok(format!(
+    let node_url = match port {
+        Some("") => format!(
             "{}{default_port}{}",
             &parse_target[..authority_end],
             &parse_target[authority_end..]
-        )),
-        Some(_) => Ok(parse_target),
-        None => Ok(format!(
+        ),
+        Some(_) => parse_target,
+        None => format!(
             "{}:{default_port}{}",
             &parse_target[..authority_end],
             &parse_target[authority_end..]
-        )),
-    }
+        ),
+    };
+    Endpoint::from_shared(node_url.clone()).map_err(|err| BamUrlError::InvalidEndpoint {
+        url: node_url.clone(),
+        reason: err.to_string(),
+    })?;
+    Ok(node_url)
 }
 
 pub fn argument() -> Arg<'static, 'static> {
@@ -264,6 +273,22 @@ mod tests {
 
     // `Url::port` returns None for explicit scheme-default ports, so inspect the
     // authority to distinguish them from omitted ports.
+    #[test]
+    fn test_normalize_bam_url_trims_whitespace() {
+        assert_eq!(
+            normalize_bam_url(" http://localhost:50055 "),
+            Ok("http://localhost:50055".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_bam_url_rejects_a_url_tonic_cannot_dial() {
+        assert!(matches!(
+            normalize_bam_url("http://bäm.example:8080"),
+            Err(BamUrlError::InvalidEndpoint { .. })
+        ));
+    }
+
     #[test]
     fn test_url_port_hides_scheme_defaults() {
         assert_eq!(Url::parse("http://bam:80").unwrap().port(), None);
