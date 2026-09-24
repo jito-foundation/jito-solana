@@ -132,6 +132,7 @@ impl RegistryFollower {
                 self.cursor = 0;
                 self.probe_at = now;
             }
+            // Schedule next resync with some added jitter.
             self.resync_at =
                 now + rng().random_range(RESYNC_INTERVAL_LIVE / 2..=RESYNC_INTERVAL_LIVE);
         }
@@ -333,7 +334,8 @@ impl BamDiscovery {
     }
 
     async fn probe_and_rank(nodes: &[ServedNode]) -> Vec<RankedNode> {
-        // A round cut short by its budget then drops different nodes each time.
+        // Shuffle so that if a probe round is cut short,
+        // it's not always dropping the same set of nodes.
         let mut pool = nodes.to_vec();
         pool.shuffle(&mut rng());
 
@@ -342,6 +344,7 @@ impl BamDiscovery {
             .map(Self::probe)
             .buffer_unordered(PROBE_FANOUT)
             .filter_map(std::future::ready)
+            // We bound the probe so that we cannot stall on one or more failures.
             .take_until(tokio::time::sleep(PROBE_ROUND_BUDGET))
             .collect::<Vec<_>>()
             .await;
