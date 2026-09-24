@@ -134,6 +134,7 @@ impl BamManager {
         let mut builder_config_version = 0;
         let mut configured_bam_url = Arc::new(None);
         let mut discovery = None;
+        let mut discovery_runtime = None;
         let mut last_observed_bam_url = Arc::new(None);
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
@@ -145,11 +146,13 @@ impl BamManager {
             let latest_bam_url = bam_url.load_full();
             // Handles a validator being connected to BAM via the registry during runtime.
             if latest_bam_url != configured_bam_url {
-                discovery = BamDiscovery::new(
-                    &latest_bam_url,
-                    dependencies.bam_enabled.clone(),
-                    runtime.handle(),
-                );
+                discovery =
+                    BamDiscovery::new(&latest_bam_url, dependencies.bam_enabled.clone(), || {
+                        discovery_runtime
+                            .get_or_insert_with(Self::build_discovery_runtime)
+                            .handle()
+                            .clone()
+                    });
                 configured_bam_url = latest_bam_url;
             }
 
@@ -353,6 +356,18 @@ impl BamManager {
 
         drop(current_connection);
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+        if let Some(discovery_runtime) = discovery_runtime {
+            discovery_runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+        }
+    }
+
+    fn build_discovery_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("solBamDisc")
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     fn handle_identity_change(

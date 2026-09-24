@@ -184,13 +184,13 @@ impl BamDiscovery {
         // Discovery only runs when the configured BAM url points to a registry.
         configured_url: &Option<String>,
         bam_enabled: Arc<AtomicU8>,
-        runtime: &runtime::Handle,
+        runtime: impl FnOnce() -> runtime::Handle,
     ) -> Option<Self> {
         let registry_url = Self::registry_url(configured_url)?;
         info!("BAM discovery following registry {registry_url}");
 
         let selected_url = Arc::new(ArcSwap::from_pointee(None));
-        let task = runtime.spawn({
+        let task = runtime().spawn({
             let selected_url = selected_url.clone();
             async move {
                 let Some(mut follower) = RegistryFollower::new(registry_url) else {
@@ -694,13 +694,18 @@ mod tests {
     #[test_case(Some("http://127.0.0.1:1/nodes"), true ; "registry")]
     fn test_discovery_only_runs_for_a_registry(configured: Option<&str>, runs: bool) {
         let runtime = runtime::Runtime::new().unwrap();
+        let mut runtime_requested = false;
         let discovery = BamDiscovery::new(
             &configured.map(str::to_owned),
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            runtime.handle(),
+            || {
+                runtime_requested = true;
+                runtime.handle().clone()
+            },
         );
 
         assert_eq!(discovery.is_some(), runs);
+        assert_eq!(runtime_requested, runs);
     }
 
     #[test]
@@ -709,7 +714,7 @@ mod tests {
         let discovery = BamDiscovery::new(
             &Some("http://127.0.0.1:1/nodes".to_string()),
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            runtime.handle(),
+            || runtime.handle().clone(),
         )
         .unwrap();
         let selected_url = discovery.selected_url.clone();
