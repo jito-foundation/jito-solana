@@ -13,10 +13,7 @@ use {
     crate::{
         banking_stage::{
             consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
-            transaction_scheduler::{
-                bam_scheduler::VoteAdmissionGate,
-                transaction_state_container::RuntimeTransactionView,
-            },
+            transaction_scheduler::transaction_state_container::RuntimeTransactionView,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
@@ -68,7 +65,6 @@ pub struct VoteWorker {
     bank_forks: Arc<RwLock<BankForks>>,
     consumer: Consumer,
     bundle_account_locker: BundleAccountLocker,
-    vote_gate: Option<Arc<VoteAdmissionGate>>,
 }
 
 impl VoteWorker {
@@ -93,18 +89,11 @@ impl VoteWorker {
             bank_forks,
             consumer,
             bundle_account_locker,
-            vote_gate: None,
         }
     }
 
-    pub(in crate::banking_stage) fn with_vote_gate(mut self, gate: Arc<VoteAdmissionGate>) -> Self {
-        self.consumer = self.consumer.with_vote_gate(gate.clone());
-        self.vote_gate = Some(gate);
-        self
-    }
-
     fn publish_pending(&self, bank: Option<BankId>) {
-        if let Some(gate) = &self.vote_gate {
+        if let Some(gate) = &self.consumer.vote_gate {
             gate.publish(bank, !self.storage.is_empty());
         }
     }

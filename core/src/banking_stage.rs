@@ -778,11 +778,12 @@ impl BankingStage {
             VotePacketReceiver::new(self.tpu_vote_receiver.clone(), self.filter_keys.clone());
         let gossip_receiver =
             VotePacketReceiver::new(self.gossip_vote_receiver.clone(), self.filter_keys.clone());
-        let consumer = Consumer::new(
+        let mut consumer = Consumer::new(
             self.committer.clone(),
             self.transaction_recorder.clone(),
             self.log_messages_bytes_limit,
         );
+        consumer.vote_gate = vote_gate;
         let decision_maker = DecisionMaker::from(self.poh_recorder.read().unwrap().deref());
 
         let worker_exit_signal = self.worker_exit_signal.clone();
@@ -791,7 +792,7 @@ impl BankingStage {
         Builder::new()
             .name("solBanknStgVote".to_string())
             .spawn(move || {
-                let mut vote_worker = VoteWorker::new(
+                VoteWorker::new(
                     worker_exit_signal,
                     shutdown_signal,
                     decision_maker,
@@ -801,11 +802,8 @@ impl BankingStage {
                     bank_forks,
                     consumer,
                     bundle_account_locker,
-                );
-                if let Some(gate) = vote_gate {
-                    vote_worker = vote_worker.with_vote_gate(gate);
-                }
-                vote_worker.run();
+                )
+                .run();
             })
             .unwrap()
     }

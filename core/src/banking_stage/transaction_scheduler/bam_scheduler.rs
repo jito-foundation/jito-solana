@@ -140,7 +140,7 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     /// Deferred or returned batches in original dispatch order, with their last attempted estimate.
     pending_admission: BTreeMap<u64, (TransactionPriorityId, Option<u64>)>,
     vote_gate: Option<Arc<VoteAdmissionGate>>,
-    vote_turn: Option<(BankId, u64, Option<Instant>)>,
+    vote_turn: Option<(u64, Option<Instant>)>,
     vote_turn_timeouts: u64,
     vote_turn_wait_us: u64,
     vote_budget_start_us: u64,
@@ -267,7 +267,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     fn finish_vote_turn(&mut self) {
-        if let Some((_, _, Some(started_at))) = self.vote_turn.take() {
+        if let Some((_, Some(started_at))) = self.vote_turn.take() {
             self.vote_turn_wait_us += Instant::now()
                 .saturating_duration_since(started_at)
                 .as_micros() as u64;
@@ -370,20 +370,20 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             (None, None) => true,
             _ => false,
         };
-        let needs_preparation =
-            self.admission_bank != Some((admission_bank.bank_id(), slot)) || !same_tip_config;
+        let same_bank = self.admission_bank == Some((admission_bank.bank_id(), slot));
+        let needs_preparation = !same_bank || !same_tip_config;
         let preparation_blocked = needs_preparation
             && (!self.inflight_batch_info.is_empty()
                 || self.tip_retry_at.is_some_and(|(bank_id, deadline)| {
                     bank_id == admission_bank.bank_id() && Instant::now() < deadline
                 }));
 
-        if let Some((bank_id, success_seq, started_at)) = self.vote_turn {
-            let still_waiting = bank_id == admission_bank.bank_id()
+        if let Some((success_seq, started_at)) = self.vote_turn {
+            let still_waiting = same_bank
                 && self
                     .vote_gate
                     .as_ref()
-                    .is_some_and(|gate| gate.waiting(bank_id, success_seq));
+                    .is_some_and(|gate| gate.waiting(admission_bank.bank_id(), success_seq));
             if !still_waiting {
                 self.finish_vote_turn();
             } else if !preparation_blocked
@@ -399,7 +399,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             {
                 let started_at = started_at.unwrap_or_else(|| {
                     let started_at = Instant::now();
-                    self.vote_turn = Some((bank_id, success_seq, Some(started_at)));
+                    self.vote_turn = Some((success_seq, Some(started_at)));
                     started_at
                 });
                 if Instant::now() < started_at + VOTE_ADMISSION_GRACE {
@@ -433,7 +433,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             for (_, attempted_cost) in self.pending_admission.values_mut() {
                 *attempted_cost = None;
             }
-            if self.admission_bank.map(|(bank_id, _)| bank_id) != Some(admission_bank.bank_id()) {
+            if !same_bank {
                 self.vote_budget_start_us = self.vote_turn_wait_us;
             }
             self.admission_bank = Some((admission_bank.bank_id(), slot));
@@ -975,7 +975,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 < MAX_VOTE_ADMISSION_WAIT_US_PER_BANK
             && let Some(success_seq) = gate.snapshot(bank.bank_id())
         {
-            self.vote_turn = Some((bank.bank_id(), success_seq, None));
+            self.vote_turn = Some((success_seq, None));
         }
 
         Ok((num_transactions, 0))
@@ -1952,7 +1952,7 @@ mod tests {
             settle_committed(&bank, &mut completed, 150);
             finish_committed(&mut test, &mut container, &decision, completed, 150);
         }
-        test.scheduler.vote_turn.as_mut().unwrap().2 =
+        test.scheduler.vote_turn.as_mut().unwrap().1 =
             Some(Instant::now() + Duration::from_secs(1));
         assert_eq!(test.schedule(&mut container), 0);
         gate.report_success(bank.bank_id().wrapping_add(1));
@@ -1963,10 +1963,10 @@ mod tests {
         let mut completed = work.pop().unwrap();
         settle_committed(&bank, &mut completed, 150);
         finish_committed(&mut test, &mut container, &decision, completed, 150);
-        test.scheduler.vote_turn.as_mut().unwrap().2 =
+        test.scheduler.vote_turn.as_mut().unwrap().1 =
             Some(Instant::now() + Duration::from_secs(1));
         assert_eq!(test.schedule(&mut container), 0);
-        test.scheduler.vote_turn.as_mut().unwrap().2 =
+        test.scheduler.vote_turn.as_mut().unwrap().1 =
             Some(Instant::now() - Duration::from_millis(2));
         assert_eq!(test.schedule(&mut container), 1);
 
@@ -1999,11 +1999,11 @@ mod tests {
         settle_committed(&bank, &mut work, 150);
         finish_committed(&mut test, &mut container, &decision, work, 150);
         assert_eq!(test.schedule(&mut container), 0);
-        assert!(test.scheduler.vote_turn.unwrap().2.is_none());
+        assert!(test.scheduler.vote_turn.unwrap().1.is_none());
 
         insert_admission_batch(&mut container, [make_tx()], 1);
         assert_eq!(test.schedule(&mut container), 0);
-        assert!(test.scheduler.vote_turn.unwrap().2.is_some());
+        assert!(test.scheduler.vote_turn.unwrap().1.is_some());
         gate.report_success(bank.bank_id());
         assert_eq!(test.schedule(&mut container), 1);
     }
@@ -2120,10 +2120,9 @@ mod tests {
         let gate = Arc::new(VoteAdmissionGate::default());
         gate.publish(Some(bank.bank_id()), true);
         test.scheduler.vote_gate = Some(gate.clone());
-        test.scheduler.vote_turn =
-            Some((bank.bank_id(), gate.snapshot(bank.bank_id()).unwrap(), None));
+        test.scheduler.vote_turn = Some((gate.snapshot(bank.bank_id()).unwrap(), None));
         assert_eq!(test.schedule(&mut container), 0);
-        assert!(test.scheduler.vote_turn.unwrap().2.is_none());
+        assert!(test.scheduler.vote_turn.unwrap().1.is_none());
         gate.report_success(bank.bank_id());
         // B must roll back any earlier admissions in its batch without touching A's reservation.
         assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
