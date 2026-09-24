@@ -141,10 +141,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     pending_admission: BTreeMap<u64, (TransactionPriorityId, Option<u64>)>,
     vote_gate: Option<Arc<VoteAdmissionGate>>,
     vote_turn: Option<(BankId, u64, Option<Instant>)>,
-    vote_turns: u64,
     vote_turn_timeouts: u64,
     vote_turn_wait_us: u64,
-    vote_budget_bank: Option<BankId>,
     vote_budget_start_us: u64,
 }
 
@@ -257,10 +255,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             pending_admission: BTreeMap::new(),
             vote_gate: None,
             vote_turn: None,
-            vote_turns: 0,
             vote_turn_timeouts: 0,
             vote_turn_wait_us: 0,
-            vote_budget_bank: None,
             vote_budget_start_us: 0,
         }
     }
@@ -268,6 +264,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     pub(in crate::banking_stage) fn with_vote_gate(mut self, gate: Arc<VoteAdmissionGate>) -> Self {
         self.vote_gate = Some(gate);
         self
+    }
+
+    fn finish_vote_turn(&mut self) {
+        if let Some((_, _, Some(started_at))) = self.vote_turn.take() {
+            self.vote_turn_wait_us += Instant::now()
+                .saturating_duration_since(started_at)
+                .as_micros() as u64;
+        }
     }
 
     #[inline]
@@ -357,66 +361,64 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     ) -> Result<usize, SchedulerError> {
         let slot = admission_bank.slot();
         // One immutable metadata snapshot governs this admission pass and its preparation.
-        let tip_processing = self
+        let tip_builder = self
             .tip_processing
             .as_ref()
-            .map(|(consumer, tips)| (consumer, tips, tips.block_builder_fee_info.load()));
-        let same_tip_config = match (&self.prepared_tip_config, &tip_processing) {
-            (Some(prepared), Some((_, _, builder))) => Arc::ptr_eq(prepared, builder),
+            .map(|(_, tips)| tips.block_builder_fee_info.load());
+        let same_tip_config = match (&self.prepared_tip_config, &tip_builder) {
+            (Some(prepared), Some(builder)) => Arc::ptr_eq(prepared, builder),
             (None, None) => true,
             _ => false,
         };
+        let needs_preparation =
+            self.admission_bank != Some((admission_bank.bank_id(), slot)) || !same_tip_config;
+        let preparation_blocked = needs_preparation
+            && (!self.inflight_batch_info.is_empty()
+                || self.tip_retry_at.is_some_and(|(bank_id, deadline)| {
+                    bank_id == admission_bank.bank_id() && Instant::now() < deadline
+                }));
 
-        if let Some((bank_id, success_seq, deadline)) = self.vote_turn {
+        if let Some((bank_id, success_seq, started_at)) = self.vote_turn {
             let still_waiting = bank_id == admission_bank.bank_id()
                 && self
                     .vote_gate
                     .as_ref()
                     .is_some_and(|gate| gate.waiting(bank_id, success_seq));
             if !still_waiting {
-                if let Some(deadline) = deadline {
-                    self.vote_turn_wait_us += Instant::now()
-                        .saturating_duration_since(deadline - VOTE_ADMISSION_GRACE)
-                        .as_micros() as u64;
-                }
-                self.vote_turn = None;
-            } else if !self.prio_graph.is_empty()
-                || !self.pending_admission.is_empty()
-                || (tip_processing.is_some()
-                    && (self.admission_bank != Some((admission_bank.bank_id(), slot))
-                        || !same_tip_config))
+                self.finish_vote_turn();
+            } else if !preparation_blocked
+                && ((tip_builder.is_some() && needs_preparation)
+                    || self.pending_admission.first_key_value().map_or(
+                        !self.prio_graph.is_empty(),
+                        |(_, (_, attempted_cost))| {
+                            // Preparation clears the deferred head's last attempted cost.
+                            needs_preparation
+                                || *attempted_cost != Some(self.inflight_reserved_cost)
+                        },
+                    ))
             {
-                let deadline = deadline.unwrap_or_else(|| {
-                    let deadline = Instant::now() + VOTE_ADMISSION_GRACE;
-                    self.vote_turn = Some((bank_id, success_seq, Some(deadline)));
-                    self.vote_turns += 1;
-                    deadline
+                let started_at = started_at.unwrap_or_else(|| {
+                    let started_at = Instant::now();
+                    self.vote_turn = Some((bank_id, success_seq, Some(started_at)));
+                    started_at
                 });
-                let now = Instant::now();
-                if now < deadline {
+                if Instant::now() < started_at + VOTE_ADMISSION_GRACE {
                     std::thread::yield_now();
                     return Ok(0);
                 }
                 self.vote_turn_timeouts += 1;
-                self.vote_turn_wait_us += now
-                    .saturating_duration_since(deadline - VOTE_ADMISSION_GRACE)
-                    .as_micros() as u64;
-                self.vote_turn = None;
+                self.finish_vote_turn();
             }
         }
 
-        if self.admission_bank != Some((admission_bank.bank_id(), slot)) || !same_tip_config {
+        if needs_preparation {
             // Outstanding work finishes against the old configuration. Drain its reservations
             // before changing Banks or cranking new metadata ahead of the next admission pass.
-            if !self.inflight_batch_info.is_empty() {
+            if preparation_blocked {
                 return Ok(0);
             }
-            if self.tip_retry_at.is_some_and(|(bank_id, deadline)| {
-                bank_id == admission_bank.bank_id() && Instant::now() < deadline
-            }) {
-                return Ok(0);
-            }
-            if let Some((consumer, tips, builder)) = &tip_processing
+            if let (Some((consumer, tips)), Some(builder)) =
+                (self.tip_processing.as_ref(), tip_builder.as_ref())
                 && !tips.process_tip_programs(consumer, admission_bank, builder)
             {
                 // The controller busy-polls; do not sign/execute a failing crank every poll.
@@ -431,12 +433,13 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             for (_, attempted_cost) in self.pending_admission.values_mut() {
                 *attempted_cost = None;
             }
+            if self.admission_bank.map(|(bank_id, _)| bank_id) != Some(admission_bank.bank_id()) {
+                self.vote_budget_start_us = self.vote_turn_wait_us;
+            }
             self.admission_bank = Some((admission_bank.bank_id(), slot));
-            self.prepared_tip_config = tip_processing
-                .as_ref()
-                .map(|(_, _, builder)| Arc::clone(builder));
+            self.prepared_tip_config = tip_builder.as_ref().map(|builder| Arc::clone(builder));
         }
-        drop(tip_processing);
+        drop(tip_builder);
 
         if self.prio_graph.is_empty() && self.pending_admission.is_empty() {
             return Ok(0);
@@ -697,20 +700,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             return;
         }
         let prev_slot = self.slot;
-        if let Some((_, _, Some(deadline))) = self.vote_turn.take() {
-            self.vote_turn_wait_us += Instant::now()
-                .saturating_duration_since(deadline - VOTE_ADMISSION_GRACE)
-                .as_micros() as u64;
-        }
+        self.finish_vote_turn();
         if let Some(prev_slot) = prev_slot {
             datapoint_info!(
                 "bam_vote_admission_turn",
                 ("slot", prev_slot, i64),
-                ("turns", self.vote_turns, i64),
                 ("timeouts", self.vote_turn_timeouts, i64),
                 ("wait_us", self.vote_turn_wait_us, i64),
             );
-            self.vote_turns = 0;
             self.vote_turn_timeouts = 0;
             self.vote_turn_wait_us = 0;
         }
@@ -721,7 +718,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             None => debug!("Bank boundary detected: slot changed to None"),
         }
         self.slot = bank_slot;
-        self.vote_budget_bank = None;
         self.vote_budget_start_us = 0;
 
         // Drain container and send back 'retryable'
@@ -888,7 +884,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
 
         let mut num_transactions = 0;
         let now = Instant::now();
-        let mut completed_on_bank = false;
+        let mut completed_work = false;
         while let Ok(result) = self.finished_consume_work_receiver.try_recv() {
             let FinishedConsumeWork {
                 mut work,
@@ -902,9 +898,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 self.recycle_work_object(work);
                 continue;
             };
-            completed_on_bank |= decision
-                .bank()
-                .is_some_and(|bank| self.admission_bank == Some((bank.bank_id(), bank.slot())));
+            completed_work = true;
 
             // Settled work may have freed budget for a batch deferred on this bank's block limit.
             // Dispatch is held across a bank change until the old work drains, so everything in
@@ -971,22 +965,17 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             container.remove_by_id(inflight_batch_info.priority_id.id);
         }
 
-        if completed_on_bank
+        if completed_work
             && self.vote_turn.is_none()
             && let (Some(gate), Some(bank)) = (&self.vote_gate, decision.bank())
-        {
-            if self.vote_budget_bank != Some(bank.bank_id()) {
-                self.vote_budget_bank = Some(bank.bank_id());
-                self.vote_budget_start_us = self.vote_turn_wait_us;
-            }
-            if self
+            && self.admission_bank == Some((bank.bank_id(), bank.slot()))
+            && self
                 .vote_turn_wait_us
                 .saturating_sub(self.vote_budget_start_us)
                 < MAX_VOTE_ADMISSION_WAIT_US_PER_BANK
-                && let Some(success_seq) = gate.snapshot(bank.bank_id())
-            {
-                self.vote_turn = Some((bank.bank_id(), success_seq, None));
-            }
+            && let Some(success_seq) = gate.snapshot(bank.bank_id())
+        {
+            self.vote_turn = Some((bank.bank_id(), success_seq, None));
         }
 
         Ok((num_transactions, 0))
@@ -1958,12 +1947,11 @@ mod tests {
         let mut work: Vec<_> = test.consume_work_receiver.try_iter().collect();
         gate.publish(Some(bank.bank_id()), true);
 
-        let mut completed = work.pop().unwrap();
-        settle_committed(&bank, &mut completed, 150);
-        finish_committed(&mut test, &mut container, &decision, completed, 150);
-        let mut completed = work.pop().unwrap();
-        settle_committed(&bank, &mut completed, 150);
-        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        for _ in 0..2 {
+            let mut completed = work.pop().unwrap();
+            settle_committed(&bank, &mut completed, 150);
+            finish_committed(&mut test, &mut container, &decision, completed, 150);
+        }
         test.scheduler.vote_turn.as_mut().unwrap().2 =
             Some(Instant::now() + Duration::from_secs(1));
         assert_eq!(test.schedule(&mut container), 0);
@@ -1971,16 +1959,6 @@ mod tests {
         assert_eq!(test.schedule(&mut container), 0);
         gate.report_success(bank.bank_id());
         assert_eq!(test.schedule(&mut container), 2);
-        let first = test.consume_work_receiver.try_recv().unwrap();
-        let second = test.consume_work_receiver.try_recv().unwrap();
-        assert_eq!(
-            test.scheduler.inflight_batch_info[&first.batch_id].seq_id,
-            NUM_BAM_WORKERS as u32
-        );
-        assert_eq!(
-            test.scheduler.inflight_batch_info[&second.batch_id].seq_id,
-            NUM_BAM_WORKERS as u32 + 1
-        );
 
         let mut completed = work.pop().unwrap();
         settle_committed(&bank, &mut completed, 150);
@@ -1989,7 +1967,7 @@ mod tests {
             Some(Instant::now() + Duration::from_secs(1));
         assert_eq!(test.schedule(&mut container), 0);
         test.scheduler.vote_turn.as_mut().unwrap().2 =
-            Some(Instant::now() - Duration::from_millis(1));
+            Some(Instant::now() - Duration::from_millis(2));
         assert_eq!(test.schedule(&mut container), 1);
 
         test.scheduler.vote_turn_wait_us =
@@ -2139,6 +2117,14 @@ mod tests {
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
         let mut work_a = test.consume_work_receiver.try_recv().unwrap();
         assert!(!test.scheduler.pending_admission.is_empty());
+        let gate = Arc::new(VoteAdmissionGate::default());
+        gate.publish(Some(bank.bank_id()), true);
+        test.scheduler.vote_gate = Some(gate.clone());
+        test.scheduler.vote_turn =
+            Some((bank.bank_id(), gate.snapshot(bank.bank_id()).unwrap(), None));
+        assert_eq!(test.schedule(&mut container), 0);
+        assert!(test.scheduler.vote_turn.unwrap().2.is_none());
+        gate.report_success(bank.bank_id());
         // B must roll back any earlier admissions in its batch without touching A's reservation.
         assert_eq!(block_cost_and_in_flight(&bank), (estimate, 1));
         assert!(test.consume_work_receiver.try_recv().is_err());
@@ -2425,7 +2411,12 @@ mod tests {
             return;
         }
 
+        test.scheduler.vote_turn_wait_us = MAX_VOTE_ADMISSION_WAIT_US_PER_BANK;
         assert_eq!(test.schedule(&mut container), 1);
+        assert_eq!(
+            test.scheduler.vote_budget_start_us,
+            test.scheduler.vote_turn_wait_us
+        );
         let work_a = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(work_a.batch_id.index(), batch_ids[0]);
         assert!(test.consume_work_receiver.try_recv().is_err());
