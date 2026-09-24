@@ -41,6 +41,8 @@ use {
 
 const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+const STALE_ATTEMPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<ArcSwap<Option<String>>>,
     new_identity: Arc<ArcSwap<Option<Pubkey>>>,
@@ -192,19 +194,47 @@ impl BamManager {
                         continue;
                     };
 
+                    let should_stop = || {
+                        exit.load(Ordering::Relaxed)
+                            || bam_url.load_full() != configured_bam_url
+                            || discovery
+                                .as_ref()
+                                .is_some_and(|discovery| discovery.selected_url() != connect_url)
+                    };
+
                     dependencies
                         .bam_enabled
                         .store(BamConnectionState::Connecting as u8, Ordering::Release);
                     builder_config_version = 0;
-                    let result = runtime.block_on(BamConnection::try_init(
-                        url.clone(),
-                        dependencies.cluster_info.clone(),
-                        dependencies.batch_sender.clone(),
-                        &mut outbound_receiver,
-                    ));
+                    let result = runtime.block_on(async {
+                        tokio::select! {
+                            result = BamConnection::try_init(
+                                url.clone(),
+                                dependencies.cluster_info.clone(),
+                                dependencies.batch_sender.clone(),
+                                &mut outbound_receiver,
+                            ) => Some(result),
+                            _ = async {
+                                while !should_stop() {
+                                    tokio::time::sleep(STALE_ATTEMPT_POLL_INTERVAL).await;
+                                }
+                            } => None,
+                        }
+                    });
                     let connection = match result {
-                        Ok(connection) => connection,
-                        Err(e) => {
+                        Some(Ok(connection)) => connection,
+                        None => {
+                            if exit.load(Ordering::Relaxed) {
+                                info!(
+                                    "Validator exiting, abandoning BAM connection attempt to {url}"
+                                );
+                            } else {
+                                info!("BAM URL changed while connecting to {url}, abandoning it");
+                            }
+                            Self::set_bam_disconnected(&dependencies);
+                            continue;
+                        }
+                        Some(Err(e)) => {
                             error!("Failed to connect to BAM with url: {url}: {e}");
                             Self::set_bam_disconnected(&dependencies);
                             std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
@@ -215,16 +245,22 @@ impl BamManager {
                     // Wait until connection is healthy
                     if !connection.wait_until_healthy_and_config_received(
                         MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
-                        &exit,
+                        should_stop,
                     ) {
-                        warn!(
-                            "BAM connection not healthy after waiting for \
-                             {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and will \
-                             retry",
-                        );
                         Self::set_bam_disconnected(&dependencies);
                         outbound_receiver = Some(runtime.block_on(connection.shutdown()));
-                        std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                        if exit.load(Ordering::Relaxed) {
+                            info!("Validator exiting, abandoning BAM connection attempt to {url}");
+                        } else if should_stop() {
+                            info!("BAM URL changed while waiting on {url}, abandoning it");
+                        } else {
+                            warn!(
+                                "BAM connection not healthy after waiting for \
+                                 {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and will \
+                                 retry",
+                            );
+                            std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                        }
                         continue;
                     }
 
