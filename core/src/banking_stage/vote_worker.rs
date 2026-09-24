@@ -13,7 +13,10 @@ use {
     crate::{
         banking_stage::{
             consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
-            transaction_scheduler::transaction_state_container::RuntimeTransactionView,
+            transaction_scheduler::{
+                bam_scheduler::VoteAdmissionGate,
+                transaction_state_container::RuntimeTransactionView,
+            },
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
@@ -23,7 +26,7 @@ use {
     crossbeam_channel::RecvTimeoutError,
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{
-        FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET, MAX_TRANSACTION_FORWARDING_DELAY,
+        BankId, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET, MAX_TRANSACTION_FORWARDING_DELAY,
     },
     solana_measure::{measure::Measure, measure_us},
     solana_perf::packet::bytes::Bytes,
@@ -65,6 +68,7 @@ pub struct VoteWorker {
     bank_forks: Arc<RwLock<BankForks>>,
     consumer: Consumer,
     bundle_account_locker: BundleAccountLocker,
+    vote_gate: Option<Arc<VoteAdmissionGate>>,
 }
 
 impl VoteWorker {
@@ -89,6 +93,19 @@ impl VoteWorker {
             bank_forks,
             consumer,
             bundle_account_locker,
+            vote_gate: None,
+        }
+    }
+
+    pub(in crate::banking_stage) fn with_vote_gate(mut self, gate: Arc<VoteAdmissionGate>) -> Self {
+        self.consumer = self.consumer.with_vote_gate(gate.clone());
+        self.vote_gate = Some(gate);
+        self
+    }
+
+    fn publish_pending(&self, bank: Option<BankId>) {
+        if let Some(gate) = &self.vote_gate {
+            gate.publish(bank, !self.storage.is_empty());
         }
     }
 
@@ -126,6 +143,7 @@ impl VoteWorker {
                     break;
                 }
             }
+            self.publish_pending(None);
             // Check for new packets from the gossip receiver
             match self.gossip_receiver.receive_and_buffer_packets(
                 &mut self.storage,
@@ -140,6 +158,7 @@ impl VoteWorker {
                     break;
                 }
             }
+            self.publish_pending(None);
             banking_stage_stats.report(1000);
         }
     }
@@ -159,6 +178,9 @@ impl VoteWorker {
         // packet processing metrics from the next slot towards the metrics
         // of the previous slot
         slot_metrics_tracker.apply_action(metrics_action);
+
+        let bank_id = decision.bank().map(|bank| bank.bank_id());
+        self.publish_pending(bank_id);
 
         match decision {
             BufferedPacketsDecision::Consume(bank) => {
@@ -185,6 +207,7 @@ impl VoteWorker {
             }
             BufferedPacketsDecision::Hold => {}
         }
+        self.publish_pending(bank_id);
     }
 
     fn consume_buffered_packets(
@@ -194,6 +217,7 @@ impl VoteWorker {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
     ) {
         let restored_vote_count = self.storage.restore_taken_votes_for_bank(bank);
+        self.publish_pending(Some(bank.bank_id()));
         if self.storage.is_empty() {
             return;
         }
