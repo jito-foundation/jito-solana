@@ -4,7 +4,7 @@ use {
     chrono::{DateTime, Utc},
     futures::{StreamExt, stream},
     jito_protos::proto::bam_api::{ConfigRequest, bam_node_api_client::BamNodeApiClient},
-    rand::{Rng, rng, seq::IndexedRandom},
+    rand::{Rng, rng, seq::SliceRandom},
     reqwest::Url,
     serde::{Deserialize, Deserializer},
     solana_metrics::{datapoint_info, datapoint_warn},
@@ -26,9 +26,7 @@ const RESYNC_INTERVAL_STALLED: Duration = Duration::from_secs(2);
 // Must outlast the worst-case BamManager connection attempt of 16 seconds.
 const CONNECT_GRACE: Duration = Duration::from_secs(20);
 
-const PROBE_CAP: usize = 32;
-
-const PROBE_FANOUT: usize = 16;
+const PROBE_FANOUT: usize = 32;
 
 const PROBE_SAMPLES: usize = 3;
 
@@ -335,25 +333,26 @@ impl BamDiscovery {
     }
 
     async fn probe_and_rank(nodes: &[ServedNode]) -> Vec<RankedNode> {
-        let pool: Vec<ServedNode> = nodes
-            .choose_multiple(&mut rng(), PROBE_CAP)
-            .cloned()
-            .collect();
+        // A round cut short by its budget then drops different nodes each time.
+        let mut pool = nodes.to_vec();
+        pool.shuffle(&mut rng());
 
-        let probes = stream::iter(&pool)
+        let started = Instant::now();
+        let mut ranked = stream::iter(&pool)
             .map(Self::probe)
             .buffer_unordered(PROBE_FANOUT)
             .filter_map(std::future::ready)
-            .collect::<Vec<_>>();
-
-        let Ok(mut ranked) = timeout(PROBE_ROUND_BUDGET, probes).await else {
+            .take_until(tokio::time::sleep(PROBE_ROUND_BUDGET))
+            .collect::<Vec<_>>()
+            .await;
+        if started.elapsed() >= PROBE_ROUND_BUDGET {
             warn!(
-                "BAM probe round timed out after {PROBE_ROUND_BUDGET:?}, probed {} nodes",
-                pool.len()
+                "BAM probe round hit its {PROBE_ROUND_BUDGET:?} budget, ranking the {} nodes that \
+                 answered",
+                ranked.len()
             );
             datapoint_warn!("bam_discovery-probe_round_timeout", ("count", 1, i64));
-            return Vec::new();
-        };
+        }
         ranked.sort_unstable_by_key(|node| node.rtt_us);
         let usable = ranked.partition_point(Self::is_usable);
 
