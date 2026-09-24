@@ -1,0 +1,7 @@
+[features]
+# Use "testnet" for a testnet baseline, or a saved snapshot path.
+baseline = "mainnet-beta"
+# Alpenglow active at genesis; fast leader handover activates next epoch.
+enable = ["A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS"]
+disable = []
+activate_next_epoch = ["FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH"]
