@@ -110,7 +110,7 @@ pub struct Consumer {
     committer: Committer,
     transaction_recorder: TransactionRecorder,
     log_messages_bytes_limit: Option<usize>,
-    vote_gate: Option<Arc<VoteAdmissionGate>>,
+    pub(in crate::banking_stage) vote_gate: Option<Arc<VoteAdmissionGate>>,
 }
 
 impl Consumer {
@@ -125,11 +125,6 @@ impl Consumer {
             log_messages_bytes_limit,
             vote_gate: None,
         }
-    }
-
-    pub(in crate::banking_stage) fn with_vote_gate(mut self, gate: Arc<VoteAdmissionGate>) -> Self {
-        self.vote_gate = Some(gate);
-        self
     }
 
     pub fn process_and_record_transactions(
@@ -1186,12 +1181,12 @@ mod tests {
         let TestFrame {
             mint_keypair,
             bank,
-            consumer,
+            mut consumer,
             ..
         } = setup_test(None);
         let gate = Arc::new(VoteAdmissionGate::default());
         gate.publish(Some(bank.bank_id()), true);
-        let consumer = consumer.with_vote_gate(gate.clone());
+        consumer.vote_gate = Some(gate.clone());
         let transactions = sanitize_transactions(vec![system_transaction::transfer(
             &mint_keypair,
             &Pubkey::new_unique(),
