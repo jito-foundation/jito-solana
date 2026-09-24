@@ -29,8 +29,6 @@ set -o errtrace   # Ensure that any error traps are inherited by functions
 : "${CI_TIMEOUT_MINUTES:=45}"
 : "${CI_POLL_SECONDS:=60}"
 
-declare -g result_status="failed"
-declare -g result_detail="Run failed before producing a result"
 declare -g result_url=""
 declare -g channel_sha=""
 declare -g upstream_sha=""
@@ -40,15 +38,12 @@ declare -gr staging_ref="refs/remotes/origin/${staging_branch}"
 declare -gr conflict_issue_title="Nightly rebase conflict: ${CHANNEL}"
 declare -gr run_url="${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
 
-buildkite_url() {
-    echo "https://buildkite.com/jito/jito-solana/builds?commit=$1"
-}
-
 write_result() {
+    local -r status="$1" detail="$2"
     jq -n \
         --arg channel "${CHANNEL}" \
-        --arg status "${result_status}" \
-        --arg detail "${result_detail}" \
+        --arg status "${status}" \
+        --arg detail "${detail}" \
         --arg url "${result_url}" \
         --arg channel_sha "${channel_sha}" \
         --arg upstream_sha "${upstream_sha}" \
@@ -61,12 +56,10 @@ write_result() {
             upstream_sha: $upstream_sha
         }' >| "${RESULT_FILE}"
 }
-write_result  # a crash leaves this failed result for the summary
+write_result failed "Run failed before producing a result"
 
 find_open_pr() {
     gh pr list \
-        --repo "${GH_REPO}" \
-        --state open \
         --base "${CHANNEL}" \
         --head "${staging_branch}" \
         --json number \
@@ -75,8 +68,6 @@ find_open_pr() {
 
 find_conflict_issue() {
     gh issue list \
-        --repo "${GH_REPO}" \
-        --state open \
         --search "in:title \"${conflict_issue_title}\"" \
         --json number \
         --jq '.[0].number // empty'
@@ -89,7 +80,6 @@ close_conflict_issue() {
 
     if [[ -n "${issue_number}" ]]; then
         gh issue close "${issue_number}" \
-            --repo "${GH_REPO}" \
             --comment "Resolved by ${resolution_url}."
     fi
 }
@@ -100,23 +90,18 @@ open_pr_action() {
     pr_number="$(find_open_pr)"
 
     if [[ -n "${pr_number}" ]]; then
-        gh pr "$1" "${pr_number}" --repo "${GH_REPO}" "${@:2}"
+        gh pr "$1" "${pr_number}" "${@:2}"
     fi
 }
 
 write_conflict_report() {
     local -r last_staging_sha="$1"
-    local conflict_files
+    local -r conflict_files="$2"
     local issue_number
     local issue_url
     local report_file
 
-    conflict_files="$(git diff --name-only --diff-filter=U)"
     report_file="$(mktemp)"
-
-    if [[ -z "${conflict_files}" ]]; then
-        conflict_files="No unmerged paths reported"
-    fi
 
     cat >| "${report_file}" <<EOF
 The nightly rebase of \`${CHANNEL}\` onto
@@ -138,31 +123,38 @@ EOF
     issue_number="$(find_conflict_issue)"
     if [[ -n "${issue_number}" ]]; then
         gh issue edit "${issue_number}" \
-            --repo "${GH_REPO}" \
             --body-file "${report_file}" \
             --add-assignee "${CHANNEL_OWNER}"
-        issue_url="$(gh issue view "${issue_number}" \
-            --repo "${GH_REPO}" --json url --jq .url)"
+        issue_url="${GITHUB_SERVER_URL}/${GH_REPO}/issues/${issue_number}"
     else
         issue_url="$(gh issue create \
-            --repo "${GH_REPO}" \
             --title "${conflict_issue_title}" \
             --body-file "${report_file}" \
             --assignee "${CHANNEL_OWNER}")"
     fi
 
-    result_status="conflict"
-    result_detail="Rebase conflict"
     result_url="${issue_url}"
-    write_result
+    write_result conflict "Rebase conflict"
 }
 
 write_pr_body() {
-    local -r carry_file="$1"
-    local -r upstream_count="$2"
-    local -r range_diff_file="$3"
-    local -r staging_sha="$4"
-    local -r body_file="$5"
+    local -r staging_sha="$1" body_file="$2"
+    local carry_text upstream_count range_diff_text old_carry_base
+
+    carry_text="$(git log --format="- \`%h\` %s" \
+        "agave/${UPSTREAM_CHANNEL}..origin/${CHANNEL}")"
+    carry_text="${carry_text:-- None}"
+    upstream_count="$(git rev-list --count \
+        "origin/${CHANNEL}..agave/${UPSTREAM_CHANNEL}")"
+    old_carry_base="$(git merge-base "origin/${CHANNEL}" "agave/${UPSTREAM_CHANNEL}")"
+    if [[ "${old_carry_base}" == "${channel_sha}" ||
+        "${upstream_sha}" == "${staging_sha}" ]]; then
+        range_diff_text="No comparable range: at least one side has no Jito carry commits."
+    else
+        range_diff_text="$(git range-diff --no-color \
+            "${old_carry_base}..origin/${CHANNEL}" \
+            "agave/${UPSTREAM_CHANNEL}..${staging_sha}")"
+    fi
 
     cat >| "${body_file}" <<EOF
 Automated nightly rebase of \`${CHANNEL}\` onto
@@ -172,7 +164,7 @@ Automated nightly rebase of \`${CHANNEL}\` onto
 - Agave tip: \`${upstream_sha}\`
 - Upstream delta: ${upstream_count} commits
 - Staging branch: \`${staging_branch}\`
-- [Buildkite]($(buildkite_url "${staging_sha}"))
+- [Buildkite](https://buildkite.com/jito/jito-solana/builds?commit=${staging_sha})
 
 Do not merge this PR. Landing rewrites \`${CHANNEL}\` to keep Agave
 ancestry, so a jito-solana team member force-pushes the approved
@@ -186,7 +178,7 @@ git push --force-with-lease=refs/heads/${CHANNEL}:${channel_sha} origin \\
 
 Jito carry commits:
 
-$(cat "${carry_file}")
+${carry_text}
 
 <details>
 <summary>Patch invariance: range-diff of the carry commits before and after</summary>
@@ -194,7 +186,7 @@ $(cat "${carry_file}")
 Every intra-patch change must trace to an upstream commit.
 
 \`\`\`text
-$(cat "${range_diff_file}")
+${range_diff_text}
 \`\`\`
 
 </details>
@@ -217,14 +209,11 @@ upsert_pr() {
     pr_number="$(find_open_pr)"
     if [[ -n "${pr_number}" ]]; then
         gh pr edit "${pr_number}" \
-            --repo "${GH_REPO}" \
             --title "${title}" \
             --body-file "${body_file}"
-        pr_url="$(gh pr view "${pr_number}" \
-            --repo "${GH_REPO}" --json url --jq .url)"
+        pr_url="${GITHUB_SERVER_URL}/${GH_REPO}/pull/${pr_number}"
     else
         pr_url="$(gh pr create \
-            --repo "${GH_REPO}" \
             --draft \
             --base "${CHANNEL}" \
             --head "${staging_branch}" \
@@ -232,10 +221,8 @@ upsert_pr() {
             --body-file "${body_file}")"
     fi
 
-    result_status="draft_pr"
-    result_detail="Draft PR refreshed"
     result_url="${pr_url}"
-    write_result
+    write_result draft_pr "Draft PR refreshed"
     close_conflict_issue "${pr_url}"
 }
 
@@ -281,11 +268,9 @@ land_channel() {
     local ci_state
     ci_state="$(wait_for_ci "${staging_sha}")"
 
-    result_url="$(buildkite_url "${staging_sha}")"
+    result_url="https://buildkite.com/jito/jito-solana/builds?commit=${staging_sha}"
     if [[ "${ci_state}" != "success" ]]; then
-        result_status="ci_${ci_state}"
-        result_detail="Buildkite ${ci_state}; ${staging_branch} left for review"
-        write_result
+        write_result "ci_${ci_state}" "Buildkite ${ci_state}; ${staging_branch} left for review"
         return
     fi
 
@@ -294,27 +279,20 @@ land_channel() {
     if git push \
         --force-with-lease="refs/heads/${CHANNEL}:${channel_sha}" \
         origin "${staging_sha}:refs/heads/${CHANNEL}"; then
-        result_status="landed"
-        result_detail="Rebased ${CHANNEL} onto agave/${UPSTREAM_CHANNEL}; previous tip ${channel_sha:0:10}"
         result_url="${GITHUB_SERVER_URL}/${GH_REPO}/commit/${staging_sha}"
-        write_result
+        write_result landed "Rebased ${CHANNEL} onto agave/${UPSTREAM_CHANNEL}; previous tip ${channel_sha:0:10}"
         close_conflict_issue "${result_url}"
     else
-        result_status="stale"
-        result_detail="${CHANNEL} moved during CI; retrying next run"
-        write_result
+        write_result stale "${CHANNEL} moved during CI; retrying next run"
     fi
 }
 
 main() {
     local staging_sha=""
     local candidate_sha
-    local upstream_count
-    local carry_file
-    local range_diff_file
     local body_file
     local rebase_status
-    local old_carry_base
+    local conflict_files
 
     git remote add agave "${UPSTREAM_REPO}"
     git -c http.https://github.com/.extraheader= fetch --no-tags agave \
@@ -325,27 +303,18 @@ main() {
     channel_sha="$(git rev-parse "origin/${CHANNEL}")"
     upstream_sha="$(git rev-parse "agave/${UPSTREAM_CHANNEL}")"
 
-    if git fetch --no-tags origin \
-        "+refs/heads/${staging_branch}:${staging_ref}" 2>/dev/null; then
-        staging_sha="$(git rev-parse "${staging_ref}")"
-    fi
-
     if git merge-base --is-ancestor \
         "agave/${UPSTREAM_CHANNEL}" "origin/${CHANNEL}"; then
         open_pr_action close --comment "Channel now contains agave/${UPSTREAM_CHANNEL}."
         close_conflict_issue \
             "${GITHUB_SERVER_URL}/${GH_REPO}/commit/${channel_sha}"
-        result_status="fresh"
-        result_detail="Channel already contains the Agave tip"
-        write_result
+        write_result fresh "Channel already contains the Agave tip"
         return
     fi
 
-    carry_file="$(mktemp)"
-    git log --format="- \`%h\` %s" \
-        "agave/${UPSTREAM_CHANNEL}..origin/${CHANNEL}" >| "${carry_file}"
-    if [[ ! -s "${carry_file}" ]]; then
-        echo "- None" >| "${carry_file}"
+    if git fetch --no-tags origin \
+        "+refs/heads/${staging_branch}:${staging_ref}" 2>/dev/null; then
+        staging_sha="$(git rev-parse "${staging_ref}")"
     fi
 
     git checkout -B "rebase-candidate/${CHANNEL}" "origin/${CHANNEL}"
@@ -353,14 +322,14 @@ main() {
         :
     else
         rebase_status="$?"
-        if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
-            write_conflict_report "${staging_sha}"
+        conflict_files="$(git diff --name-only --diff-filter=U)"
+        if [[ -n "${conflict_files}" ]]; then
+            write_conflict_report "${staging_sha}" "${conflict_files}"
             git rebase --abort
             open_pr_action comment --body "Tonight's rebase conflicted: ${result_url}. This staging head is still valid, just stale."
             return
         fi
-        result_detail="Rebase failed without conflicts"
-        write_result
+        write_result failed "Rebase failed without conflicts"
         git rebase --abort || true
         return "${rebase_status}"
     fi
@@ -384,21 +353,8 @@ main() {
         return
     fi
 
-    upstream_count="$(git rev-list --count \
-        "origin/${CHANNEL}..agave/${UPSTREAM_CHANNEL}")"
-    range_diff_file="$(mktemp)"
-    old_carry_base="$(git merge-base "origin/${CHANNEL}" "agave/${UPSTREAM_CHANNEL}")"
-    if [[ -z "$(git rev-list --max-count=1 "${old_carry_base}..origin/${CHANNEL}")" ||
-        -z "$(git rev-list --max-count=1 "agave/${UPSTREAM_CHANNEL}..${candidate_sha}")" ]]; then
-        echo "No comparable range: at least one side has no Jito carry commits." >| "${range_diff_file}"
-    else
-        git range-diff --no-color \
-            "${old_carry_base}..origin/${CHANNEL}" \
-            "agave/${UPSTREAM_CHANNEL}..${candidate_sha}" >| "${range_diff_file}"
-    fi
     body_file="$(mktemp)"
-    write_pr_body "${carry_file}" "${upstream_count}" "${range_diff_file}" \
-        "${candidate_sha}" "${body_file}"
+    write_pr_body "${candidate_sha}" "${body_file}"
     upsert_pr "${body_file}"
 }
 

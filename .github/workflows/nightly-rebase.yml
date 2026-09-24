@@ -100,7 +100,6 @@ jobs:
 
           git config --global gpg.program "${RUNNER_TEMP}/gpg-wrapper"
           git config --global user.signingkey "${key_id}"
-          git config --global commit.gpgsign true
           git config --global user.name "${name}"
           git config --global user.email "${email}"
 
@@ -133,12 +132,8 @@ jobs:
       - channels
       - rebase
     runs-on: ubuntu-24.04
-    permissions:
-      actions: read
-      contents: read
     steps:
       - name: Download channel results
-        id: download
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
@@ -146,12 +141,12 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/nightly-rebase-results
 
-      - name: Build Slack summary
-        id: summary
+      - name: Post Slack summary
         env:
           CHANNELS_RESULT: ${{ needs.channels.result }}
           REBASE_RESULT: ${{ needs.rebase.result }}
           RESULTS_DIR: ${{ runner.temp }}/nightly-rebase-results
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           message="Nightly Agave rebase"
           message="${message}\nJobs: channels=${CHANNELS_RESULT}, rebase=${REBASE_RESULT}"
@@ -166,31 +161,14 @@ jobs:
             message="${message}\nNo channel results were produced."
           else
             for result_file in "${result_files[@]}"; do
-              channel=$(jq -r .channel "${result_file}")
-              status=$(jq -r .status "${result_file}")
-              detail=$(jq -r .detail "${result_file}")
-              url=$(jq -r .url "${result_file}")
-              line="${channel}: ${status} - ${detail}"
-              if [[ -n "${url}" ]]; then
-                line="${line} - ${url}"
-              fi
+              line=$(jq -r '"\(.channel): \(.status) - \(.detail)" + (if .url == "" then "" else " - \(.url)" end)' "${result_file}")
               message="${message}\n${line}"
             done
           fi
 
           message="${message}\nRun: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          {
-            echo "message<<EOF"
-            printf '%b\n' "${message}"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Post Slack summary
-        env:
-          MESSAGE: ${{ steps.summary.outputs.message }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          payload=$(jq -n --arg text "${MESSAGE}" '{text: $text}')
+          printf -v message '%b' "${message}"
+          payload=$(jq -n --arg text "${message}" '{text: $text}')
           curl -sS --fail-with-body -X POST \
             -H "Content-Type: application/json" \
             --data "${payload}" \
