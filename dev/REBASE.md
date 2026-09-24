@@ -25,11 +25,12 @@ weekdays 19:00 UTC, one job per channel in rebase-channels.json
         │              open/refresh draft PR     poll buildkite/jito-solana
         │              · carry commits                  │
         │              · range-diff             ┌───────┴─────────┐
-        │              · force-push command     │ green          │ red / 45m
+        │              · force-push command     │ green          │ red / 150m
         │                     │                 ▼                ▼
-        │                     ▼          git push --force-   report ci_failure
-        │              human reviews,    with-lease=<old      staging left
-        │              runs the command  tip> <channel>       in place
+        │                     ▼          mint fresh App     report ci_failure
+        │              human reviews,    token, then push    or ci_timeout;
+        │              runs the command  with-lease=<old     staging left
+        │                                tip> <channel>       in place
         │                     │                 │
         │                     ▼          ┌──────┴──────┐
         │              PR marked merged  │ ok          │ lease failed
@@ -45,8 +46,14 @@ weekdays 19:00 UTC, one job per channel in rebase-channels.json
 ## master (`landing: auto`)
 
 The bot rebases master's carry commits (the Jito Patch plus anything merged
-since) onto `agave/master`, pushes `ci/rebase/master`, waits for Buildkite,
+since) onto `agave/master`, pushes `ci/rebase/master`, waits up to 150 minutes
+for Buildkite using the workflow's read-only token, mints a fresh App token,
 then force-pushes master. Nothing to do unless Slack reports a problem.
+
+If GitHub missed the original push event for an unchanged no-carry staging
+head, the bot pushes a signed, tree-identical commit to
+`ci/rebase/<channel>-trigger`. Buildkite tests that commit, but landing still
+uses the clean `ci/rebase/<channel>` head.
 
 Merging your PR to master works as before: squash-merge it. It becomes a carry
 commit and is replayed every night. Keep carry commits few and self-contained;
@@ -67,7 +74,8 @@ The bot pushes `ci/rebase/vX.Y` and opens or refreshes one draft PR titled
 
 1. Read the upstream delta and the `range-diff` in the PR body. Every change
    inside a carry commit must trace to an upstream commit.
-2. Confirm Buildkite is green on the staging head.
+2. Confirm the PR's linked Buildkite build is green. It normally tests the
+   staging head; a lost-event retrigger tests the same tree on the trigger ref.
 3. Run the force-push command from the PR body. It uses `--force-with-lease`
    pinned to the tip the bot rebased from, so it fails if the channel moved.
 
@@ -103,7 +111,7 @@ in depth, including the consensus-path rules for `svm/`, `runtime/`,
 | `draft_pr` | Draft channel staged | land it when reviewed |
 | `conflict` | Rebase stopped, issue filed | owner resolves by hand |
 | `ci_failure` | Buildkite red on the staging head | check the build; staging branch is left in place |
-| `ci_timeout` | Buildkite did not report within 45 minutes | check Buildkite, rerun the workflow |
+| `ci_timeout` | Buildkite did not report within 150 minutes | check Buildkite, rerun the workflow |
 | `stale` | Channel moved during CI, landing skipped | none, next run retries |
 | `failed` | Script crashed | read the run log |
 
@@ -119,5 +127,7 @@ The workflow needs a GitHub App (Contents, Issues, Pull requests, Workflows:
 write; Commit statuses: read) installed on the repo, with `REBASE_APP_ID` and
 `REBASE_APP_PRIVATE_KEY` as secrets, plus `GPG_PRIVATE_KEY`,
 `GPG_PASSPHRASE`, and `SLACK_WEBHOOK_URL`. For every `auto` channel the App
-must be an `always` bypass actor on the rulesets protecting that branch. Keep
-it off the `v*.*` rulesets so the bot cannot rewrite release lines.
+must be an `always` bypass actor on the rulesets protecting that branch. The
+workflow mints one App token for staging and a fresh token after CI passes for
+landing. Keep the App off the `v*.*` rulesets so the bot cannot rewrite release
+lines.

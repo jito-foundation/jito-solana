@@ -4,8 +4,8 @@
 #
 # LANDING=draft: push the rebased head to ci/rebase/<channel> and refresh a
 # draft PR for a human to land by force-pushing the channel.
-# LANDING=auto:  push the staging branch, wait for Buildkite, then force-push
-# the channel with --force-with-lease so a concurrent merge aborts the landing.
+# LANDING=auto: stage, wait for Buildkite with `wait`, then invoke `land` with
+# fresh credentials. The channel lease makes a concurrent merge abort landing.
 #
 # Conflicts are never resolved here; they open or refresh an issue.
 
@@ -21,20 +21,26 @@ set -o errtrace   # Ensure that any error traps are inherited by functions
 : "${LANDING:?LANDING is required (auto|draft)}"
 : "${GH_REPO:?GH_REPO is required}"
 : "${RESULT_FILE:?RESULT_FILE is required}"
+: "${STATE_FILE:?STATE_FILE is required}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 : "${GITHUB_SERVER_URL:?GITHUB_SERVER_URL is required}"
+: "${GITHUB_RUN_ATTEMPT:=1}"
+: "${GITHUB_OUTPUT:=/dev/null}"
 : "${UPSTREAM_REPO:=https://github.com/anza-xyz/agave.git}"
 : "${CI_CONTEXT:=buildkite/jito-solana}"
-# GitHub App installation tokens expire after one hour; leave time to land.
-: "${CI_TIMEOUT_MINUTES:=45}"
+: "${CI_TIMEOUT_MINUTES:=150}"
 : "${CI_POLL_SECONDS:=60}"
 
 declare -g result_url=""
 declare -g channel_sha=""
 declare -g upstream_sha=""
+declare -g staging_sha=""
+declare -g ci_sha=""
 
 declare -gr staging_branch="ci/rebase/${CHANNEL}"
 declare -gr staging_ref="refs/remotes/origin/${staging_branch}"
+declare -gr trigger_branch="${staging_branch}-trigger"
+declare -gr trigger_ref="refs/remotes/origin/${trigger_branch}"
 declare -gr conflict_issue_title="Nightly rebase conflict: ${CHANNEL}"
 declare -gr run_url="${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
 
@@ -57,6 +63,27 @@ write_result() {
         }' >| "${RESULT_FILE}"
 }
 write_result failed "Run failed before producing a result"
+
+write_state() {
+    jq -n \
+        --arg channel_sha "${channel_sha}" \
+        --arg upstream_sha "${upstream_sha}" \
+        --arg staging_sha "${staging_sha}" \
+        --arg ci_sha "${ci_sha}" \
+        '{
+            channel_sha: $channel_sha,
+            upstream_sha: $upstream_sha,
+            staging_sha: $staging_sha,
+            ci_sha: $ci_sha
+        }' >| "${STATE_FILE}"
+}
+
+load_state() {
+    channel_sha="$(jq -er .channel_sha "${STATE_FILE}")"
+    upstream_sha="$(jq -er .upstream_sha "${STATE_FILE}")"
+    staging_sha="$(jq -er .staging_sha "${STATE_FILE}")"
+    ci_sha="$(jq -er .ci_sha "${STATE_FILE}")"
+}
 
 find_open_pr() {
     gh pr list \
@@ -138,7 +165,9 @@ EOF
 }
 
 write_pr_body() {
-    local -r staging_sha="$1" body_file="$2"
+    local -r body_file="$3"
+    local -r pr_staging_sha="$1"
+    local -r pr_ci_sha="$2"
     local carry_text upstream_count range_diff_text old_carry_base
 
     carry_text="$(git log --format="- \`%h\` %s" \
@@ -148,12 +177,12 @@ write_pr_body() {
         "origin/${CHANNEL}..agave/${UPSTREAM_CHANNEL}")"
     old_carry_base="$(git merge-base "origin/${CHANNEL}" "agave/${UPSTREAM_CHANNEL}")"
     if [[ "${old_carry_base}" == "${channel_sha}" ||
-        "${upstream_sha}" == "${staging_sha}" ]]; then
+        "${upstream_sha}" == "${pr_staging_sha}" ]]; then
         range_diff_text="No comparable range: at least one side has no Jito carry commits."
     else
         range_diff_text="$(git range-diff --no-color \
             "${old_carry_base}..origin/${CHANNEL}" \
-            "agave/${UPSTREAM_CHANNEL}..${staging_sha}")"
+            "agave/${UPSTREAM_CHANNEL}..${pr_staging_sha}")"
     fi
 
     cat >| "${body_file}" <<EOF
@@ -164,16 +193,20 @@ Automated nightly rebase of \`${CHANNEL}\` onto
 - Agave tip: \`${upstream_sha}\`
 - Upstream delta: ${upstream_count} commits
 - Staging branch: \`${staging_branch}\`
-- [Buildkite](https://buildkite.com/jito/jito-solana/builds?commit=${staging_sha})
+- [Buildkite](https://buildkite.com/jito/jito-solana/builds?commit=${pr_ci_sha})
 
 Do not merge this PR. Landing rewrites \`${CHANNEL}\` to keep Agave
 ancestry, so a jito-solana team member force-pushes the approved
 staging head:
 
 \`\`\`bash
-git fetch origin ${staging_branch}
+git fetch origin ${staging_branch}:refs/remotes/origin/${staging_branch}
+test "\$(git rev-parse origin/${staging_branch})" = ${pr_staging_sha} || {
+    echo "Staging moved; refresh this PR before landing." >&2
+    exit 1
+}
 git push --force-with-lease=refs/heads/${CHANNEL}:${channel_sha} origin \\
-    origin/${staging_branch}:refs/heads/${CHANNEL}
+    ${pr_staging_sha}:refs/heads/${CHANNEL}
 \`\`\`
 
 Jito carry commits:
@@ -260,18 +293,48 @@ same_carry_series() {
     range_diff="$(git range-diff --no-color --no-patch \
         "agave/${UPSTREAM_CHANNEL}..$1" \
         "agave/${UPSTREAM_CHANNEL}..$2" 2>/dev/null)" || return 1
-    [[ -n "${range_diff}" ]] && ! grep -Eq ' [!<>] ' <<< "${range_diff}"
+    [[ -n "${range_diff}" ]] &&
+        awk '$3 != "=" || $1 != $4 { exit 1 }' <<< "${range_diff}"
+}
+
+wait_for_landing() {
+    load_state
+    result_url="https://buildkite.com/jito/jito-solana/builds?commit=${ci_sha}"
+
+    case "$(wait_for_ci "${ci_sha}")" in
+        success)
+            write_result failed "Buildkite passed but landing did not complete"
+            echo 'ready-to-land=true' >> "${GITHUB_OUTPUT}"
+            ;;
+        failure)
+            write_result ci_failure "Buildkite failure; ${staging_branch} left for review"
+            ;;
+        timeout)
+            write_result ci_timeout "Buildkite timeout; ${staging_branch} left for review"
+            ;;
+    esac
 }
 
 land_channel() {
-    local -r staging_sha="$1"
-    local ci_state
-    ci_state="$(wait_for_ci "${staging_sha}")"
+    load_state
+    result_url="https://buildkite.com/jito/jito-solana/builds?commit=${ci_sha}"
 
-    result_url="https://buildkite.com/jito/jito-solana/builds?commit=${staging_sha}"
-    if [[ "${ci_state}" != "success" ]]; then
-        write_result "ci_${ci_state}" "Buildkite ${ci_state}; ${staging_branch} left for review"
+    if ! git fetch --no-tags origin \
+        "+refs/heads/${staging_branch}:${staging_ref}" ||
+        [[ "$(git rev-parse "${staging_ref}")" != "${staging_sha}" ]]; then
+        write_result failed "Staging moved after Buildkite; landing skipped"
         return
+    fi
+
+    if [[ "${ci_sha}" != "${staging_sha}" ]]; then
+        if ! git fetch --no-tags origin \
+            "+refs/heads/${trigger_branch}:${trigger_ref}" ||
+            [[ "$(git rev-parse "${trigger_ref}")" != "${ci_sha}" ]] ||
+            [[ "$(git rev-parse "${ci_sha}^{tree}")" != \
+                "$(git rev-parse "${staging_sha}^{tree}")" ]]; then
+            write_result failed "CI trigger no longer matches staging; landing skipped"
+            return
+        fi
     fi
 
     # The lease pins the channel tip we rebased from: a merge that landed
@@ -287,18 +350,24 @@ land_channel() {
     fi
 }
 
-main() {
-    local staging_sha=""
+stage() {
+    local previous_staging_sha=""
+    local old_trigger_sha=""
     local candidate_sha
     local body_file
     local rebase_status
     local conflict_files
+    local -a origin_fetch_args=(--no-tags --filter=blob:none)
 
     git remote add agave "${UPSTREAM_REPO}"
-    git -c http.https://github.com/.extraheader= fetch --no-tags agave \
-        "+refs/heads/${UPSTREAM_CHANNEL}:refs/remotes/agave/${UPSTREAM_CHANNEL}"
-    git fetch --no-tags origin \
+    if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+        origin_fetch_args+=(--unshallow)
+    fi
+    git fetch "${origin_fetch_args[@]}" origin \
         "+refs/heads/${CHANNEL}:refs/remotes/origin/${CHANNEL}"
+    git -c http.https://github.com/.extraheader= fetch \
+        --no-tags --filter=blob:none agave \
+        "+refs/heads/${UPSTREAM_CHANNEL}:refs/remotes/agave/${UPSTREAM_CHANNEL}"
 
     channel_sha="$(git rev-parse "origin/${CHANNEL}")"
     upstream_sha="$(git rev-parse "agave/${UPSTREAM_CHANNEL}")"
@@ -314,7 +383,7 @@ main() {
 
     if git fetch --no-tags origin \
         "+refs/heads/${staging_branch}:${staging_ref}" 2>/dev/null; then
-        staging_sha="$(git rev-parse "${staging_ref}")"
+        previous_staging_sha="$(git rev-parse "${staging_ref}")"
     fi
 
     git checkout -B "rebase-candidate/${CHANNEL}" "origin/${CHANNEL}"
@@ -324,7 +393,7 @@ main() {
         rebase_status="$?"
         conflict_files="$(git diff --name-only --diff-filter=U)"
         if [[ -n "${conflict_files}" ]]; then
-            write_conflict_report "${staging_sha}" "${conflict_files}"
+            write_conflict_report "${previous_staging_sha}" "${conflict_files}"
             git rebase --abort
             open_pr_action comment --body "Tonight's rebase conflicted: ${result_url}. This staging head is still valid, just stale."
             return
@@ -334,28 +403,53 @@ main() {
         return "${rebase_status}"
     fi
     candidate_sha="$(git rev-parse HEAD)"
+    ci_sha="${candidate_sha}"
 
     # Keep yesterday's staging head when tonight's rebase produced the same
     # tree on the same upstream tip, so its Buildkite result stays attached.
-    if [[ -n "${staging_sha}" ]] &&
-        git diff --quiet "${staging_sha}" "${candidate_sha}" &&
-        git merge-base --is-ancestor "agave/${UPSTREAM_CHANNEL}" "${staging_sha}" &&
-        same_carry_series "${staging_sha}" "${candidate_sha}" &&
-        has_ci_status "${staging_sha}"; then
-        candidate_sha="${staging_sha}"
+    if [[ "${previous_staging_sha}" == "${candidate_sha}" &&
+        "${candidate_sha}" == "${upstream_sha}" ]] &&
+        ! has_ci_status "${candidate_sha}"; then
+        if git fetch --no-tags origin \
+            "+refs/heads/${trigger_branch}:${trigger_ref}" 2>/dev/null; then
+            old_trigger_sha="$(git rev-parse "${trigger_ref}")"
+        fi
+        git checkout --detach "${candidate_sha}"
+        git commit --allow-empty --gpg-sign \
+            -m "ci: retrigger ${CHANNEL} rebase (${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT})"
+        ci_sha="$(git rev-parse HEAD)"
+        git push --force-with-lease="refs/heads/${trigger_branch}:${old_trigger_sha}" \
+            origin "${ci_sha}:refs/heads/${trigger_branch}"
+        staging_sha="${candidate_sha}"
+    elif [[ -n "${previous_staging_sha}" ]] &&
+        git diff --quiet "${previous_staging_sha}" "${candidate_sha}" &&
+        git merge-base --is-ancestor \
+            "agave/${UPSTREAM_CHANNEL}" "${previous_staging_sha}" &&
+        same_carry_series "${previous_staging_sha}" "${candidate_sha}" &&
+        has_ci_status "${previous_staging_sha}"; then
+        staging_sha="${previous_staging_sha}"
+        ci_sha="${previous_staging_sha}"
     else
-        git push --force-with-lease="refs/heads/${staging_branch}:${staging_sha}" \
+        git push --force-with-lease="refs/heads/${staging_branch}:${previous_staging_sha}" \
             origin "${candidate_sha}:refs/heads/${staging_branch}"
+        staging_sha="${candidate_sha}"
     fi
 
+    write_state
     if [[ "${LANDING}" == "auto" ]]; then
-        land_channel "${candidate_sha}"
+        write_result staged "Rebase staged; waiting for Buildkite"
+        echo 'needs-landing=true' >> "${GITHUB_OUTPUT}"
         return
     fi
 
     body_file="$(mktemp)"
-    write_pr_body "${candidate_sha}" "${body_file}"
+    write_pr_body "${staging_sha}" "${ci_sha}" "${body_file}"
     upsert_pr "${body_file}"
 }
 
-main "${@}"
+case "${1:-}" in
+    stage) stage ;;
+    wait) wait_for_landing ;;
+    land) land_channel ;;
+    *) echo "usage: $0 {stage|wait|land}" >&2; exit 2 ;;
+esac

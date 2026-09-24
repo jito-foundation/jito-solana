@@ -50,13 +50,14 @@ jobs:
     # All writes go through the App token; GITHUB_TOKEN stays read-only.
     permissions:
       contents: read
+      statuses: read
     strategy:
       fail-fast: false
       matrix:
         channel: ${{ fromJSON(needs.channels.outputs.channels) }}
     steps:
-      - name: Mint App token
-        id: app-token
+      - name: Mint staging App token
+        id: stage-token
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.REBASE_APP_ID }}
@@ -74,9 +75,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ matrix.channel.channel }}
-          fetch-depth: 0
+          fetch-depth: 1
+          fetch-tags: false
+          filter: blob:none
           path: channel
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.stage-token.outputs.token }}
 
       - name: Import signing key
         env:
@@ -104,16 +107,66 @@ jobs:
           git config --global user.email "${email}"
 
       - name: Stage nightly rebase
+        id: stage
         working-directory: channel
         env:
           CHANNEL: ${{ matrix.channel.channel }}
           CHANNEL_OWNER: ${{ matrix.channel.owner }}
           LANDING: ${{ matrix.channel.landing }}
           GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.stage-token.outputs.token }}
           RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
+          STATE_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}-state.json
           UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
-        run: ../workflow-source/.github/scripts/nightly-rebase.sh
+        run: ../workflow-source/.github/scripts/nightly-rebase.sh stage
+
+      - name: Wait for Buildkite
+        id: wait
+        if: steps.stage.outputs.needs-landing == 'true'
+        working-directory: channel
+        env:
+          CHANNEL: ${{ matrix.channel.channel }}
+          CHANNEL_OWNER: ${{ matrix.channel.owner }}
+          LANDING: ${{ matrix.channel.landing }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
+          STATE_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}-state.json
+          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
+        run: ../workflow-source/.github/scripts/nightly-rebase.sh wait
+
+      - name: Mint landing App token
+        id: land-token
+        if: steps.wait.outputs.ready-to-land == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.REBASE_APP_ID }}
+          private-key: ${{ secrets.REBASE_APP_PRIVATE_KEY }}
+
+      - name: Refresh channel checkout credentials
+        if: steps.wait.outputs.ready-to-land == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.channel.channel }}
+          fetch-depth: 1
+          fetch-tags: false
+          filter: blob:none
+          path: channel
+          token: ${{ steps.land-token.outputs.token }}
+
+      - name: Land nightly rebase
+        if: steps.wait.outputs.ready-to-land == 'true'
+        working-directory: channel
+        env:
+          CHANNEL: ${{ matrix.channel.channel }}
+          CHANNEL_OWNER: ${{ matrix.channel.owner }}
+          LANDING: ${{ matrix.channel.landing }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ steps.land-token.outputs.token }}
+          RESULT_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}.json
+          STATE_FILE: ${{ runner.temp }}/nightly-rebase-${{ matrix.channel.channel }}-state.json
+          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
+        run: ../workflow-source/.github/scripts/nightly-rebase.sh land
 
       - name: Upload channel result
         if: always()
@@ -143,6 +196,7 @@ jobs:
 
       - name: Post Slack summary
         env:
+          CHANNELS: ${{ needs.channels.outputs.channels }}
           CHANNELS_RESULT: ${{ needs.channels.result }}
           REBASE_RESULT: ${{ needs.rebase.result }}
           RESULTS_DIR: ${{ runner.temp }}/nightly-rebase-results
@@ -151,20 +205,20 @@ jobs:
           message="Nightly Agave rebase"
           message="${message}\nJobs: channels=${CHANNELS_RESULT}, rebase=${REBASE_RESULT}"
 
-          if [[ -d "${RESULTS_DIR}" ]]; then
-            mapfile -t result_files < <(find "${RESULTS_DIR}" -type f -name '*.json' | sort)
-          else
-            result_files=()
-          fi
-
-          if [[ ${#result_files[@]} -eq 0 ]]; then
-            message="${message}\nNo channel results were produced."
-          else
-            for result_file in "${result_files[@]}"; do
-              line=$(jq -r '"\(.channel): \(.status) - \(.detail)" + (if .url == "" then "" else " - \(.url)" end)' "${result_file}")
-              message="${message}\n${line}"
-            done
-          fi
+          mapfile -t channels < <(jq -r '.[].channel' <<< "${CHANNELS}")
+          for channel in "${channels[@]}"; do
+            result_file="${RESULTS_DIR}/nightly-rebase-${channel}.json"
+            if [[ -f "${result_file}" ]] && jq -e -s --arg channel "${channel}" \
+                'length == 1 and (.[0] | type == "object" and
+                  .channel == $channel and (.status | type == "string") and
+                  (.detail | type == "string") and (.url | type == "string"))' \
+                "${result_file}" >/dev/null 2>&1; then
+              line=$(jq -r -s '.[0] | "\(.channel): \(.status) - \(.detail)" + (if .url == "" then "" else " - \(.url)" end)' "${result_file}")
+            else
+              line="${channel}: failed - Job failed before producing a result"
+            fi
+            message="${message}\n${line}"
+          done
 
           message="${message}\nRun: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           printf -v message '%b' "${message}"
