@@ -4,6 +4,7 @@ use {
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
         scheduler_messages::MaxAge,
+        transaction_scheduler::bam_scheduler::VoteAdmissionGate,
     },
     crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     smallvec::SmallVec,
@@ -30,7 +31,7 @@ use {
     },
     solana_transaction_error::{TransactionError, TransactionResult},
     solana_vote::vote_parser,
-    std::num::Saturating,
+    std::{num::Saturating, sync::Arc},
 };
 
 /// Consumer will create chunks of transactions from buffer with up to this size.
@@ -111,6 +112,7 @@ pub struct Consumer {
     committer: Committer,
     transaction_recorder: TransactionRecorder,
     log_messages_bytes_limit: Option<usize>,
+    pub(in crate::banking_stage) vote_gate: Option<Arc<VoteAdmissionGate>>,
 }
 
 impl Consumer {
@@ -123,6 +125,7 @@ impl Consumer {
             committer,
             transaction_recorder,
             log_messages_bytes_limit,
+            vote_gate: None,
         }
     }
 
@@ -265,7 +268,16 @@ impl Consumer {
                 let rejected = costs.iter().filter(|cost| cost.is_err()).count() as u64;
                 (costs, rejected)
             }
-            None => QosService::select_and_accumulate_transaction_costs(bank, txs, pre_results),
+            None => {
+                let selected =
+                    QosService::select_and_accumulate_transaction_costs(bank, txs, pre_results);
+                if let Some(gate) = &self.vote_gate
+                    && selected.0.iter().any(|result| result.is_ok())
+                {
+                    gate.report_success(bank.bank_id());
+                }
+                selected
+            }
         });
 
         // Only lock accounts for those transactions are selected for the block;
@@ -716,7 +728,7 @@ mod tests {
             self as address_lookup_table,
             state::{AddressLookupTable, LookupTableMeta},
         },
-        solana_cost_model::cost_model::CostModel,
+        solana_cost_model::{cost_model::CostModel, cost_tracker::CostTrackerLimits},
         solana_fee_calculator::FeeCalculator,
         solana_hash::Hash,
         solana_instruction_error::InstructionError,
@@ -1202,6 +1214,35 @@ mod tests {
 
         assert_eq!(get_block_cost(), expected_block_cost);
         assert_eq!(get_tx_count(), 2);
+    }
+
+    #[test]
+    fn test_vote_gate_reports_only_successful_qos_admission() {
+        let TestFrame {
+            mint_keypair,
+            bank,
+            mut consumer,
+            ..
+        } = setup_test(None);
+        let gate = Arc::new(VoteAdmissionGate::default());
+        gate.publish(Some(bank.bank_id()), true);
+        consumer.vote_gate = Some(gate.clone());
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank.last_blockhash(),
+        )]);
+
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(CostTrackerLimits::new(u64::MAX, 0, u64::MAX));
+        consumer.process_and_record_transactions(&bank, &transactions);
+        assert_eq!(gate.snapshot(bank.bank_id()), Some(0));
+
+        bank.write_cost_tracker().unwrap().set_limits_max();
+        consumer.process_and_record_transactions(&bank, &transactions);
+        assert_eq!(gate.snapshot(bank.bank_id()), Some(1));
     }
 
     #[test]

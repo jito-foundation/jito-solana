@@ -12,7 +12,7 @@ use {
             consume_worker::ConsumeWorker,
             transaction_scheduler::{
                 bam_receive_and_buffer::BamReceiveAndBuffer,
-                bam_scheduler::BamScheduler,
+                bam_scheduler::{BamScheduler, NUM_BAM_WORKERS, VoteAdmissionGate},
                 scheduler_controller::{
                     DEFAULT_SCHEDULER_PACING_FILL_TIME_MILLIS, SchedulerConfig, SchedulerController,
                 },
@@ -565,7 +565,10 @@ impl BankingStage {
         // Spawn vote worker.
         let mut threads = Vec::with_capacity(num_workers + NUM_CHECK_WORKERS.get() + 2);
         threads.extend(check_worker_handles);
-        threads.push(self.spawn_vote_worker(bundle_account_locker.clone()));
+        let vote_gate = bam_dependencies
+            .as_ref()
+            .map(|_| Arc::new(VoteAdmissionGate::default()));
+        threads.push(self.spawn_vote_worker(bundle_account_locker.clone(), vote_gate.clone()));
 
         // Create channels for communication between scheduler and workers
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
@@ -671,9 +674,9 @@ impl BankingStage {
         spawn_scheduler!(scheduler);
 
         if let Some(bam_dependencies) = bam_dependencies {
+            let vote_gate = vote_gate.expect("BAM vote gate");
             // Spawn BAM workers
             // Create channels for communication between scheduler and workers
-            const NUM_BAM_WORKERS: usize = 8;
             let num_workers = NUM_BAM_WORKERS;
             let (work_sender, work_receiver) = unbounded();
             let (finished_work_sender, finished_work_receiver) = unbounded();
@@ -722,7 +725,8 @@ impl BankingStage {
                             bam_dependencies.outbound_sender.clone(),
                             bam_shared_leader_state.clone(),
                             tip_processing,
-                        );
+                        )
+                        .with_vote_gate(vote_gate);
                         let receive_and_buffer = BamReceiveAndBuffer::new(
                             bam_scheduler_exit.clone(),
                             bam_dependencies.bam_enabled.clone(),
@@ -764,17 +768,22 @@ impl BankingStage {
         Ok(threads)
     }
 
-    fn spawn_vote_worker(&self, bundle_account_locker: BundleAccountLocker) -> JoinHandle<()> {
+    fn spawn_vote_worker(
+        &self,
+        bundle_account_locker: BundleAccountLocker,
+        vote_gate: Option<Arc<VoteAdmissionGate>>,
+    ) -> JoinHandle<()> {
         let vote_storage = VoteStorage::new(&self.bank_forks.read().unwrap().working_bank());
         let tpu_receiver =
             VotePacketReceiver::new(self.tpu_vote_receiver.clone(), self.filter_keys.clone());
         let gossip_receiver =
             VotePacketReceiver::new(self.gossip_vote_receiver.clone(), self.filter_keys.clone());
-        let consumer = Consumer::new(
+        let mut consumer = Consumer::new(
             self.committer.clone(),
             self.transaction_recorder.clone(),
             self.log_messages_bytes_limit,
         );
+        consumer.vote_gate = vote_gate;
         let decision_maker = DecisionMaker::from(self.poh_recorder.read().unwrap().deref());
 
         let worker_exit_signal = self.worker_exit_signal.clone();
@@ -794,7 +803,7 @@ impl BankingStage {
                     consumer,
                     bundle_account_locker,
                 )
-                .run()
+                .run();
             })
             .unwrap()
     }
