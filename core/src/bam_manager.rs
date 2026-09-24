@@ -408,25 +408,30 @@ impl BamManager {
         };
 
         let mut shred_receiver_addresses = ShredReceiverAddresses::new();
+        let mut processed = 0;
+        let mut invalid = 0;
         for socket in &bam_config.shred_socks {
+            processed += 1;
             let Some(addr) = Self::get_sockaddr(socket) else {
-                warn!(
-                    "Dropping invalid BAM shred receiver socket {}:{}",
-                    socket.ip, socket.port
-                );
+                invalid += 1;
                 continue;
             };
-            if shred_receiver_addresses.contains(&addr) {
-                continue;
+            if !shred_receiver_addresses.contains(&addr) {
+                shred_receiver_addresses.push(addr);
+                if shred_receiver_addresses.len() == MAX_SHRED_RECEIVER_ADDRESSES {
+                    break;
+                }
             }
-            if shred_receiver_addresses.len() >= MAX_SHRED_RECEIVER_ADDRESSES {
-                warn!(
-                    "Dropping excess BAM shred receiver socket {}:{}; maximum is {}",
-                    socket.ip, socket.port, MAX_SHRED_RECEIVER_ADDRESSES
-                );
-                continue;
-            }
-            shred_receiver_addresses.push(addr);
+        }
+        let ignored = bam_config.shred_socks.len() - shred_receiver_addresses.len();
+        if ignored != 0 {
+            let duplicate = processed - invalid - shred_receiver_addresses.len();
+            let unprocessed = bam_config.shred_socks.len() - processed;
+            warn!(
+                "Ignoring {ignored} BAM shred receiver socket(s): {invalid} invalid, \
+                 {duplicate} duplicate, {unprocessed} unprocessed after \
+                 {MAX_SHRED_RECEIVER_ADDRESSES}-address limit"
+            );
         }
 
         info!(
@@ -455,14 +460,23 @@ impl BamManager {
             .ok()
             .filter(|pubkey| *pubkey != Pubkey::default())
         else {
+            let raw_pubkey = &builder_info.builder_pubkey;
+            let pubkey_sample =
+                &raw_pubkey[..raw_pubkey.floor_char_boundary(raw_pubkey.len().min(64))];
+            let safe_pubkey_sample = pubkey_sample
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric())
+                .then_some(pubkey_sample);
             error!(
-                "Invalid block builder pubkey: {}",
-                builder_info.builder_pubkey
+                "Invalid block builder pubkey: {pubkey_sample:?} ({} bytes)",
+                raw_pubkey.len()
             );
             datapoint_warn!(
                 "bam_manager-pubkey_error",
                 ("count", 1, i64),
-                ("pubkey", builder_info.builder_pubkey, String),
+                ("field", "builder_pubkey", String),
+                ("pubkey", safe_pubkey_sample, Option<String>),
+                ("pubkey_len", raw_pubkey.len(), i64),
             );
             return false;
         };
@@ -485,10 +499,19 @@ impl BamManager {
         let pubkey = match Pubkey::from_str(&bam_info.prio_fee_recipient_pubkey) {
             Ok(pubkey) => pubkey,
             Err(error) => {
+                let raw_pubkey = &bam_info.prio_fee_recipient_pubkey;
+                let pubkey_sample =
+                    &raw_pubkey[..raw_pubkey.floor_char_boundary(raw_pubkey.len().min(64))];
+                let safe_pubkey_sample = pubkey_sample
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric())
+                    .then_some(pubkey_sample);
                 datapoint_warn!(
                     "bam_manager-pubkey_error",
                     ("count", 1, i64),
-                    ("pubkey", bam_info.prio_fee_recipient_pubkey, String),
+                    ("field", "prio_fee_recipient_pubkey", String),
+                    ("pubkey", safe_pubkey_sample, Option<String>),
+                    ("pubkey_len", raw_pubkey.len(), i64),
                     ("error", error.to_string(), String),
                 );
                 return false;
