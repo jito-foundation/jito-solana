@@ -83,18 +83,15 @@ pub fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
         host_port.rsplit_once(':').map(|(_, port)| port)
     };
 
-    let node_url = match port {
-        Some("") => format!(
-            "{}{default_port}{}",
+    let node_url = if port.is_some_and(|port| !port.is_empty()) {
+        parse_target
+    } else {
+        let colon = if port.is_none() { ":" } else { "" };
+        format!(
+            "{}{colon}{default_port}{}",
             &parse_target[..authority_end],
             &parse_target[authority_end..]
-        ),
-        Some(_) => parse_target,
-        None => format!(
-            "{}:{default_port}{}",
-            &parse_target[..authority_end],
-            &parse_target[authority_end..]
-        ),
+        )
     };
     Endpoint::from_shared(node_url.clone()).map_err(|err| BamUrlError::InvalidEndpoint {
         url: node_url.clone(),
