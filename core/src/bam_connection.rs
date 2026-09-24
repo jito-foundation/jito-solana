@@ -48,6 +48,8 @@ pub struct BamConnection {
 const AUTH_LABEL: &[u8] = b"X_OFF_CHAIN_JITO_BAM_V1\0";
 const CONNECTION_TIMEOUT: Duration = std::time::Duration::from_secs(5);
 const NETWORK_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+// Limit the BAM config message before protobuf decoding.
+const MAX_BUILDER_CONFIG_RESPONSE_BYTES: usize = 64 * 1024;
 const OUTBOUND_CHANNEL_CAPACITY: usize = 100_000;
 const MAX_OUTBOUND_RESULT_BATCH_SIZE: usize = 24;
 const VALIDATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -164,7 +166,8 @@ impl BamConnection {
             return outbound_receiver;
         }
 
-        let mut post_auth_client = Some(validator_client);
+        let mut post_auth_client =
+            Some(validator_client.max_decoding_message_size(MAX_BUILDER_CONFIG_RESPONSE_BYTES));
         let mut refresh_config_exit_sender: Option<oneshot::Sender<()>> = None;
         let mut refresh_config_task = None;
 
@@ -242,7 +245,7 @@ impl BamConnection {
                                         }
                                         builder_config_received.fetch_add(1, Relaxed);
                                     }
-                                    Ok(Err(e)) => error!("Failed to get config: {e:?}"),
+                                    Ok(Err(e)) => error!("Failed to get config: {:?}", e.code()),
                                     Err(_) => error!("Timed out getting config"),
                                 }
                             }
