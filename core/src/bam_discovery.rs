@@ -11,7 +11,7 @@ use {
     std::{
         net::{IpAddr, SocketAddr},
         sync::{
-            Arc,
+            Arc, Mutex, MutexGuard,
             atomic::{AtomicU8, Ordering},
         },
         time::{Duration, Instant},
@@ -120,7 +120,12 @@ impl RegistryFollower {
         })
     }
 
-    async fn step(&mut self, bam_url: &ArcSwap<Option<String>>, bam_enabled: &AtomicU8) {
+    async fn step(
+        &mut self,
+        bam_url: &ArcSwap<Option<String>>,
+        bam_enabled: &AtomicU8,
+        selection_lock: &Mutex<()>,
+    ) {
         let now = Instant::now();
 
         if now >= self.resync_at {
@@ -149,6 +154,9 @@ impl RegistryFollower {
         }
 
         // Fetching and probing can take seconds, so read the connection state afterward.
+        // BamManager goes live under this lock, so it cannot go live between this read and a
+        // publish below.
+        let _selection = selection_lock.lock().unwrap();
         self.stalled_since = BamDiscovery::stall_since(
             BamDiscovery::connection_state(bam_enabled),
             self.stalled_since,
@@ -177,6 +185,7 @@ impl RegistryFollower {
 /// the nearest BAM node (lowest RTT) to the validator.
 pub struct BamDiscovery {
     selected_url: Arc<ArcSwap<Option<String>>>,
+    selection_lock: Arc<Mutex<()>>,
     task: JoinHandle<()>,
 }
 
@@ -191,24 +200,38 @@ impl BamDiscovery {
         info!("BAM discovery following registry {registry_url}");
 
         let selected_url = Arc::new(ArcSwap::from_pointee(None));
+        let selection_lock = Arc::new(Mutex::new(()));
         let task = runtime().spawn({
             let selected_url = selected_url.clone();
+            let selection_lock = selection_lock.clone();
             async move {
                 let Some(mut follower) = RegistryFollower::new(registry_url) else {
                     return;
                 };
                 loop {
-                    follower.step(&selected_url, &bam_enabled).await;
+                    follower
+                        .step(&selected_url, &bam_enabled, &selection_lock)
+                        .await;
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
             }
         });
 
-        Some(Self { selected_url, task })
+        Some(Self {
+            selected_url,
+            selection_lock,
+            task,
+        })
     }
 
     pub fn selected_url(&self) -> Arc<Option<String>> {
         self.selected_url.load_full()
+    }
+
+    // Held while checking the selected url and going live, so discovery cannot publish a new pick
+    // in between.
+    pub fn lock_selection(&self) -> MutexGuard<'_, ()> {
+        self.selection_lock.lock().unwrap()
     }
 
     fn registry_url(configured: &Option<String>) -> Option<String> {

@@ -246,10 +246,15 @@ impl BamManager {
                     };
 
                     // Wait until connection is healthy
-                    if !connection.wait_until_healthy_and_config_received(
+                    let healthy = connection.wait_until_healthy_and_config_received(
                         MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
                         should_stop,
-                    ) {
+                    );
+                    // Discovery publishes under this lock, so it cannot switch nodes between
+                    // this check and going live.
+                    let selection = discovery.as_ref().map(BamDiscovery::lock_selection);
+                    if !healthy || should_stop() {
+                        drop(selection);
                         Self::set_bam_disconnected(&dependencies);
                         outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                         if exit.load(Ordering::Relaxed) {
@@ -267,11 +272,12 @@ impl BamManager {
                         continue;
                     }
 
-                    info!("BAM connection established to {}", connection.url());
                     dependencies.bam_enabled.store(
                         BamConnectionState::DrainingBlockEngine as u8,
                         Ordering::Release,
                     );
+                    drop(selection);
+                    info!("BAM connection established to {}", connection.url());
 
                     connection
                 }
