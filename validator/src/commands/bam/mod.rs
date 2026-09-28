@@ -69,35 +69,24 @@ pub fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
         return Ok(parse_target);
     }
 
-    let authority_start = parse_target.find("://").unwrap() + 3;
-    let authority_end = parse_target[authority_start..]
-        .find(['/', '?', '#'])
-        .map_or(parse_target.len(), |offset| authority_start + offset);
-    let authority = &parse_target[authority_start..authority_end];
-    let host_port = authority.rsplit('@').next().unwrap();
-    let port = if host_port.starts_with('[') {
-        host_port
-            .find(']')
-            .and_then(|host_end| host_port[host_end + 1..].strip_prefix(':'))
-    } else {
-        host_port.rsplit_once(':').map(|(_, port)| port)
-    };
-
-    let node_url = if port.is_some_and(|port| !port.is_empty()) {
-        parse_target
-    } else {
-        let colon = if port.is_none() { ":" } else { "" };
-        format!(
-            "{}{colon}{default_port}{}",
-            &parse_target[..authority_end],
-            &parse_target[authority_end..]
-        )
-    };
-    Endpoint::from_shared(node_url.clone()).map_err(|err| BamUrlError::InvalidEndpoint {
-        url: node_url.clone(),
-        reason: err.to_string(),
+    let endpoint = Endpoint::from_shared(parse_target.clone()).map_err(|err| {
+        BamUrlError::InvalidEndpoint {
+            url: parse_target.clone(),
+            reason: err.to_string(),
+        }
     })?;
-    Ok(node_url)
+    // Unlike `Url::port`, this keeps explicit scheme-default ports like 80 and 443.
+    if endpoint.uri().port_u16().is_some() {
+        return Ok(parse_target);
+    }
+    // An http(s) URI always has an authority, and it is a slice of `parse_target`.
+    let authority = endpoint.uri().authority().unwrap().as_str();
+    let authority_end = parse_target.find("://").unwrap() + 3 + authority.len();
+    Ok(format!(
+        "{}:{default_port}{}",
+        parse_target[..authority_end].trim_end_matches(':'),
+        &parse_target[authority_end..]
+    ))
 }
 
 pub fn argument() -> Arg<'static, 'static> {
@@ -268,8 +257,6 @@ mod tests {
         );
     }
 
-    // `Url::port` returns None for explicit scheme-default ports, so inspect the
-    // authority to distinguish them from omitted ports.
     #[test]
     fn test_normalize_bam_url_trims_whitespace() {
         assert_eq!(
