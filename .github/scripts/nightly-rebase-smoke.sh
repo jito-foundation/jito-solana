@@ -260,7 +260,7 @@ steps = {step["name"]: step for step in rebase["steps"]}
 checkout = steps["Check out channel"]["with"]
 assert checkout["fetch-depth"] == 1
 assert checkout["fetch-tags"] is False
-assert checkout["filter"] == "blob:none"
+assert "filter" not in checkout
 assert checkout["token"] == "${{ steps.stage-token.outputs.token }}"
 assert sum(step.get("uses") == "actions/create-github-app-token@v2"
            for step in rebase["steps"]) == 2
