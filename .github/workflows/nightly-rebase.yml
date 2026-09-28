@@ -83,7 +83,6 @@ jobs:
           ref: ${{ matrix.channel.channel }}
           fetch-depth: 1
           fetch-tags: false
-          filter: blob:none
           path: channel
           token: ${{ steps.stage-token.outputs.token }}
 

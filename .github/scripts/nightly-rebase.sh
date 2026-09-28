@@ -354,7 +354,9 @@ stage() {
     local body_file
     local rebase_status
     local conflict_files
-    local -a origin_fetch_args=(--no-tags --filter=blob:none)
+    # ponytail: full objects avoid promisor fetches for worktree-only conflict
+    # blobs; retry partial clones after runner Git handles those safely.
+    local -a origin_fetch_args=(--no-tags)
 
     git remote add agave "${UPSTREAM_REPO}"
     if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
@@ -363,7 +365,7 @@ stage() {
     git fetch "${origin_fetch_args[@]}" origin \
         "+refs/heads/${CHANNEL}:refs/remotes/origin/${CHANNEL}"
     git -c http.https://github.com/.extraheader= fetch \
-        --no-tags --filter=blob:none agave \
+        --no-tags agave \
         "+refs/heads/${UPSTREAM_CHANNEL}:refs/remotes/agave/${UPSTREAM_CHANNEL}"
 
     channel_sha="$(git rev-parse "origin/${CHANNEL}")"
