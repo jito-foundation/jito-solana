@@ -201,7 +201,8 @@ impl SnapshotPublicationTracker {
         let (winner, written) = (*winner, tracked.artifact_state == ArtifactState::Written);
 
         debug!(
-            "picked tip-router snapshot parent {winner} through a rooted boundary child; rooted chain slots: {:?}",
+            "picked tip-router snapshot parent {winner} through a rooted boundary child; rooted \
+             chain slots: {:?}",
             rooted_chain
                 .iter()
                 .map(|(slot, _bank_id)| *slot)
@@ -214,8 +215,8 @@ impl SnapshotPublicationTracker {
             Some(winner)
         } else {
             info!(
-                "tip-router snapshot parent {winner} selected by a rooted boundary child before its artifact finished writing; \
-                 deferring publication until the worker completes"
+                "tip-router snapshot parent {winner} selected by a rooted boundary child before \
+                 its artifact finished writing; deferring publication until the worker completes"
             );
             None
         }
