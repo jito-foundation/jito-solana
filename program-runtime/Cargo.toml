@@ -23,6 +23,7 @@ name = "solana_program_runtime"
 agave-unstable-api = []
 conf-stack-frame-size = ["solana-sbpf/conf-stack-frame-size"]
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "dep:qualifier_attr",
     "dep:solana-message",
     "solana-epoch-schedule/wincode",
@@ -34,6 +35,7 @@ shuttle-test = ["solana-sbpf/shuttle-test", "solana-svm-type-overrides/shuttle-t
 svm-internal = ["dep:qualifier_attr"]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
 cfg-if = { workspace = true }

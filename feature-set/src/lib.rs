@@ -1,5 +1,9 @@
 #![cfg(feature = "agave-unstable-api")]
 
+/// True when development-only utilities were enabled anywhere in the build graph.
+#[doc(hidden)]
+pub const DEV_CONTEXT_ONLY_UTILS_ENABLED: bool = cfg!(feature = "dev-context-only-utils");
+
 use {
     ahash::{AHashMap, AHashSet},
     solana_epoch_schedule::EpochSchedule,

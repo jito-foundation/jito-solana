@@ -11,7 +11,7 @@ workspace = "../dev-bins"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = []
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
 
 [dependencies]
 agave-feature-set = { workspace = true }

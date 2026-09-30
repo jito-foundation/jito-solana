@@ -22,7 +22,7 @@ name = "solana_builtins_default_costs"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["dep:qualifier_attr"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:qualifier_attr"]
 
 [dependencies]
 agave-feature-set = { workspace = true }

@@ -22,6 +22,7 @@ name = "solana_rpc"
 [features]
 agave-unstable-api = []
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "agave-votor-messages/dev-context-only-utils",
     "dep:solana-unified-scheduler-pool",
     "solana-ledger/dev-context-only-utils",

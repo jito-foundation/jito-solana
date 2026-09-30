@@ -21,6 +21,7 @@ name = "solana_perf"
 [features]
 agave-unstable-api = []
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "dep:solana-clock",
     "dep:solana-keypair",
     "dep:solana-signer",
@@ -41,6 +42,7 @@ frozen-abi = [
 ]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 agave-transaction-view = { workspace = true }
 ahash = { workspace = true }
 arc-swap = { workspace = true }

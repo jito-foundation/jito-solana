@@ -18,11 +18,12 @@ rustdoc-args = ["--cfg=docsrs"]
 [features]
 agave-unstable-api = []
 bincode = ["dep:bincode", "serde"]
-dev-context-only-utils = ["bincode", "dep:qualifier_attr"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "bincode", "dep:qualifier_attr"]
 serde = ["serde/derive", "solana-pubkey/serde"]
 wincode = ["dep:wincode", "solana-pubkey/wincode"]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 solana-account = { workspace = true }
 solana-instruction = { workspace = true, features = ["std"] }
 solana-instruction-error = { workspace = true }

@@ -20,10 +20,11 @@ name = "solana_net_utils"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["dep:anyhow", "dep:pcap-file", "dep:hxdmp"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:anyhow", "dep:pcap-file", "dep:hxdmp"]
 shuttle-test = ["dep:shuttle", "solana-svm-type-overrides/shuttle-test"]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 agave-xdp = { workspace = true }
 anyhow = { workspace = true, optional = true }
 bincode = { workspace = true }

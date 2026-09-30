@@ -26,6 +26,7 @@ path = "src/main.rs"
 default = ["remote-wallet-hidraw"]
 agave-unstable-api = []
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "solana-faucet/dev-context-only-utils",
     "solana-client/dev-context-only-utils",
 ]

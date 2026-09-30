@@ -24,6 +24,13 @@ pub fn main() {
 
     let (subcommand, maybe_subcommand_matches) = matches.subcommand();
 
+    if matches!(subcommand, "" | "run") {
+        agave_validator::check_production_validator_build().unwrap_or_else(|err| {
+            eprintln!("Error: {err}");
+            exit(1);
+        });
+    }
+
     #[cfg(target_os = "linux")]
     let run_config = {
         use caps::{CapSet, Capability::CAP_DAC_OVERRIDE, CapsHashSet};

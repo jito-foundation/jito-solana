@@ -21,6 +21,27 @@ pub mod commands;
 pub mod dashboard;
 pub mod shred_receiver_addresses;
 
+const DCOU_BUILD_ERROR: &str =
+    "refusing to run agave-validator: compiled with dev-context-only-utils";
+const DEBUG_BUILD_WARNING: &str =
+    "agave-validator was compiled with debug assertions enabled and is not suitable for production";
+
+fn check_production_build(dev_context_only_utils: bool) -> Result<(), &'static str> {
+    if dev_context_only_utils {
+        Err(DCOU_BUILD_ERROR)
+    } else {
+        Ok(())
+    }
+}
+
+#[doc(hidden)]
+pub fn check_production_validator_build() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        eprintln!("Warning: {DEBUG_BUILD_WARNING}");
+    }
+    check_production_build(agave_feature_set::DEV_CONTEXT_ONLY_UTILS_ENABLED)
+}
+
 pub fn format_name_value(name: &str, value: &str) -> String {
     format!("{} {}", style(name).bold(), value)
 }
@@ -110,4 +131,31 @@ pub fn lock_ledger<'lock>(
         );
         exit(1);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DCOU_BUILD_ERROR, check_production_build, check_production_validator_build};
+
+    #[test]
+    fn production_build_guard_accepts_release() {
+        assert_eq!(check_production_build(false), Ok(()));
+    }
+
+    #[test]
+    fn production_build_guard_rejects_dcou() {
+        assert_eq!(check_production_build(true), Err(DCOU_BUILD_ERROR));
+    }
+
+    #[test]
+    fn production_build_guard_rejects_unified_dcou_feature() {
+        assert_eq!(check_production_validator_build(), Err(DCOU_BUILD_ERROR));
+    }
+
+    #[test]
+    fn production_build_guard_accepts_custom_profile() {
+        // Profile names and debug symbols are intentionally irrelevant. Custom
+        // profiles are safe when DCOU is absent.
+        assert_eq!(check_production_build(false), Ok(()));
+    }
 }

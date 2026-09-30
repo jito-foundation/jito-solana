@@ -21,7 +21,7 @@ name = "solana_vote_program"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["dep:qualifier_attr"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:qualifier_attr"]
 frozen-abi = [
     "dep:solana-frozen-abi",
     "dep:solana-frozen-abi-macro",

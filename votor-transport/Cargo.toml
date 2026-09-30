@@ -12,10 +12,11 @@ edition = { workspace = true }
 [lib]
 
 [features]
-dev-context-only-utils = []
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
 agave-unstable-api = []
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 arrayvec = { workspace = true }
 bytes = { workspace = true }
 crossbeam-channel = { workspace = true }

@@ -22,6 +22,7 @@ name = "solana_vote"
 [features]
 agave-unstable-api = []
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "dep:qualifier_attr",
     "dep:rand",
     "dep:bincode",
@@ -39,6 +40,7 @@ frozen-abi = [
 ]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 bincode = { workspace = true, optional = true }
 log = { workspace = true }
 qualifier_attr = { workspace = true, optional = true }

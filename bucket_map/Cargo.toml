@@ -21,9 +21,10 @@ name = "solana_bucket_map"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = []
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 ahash = { workspace = true }
 bv = { workspace = true, features = ["serde"] }
 bytemuck = { workspace = true }

@@ -21,7 +21,7 @@ name = "solana_bloom"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = []
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
 frozen-abi = [
     "dep:solana-frozen-abi",
     "dep:solana-frozen-abi-macro",
@@ -29,6 +29,7 @@ frozen-abi = [
 ]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 bv = { workspace = true }
 fnv = { workspace = true }
 rand = { workspace = true }

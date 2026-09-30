@@ -36,12 +36,14 @@ frozen-abi = [
 ]
 agave-unstable-api = []
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "agave-votor-messages/dev-context-only-utils",
     "dep:qualifier_attr",
     "solana-bloom/dev-context-only-utils",
 ]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 agave-logger = { workspace = true }
 agave-random = { workspace = true }
 agave-votor-messages = { workspace = true }

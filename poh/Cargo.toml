@@ -21,10 +21,11 @@ name = "solana_poh"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = []
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
 shuttle-test = ["dep:shuttle"]
 
 [dependencies]
+agave-feature-set = { workspace = true, optional = true }
 agave-cpu-utils = { workspace = true }
 agave-votor-messages = { workspace = true }
 arc-swap = { workspace = true }

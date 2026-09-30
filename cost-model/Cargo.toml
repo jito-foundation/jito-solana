@@ -22,6 +22,7 @@ name = "solana_cost_model"
 [features]
 agave-unstable-api = []
 dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
     "dep:solana-hash",
     "dep:solana-message",
     "dep:solana-transaction",

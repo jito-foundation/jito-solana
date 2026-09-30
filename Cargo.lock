@@ -64,6 +64,7 @@ dependencies = [
 name = "agave-banking-stage-ingress-types"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "crossbeam-channel",
  "solana-perf",
  "wincode",
@@ -74,6 +75,7 @@ name = "agave-bls-cert-verify"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-bls-cert-verify",
+ "agave-feature-set",
  "agave-votor-messages",
  "bitvec",
  "criterion",
@@ -93,6 +95,7 @@ version = "4.5.0-alpha.0"
 dependencies = [
  "agave-bls-cert-verify",
  "agave-bls-sigverify",
+ "agave-feature-set",
  "agave-logger",
  "agave-math-utils",
  "agave-votor-messages",
@@ -367,6 +370,7 @@ dependencies = [
 name = "agave-store-histogram"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "clap 2.33.3",
  "solana-version",
 ]
@@ -493,6 +497,7 @@ name = "agave-votor"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-bls-sigverify",
+ "agave-feature-set",
  "agave-logger",
  "agave-math-utils",
  "agave-votor",
@@ -570,6 +575,7 @@ dependencies = [
 name = "agave-votor-transport"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "arrayvec",
  "bytes",
  "crossbeam-channel",
@@ -615,6 +621,7 @@ name = "agave-xdp"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-cpu-utils",
+ "agave-feature-set",
  "agave-xdp",
  "agave-xdp-ebpf",
  "arc-swap",
@@ -7217,6 +7224,7 @@ dependencies = [
 name = "solana-accounts-cluster-bench"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "clap 2.33.3",
  "log",
@@ -7261,6 +7269,7 @@ dependencies = [
 name = "solana-accounts-db"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-fs",
  "agave-logger",
  "agave-reserved-account-keys",
@@ -7507,6 +7516,7 @@ dependencies = [
 name = "solana-bloom"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "bencher",
  "bv",
  "fnv",
@@ -7659,6 +7669,7 @@ dependencies = [
 name = "solana-bucket-map"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "ahash 0.8.12",
  "bv",
  "bytemuck",
@@ -7938,6 +7949,7 @@ dependencies = [
 name = "solana-client"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "async-trait",
  "bincode",
  "crossbeam-channel",
@@ -8078,6 +8090,7 @@ dependencies = [
 name = "solana-compute-budget"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "solana-fee-structure",
  "solana-frozen-abi",
  "solana-program-runtime",
@@ -8502,6 +8515,7 @@ dependencies = [
 name = "solana-entry"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "agave-reserved-account-keys",
  "agave-transaction-view",
@@ -8627,6 +8641,7 @@ dependencies = [
 name = "solana-faucet"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "crossbeam-channel",
  "log",
  "solana-cli-output",
@@ -8915,6 +8930,7 @@ dependencies = [
 name = "solana-gossip"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "agave-random",
  "agave-votor-messages",
@@ -9555,6 +9571,7 @@ checksum = "ae8dd4c280dca9d046139eb5b7a5ac9ad10403fbd64964c7d7571214950d758f"
 name = "solana-net-utils"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "agave-xdp",
  "anyhow",
@@ -9671,6 +9688,7 @@ dependencies = [
 name = "solana-perf"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "agave-random",
  "agave-transaction-view",
@@ -9721,6 +9739,7 @@ name = "solana-poh"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-cpu-utils",
+ "agave-feature-set",
  "agave-logger",
  "agave-votor-messages",
  "arc-swap",
@@ -9965,6 +9984,7 @@ dependencies = [
 name = "solana-program-runtime"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "assert_matches",
  "base64 0.23.1",
  "bincode",
@@ -10786,6 +10806,7 @@ dependencies = [
 name = "solana-send-transaction-service"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "crossbeam-channel",
  "itertools 0.15.0",
@@ -11169,6 +11190,7 @@ dependencies = [
 name = "solana-streamer"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-logger",
  "anyhow",
  "assert_matches",
@@ -11701,6 +11723,7 @@ dependencies = [
 name = "solana-tpu-client-next"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "async-trait",
  "bytes",
  "crossbeam-channel",
@@ -11764,6 +11787,7 @@ dependencies = [
 name = "solana-transaction-context"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "bincode",
  "qualifier_attr",
  "serde",
@@ -11931,6 +11955,7 @@ dependencies = [
 name = "solana-udp-client"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "async-trait",
  "solana-connection-cache",
  "solana-keypair",
@@ -11966,6 +11991,7 @@ name = "solana-unified-scheduler-pool"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-banking-stage-ingress-types",
+ "agave-feature-set",
  "agave-logger",
  "assert_matches",
  "crossbeam-channel",
@@ -12021,6 +12047,7 @@ dependencies = [
 name = "solana-vote"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "arbitrary",
  "bencher",
  "bincode",
