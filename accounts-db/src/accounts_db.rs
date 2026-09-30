@@ -301,7 +301,6 @@ struct IndexGenerationAccumulator {
     all_accounts_are_zero_lamports_slots: u64,
     /// List of slots with only zero lamports accounts and indices into `storages` used in `generate_index`
     slots_with_only_zero_lamport_accounts: Vec<(Slot, usize)>,
-    storage_info: StorageSizeAndCountList,
     /// Number of accounts in this slot that didn't already exist in the index
     num_did_not_exist: u64,
     /// Number of accounts in this slot that already existed, and were in-mem
@@ -322,14 +321,13 @@ struct IndexGenerationAccumulator {
     slot_arena: IndexGenerationSlotArena,
 }
 impl IndexGenerationAccumulator {
-    fn with_slots_capacity(num_slots: usize) -> Self {
+    fn new() -> Self {
         Self {
             insert_time_us: 0,
             num_accounts: 0,
             accounts_data_len: 0,
             all_accounts_are_zero_lamports_slots: 0,
             slots_with_only_zero_lamport_accounts: Vec::new(),
-            storage_info: Vec::with_capacity(num_slots),
             num_did_not_exist: 0,
             num_existed_in_mem: 0,
             num_existed_on_disk: 0,
@@ -357,7 +355,6 @@ impl IndexGenerationAccumulator {
             .expect("capitalization cannot overflow");
         self.num_obsolete_accounts_skipped += other.num_obsolete_accounts_skipped;
         self.num_zero_lamport_pubkeys += other.num_zero_lamport_pubkeys;
-        self.storage_info.append(&mut other.storage_info);
     }
 }
 
@@ -396,7 +393,6 @@ struct GenerateIndexTimings {
     pub total_time_us: u64,
     pub index_time: u64,
     pub insertion_time_us: u64,
-    pub storage_size_storages_us: u64,
     pub index_flush_us: u64,
     pub total_including_duplicates: u64,
     pub visit_duplicate_accounts_time_us: u64,
@@ -413,15 +409,6 @@ struct GenerateIndexTimings {
     pub num_zero_lamport_pubkeys: u64,
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
-struct StorageSizeAndCount {
-    /// total size stored, including both alive and dead bytes
-    pub stored_size: usize,
-    /// number of accounts in the storage including both alive and dead accounts
-    pub count: usize,
-}
-type StorageSizeAndCountList = Vec<(AccountsFileId, StorageSizeAndCount)>;
-
 impl GenerateIndexTimings {
     pub fn report(&self, startup_stats: &StartupStats) {
         datapoint_info!(
@@ -430,11 +417,6 @@ impl GenerateIndexTimings {
             ("index_time_us", self.index_time, i64),
             // we cannot accurately measure index insertion time because of many threads and lock contention
             ("insertion_time_us", self.insertion_time_us, i64),
-            (
-                "storage_size_storages_us",
-                self.storage_size_storages_us,
-                i64
-            ),
             ("index_flush_us", self.index_flush_us, i64),
             (
                 "total_items_including_duplicates",
@@ -4936,25 +4918,21 @@ impl AccountsDb {
                 .insert_new_if_missing_into_primary_index(slot, keyed_account_infos)
         );
 
-        if insert_info.count > 0 {
-            // push summary info for store_id into thread state (all threads build a piece of full list)
-            let info = StorageSizeAndCount {
-                stored_size: stored_size_alive,
-                count: insert_info.count,
-            };
+        // sanity check that stored_size is not larger than the u64 aligned size of the accounts files.
+        // Note that the stored_size is aligned, so it can be larger than the size of the accounts file.
+        assert!(
+            stored_size_alive <= u64_align!(storage.accounts.len()),
+            "Stored size ({stored_size_alive}) is larger than the size of the accounts file ({}) \
+             for store_id: {store_id}",
+            storage.accounts.len(),
+        );
 
-            // sanity check that stored_size is not larger than the u64 aligned size of the accounts files.
-            // Note that the stored_size is aligned, so it can be larger than the size of the accounts file.
-            assert!(
-                info.stored_size <= u64_align!(storage.accounts.len()),
-                "Stored size ({}) is larger than the size of the accounts file ({}) for store_id: \
-                 {}",
-                info.stored_size,
-                storage.accounts.len(),
-                store_id
-            );
-            accum.storage_info.push((store_id, info));
-        }
+        storage
+            .num_alive_accounts
+            .store(insert_info.count, Ordering::Release);
+        storage
+            .num_alive_bytes
+            .store(stored_size_alive, Ordering::Release);
 
         // Zero-lamport accounts stay alive in the index until clean removes them. Their storages
         // are not otherwise dirty, so add the pubkeys into `uncleaned_pubkeys` for the first
@@ -5001,7 +4979,7 @@ impl AccountsDb {
 
         self.accounts_index.set_startup(Startup::Startup);
 
-        let mut total_accum = IndexGenerationAccumulator::with_slots_capacity(num_storages);
+        let mut total_accum = IndexGenerationAccumulator::new();
         let storages_orderer =
             AccountStoragesOrderer::with_random_order(&storages).into_concurrent_consumer();
         let exit_logger = AtomicBool::new(false);
@@ -5014,9 +4992,7 @@ impl AccountsDb {
                     thread::Builder::new()
                         .name(format!("solGenIndex{i:02}"))
                         .spawn_scoped(s, || {
-                            let mut thread_accum = IndexGenerationAccumulator::with_slots_capacity(
-                                num_storages.div_ceil(num_threads),
-                            );
+                            let mut thread_accum = IndexGenerationAccumulator::new();
                             let mut reader = append_vec::new_scan_accounts_reader();
                             for next_item in storages_orderer.iter() {
                                 let storage = next_item.storage;
@@ -5265,8 +5241,6 @@ impl AccountsDb {
             total_accum.slots_with_only_zero_lamport_accounts.len()
         );
 
-        self.set_storage_count_and_alive_bytes(total_accum.storage_info, &mut timings);
-
         let mut mark_obsolete_accounts_time = Measure::start("mark_obsolete_accounts_time");
         // Mark all reclaims at max_slot. This is safe because only the snapshot paths care about
         // this information. Since this account was just restored from the previous snapshot and
@@ -5431,43 +5405,6 @@ impl AccountsDb {
             duplicates_lt_hash,
             capitalization_from_duplicates,
         )
-    }
-
-    fn set_storage_count_and_alive_bytes(
-        &self,
-        stored_sizes_and_counts: StorageSizeAndCountList,
-        timings: &mut GenerateIndexTimings,
-    ) {
-        // store count and size for each storage
-        let mut storage_size_storages_time = Measure::start("storage_size_storages");
-        let stored_sizes_and_counts: IntMap<_, _> = stored_sizes_and_counts.into_iter().collect();
-        for (_slot, store) in self.storage.iter() {
-            let id = store.id();
-            // Should be default at this point
-            assert_eq!(store.alive_bytes(), 0);
-            if let Some(entry) = stored_sizes_and_counts.get(&id) {
-                trace!(
-                    "id: {} setting count: {} cur: {}",
-                    id,
-                    entry.count,
-                    store.count(),
-                );
-                {
-                    let prev_count = store
-                        .num_alive_accounts
-                        .swap(entry.count, Ordering::Release);
-                    assert_eq!(prev_count, 0);
-                }
-                store
-                    .num_alive_bytes
-                    .store(entry.stored_size, Ordering::Release);
-            } else {
-                trace!("id: {id} clearing count");
-                store.num_alive_accounts.store(0, Ordering::Release);
-            }
-        }
-        storage_size_storages_time.stop();
-        timings.storage_size_storages_us = storage_size_storages_time.as_us();
     }
 
     pub fn print_accounts_stats(&self, label: &str) {
