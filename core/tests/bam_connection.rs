@@ -482,7 +482,7 @@ mod bam_connection_tests {
     }
 
     #[tokio::test]
-    async fn test_config_available_when_healthy() {
+    async fn test_config_available_and_recovers_from_oversized_response() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
         let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
@@ -503,6 +503,49 @@ mod bam_connection_tests {
         let config = connection.get_latest_config().expect("config should exist");
         let bam_config = config.bam_config.expect("bam_config should exist");
         assert_eq!(bam_config.commission_bps, 100);
+        let mut version = 0;
+        connection
+            .get_latest_config_if_changed(&mut version)
+            .expect("initial config should be available");
+
+        let initial_requests = server.config_requests.load(Ordering::Relaxed);
+        server.config.lock().unwrap().builder_pubkey = "x".repeat(70_000);
+        // The mock increments its count before replying. A later request proves the
+        // oversized response was processed, even if an old request was in flight.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while server.config_requests.load(Ordering::Relaxed) < initial_requests + 3 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("BAM should keep polling after an oversized config");
+
+        assert!(connection.is_healthy());
+        assert!(
+            connection
+                .get_latest_config_if_changed(&mut version)
+                .is_none()
+        );
+
+        let new_builder_pubkey = solana_pubkey::Pubkey::new_unique().to_string();
+        server.config.lock().unwrap().builder_pubkey = new_builder_pubkey.clone();
+        let updated_config = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(config) = connection.get_latest_config_if_changed(&mut version) {
+                    break config;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("valid config should be accepted after oversized response");
+        assert_eq!(
+            updated_config
+                .block_engine_config
+                .expect("builder config should exist")
+                .builder_pubkey,
+            new_builder_pubkey
+        );
     }
 
     #[tokio::test]
