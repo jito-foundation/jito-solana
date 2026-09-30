@@ -27,8 +27,8 @@ dev-context-only-utils = [
 ]
 
 [dependencies]
-agave-feature-set = { workspace = true, optional = true }
 agave-bls-cert-verify = { workspace = true }
+agave-feature-set = { workspace = true, optional = true }
 agave-math-utils = { workspace = true }
 agave-votor-messages = { workspace = true }
 agave-votor-transport = { workspace = true }

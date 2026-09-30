@@ -18,8 +18,8 @@ agave-unstable-api = []
 dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
 
 [dependencies]
-agave-feature-set = { workspace = true, optional = true }
 agave-cpu-utils = { workspace = true }
+agave-feature-set = { workspace = true, optional = true }
 arc-swap = { workspace = true }
 bytes = { workspace = true }
 crossbeam-channel = { workspace = true }
