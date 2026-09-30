@@ -58,6 +58,7 @@ dependencies = [
 name = "agave-banking-stage-ingress-types"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "crossbeam-channel",
  "solana-perf",
  "wincode",
@@ -67,6 +68,7 @@ dependencies = [
 name = "agave-bls-cert-verify"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-votor-messages",
  "bitvec",
  "qualifier_attr",
@@ -82,6 +84,7 @@ name = "agave-bls-sigverify"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-bls-cert-verify",
+ "agave-feature-set",
  "agave-math-utils",
  "agave-votor-messages",
  "agave-votor-transport",
@@ -400,6 +403,7 @@ name = "agave-votor"
 version = "4.5.0-alpha.0"
 dependencies = [
  "agave-bls-sigverify",
+ "agave-feature-set",
  "agave-logger",
  "agave-math-utils",
  "agave-votor-messages",
@@ -466,6 +470,7 @@ dependencies = [
 name = "agave-votor-transport"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "arrayvec",
  "bytes",
  "crossbeam-channel",
@@ -5823,6 +5828,7 @@ dependencies = [
 name = "solana-accounts-db"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-fs",
  "ahash 0.8.12",
  "blake3",
@@ -6732,6 +6738,7 @@ dependencies = [
 name = "solana-entry"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-transaction-view",
  "agave-votor-messages",
  "bytes",
@@ -7577,6 +7584,7 @@ dependencies = [
 name = "solana-perf"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "agave-transaction-view",
  "ahash 0.8.12",
  "arc-swap",
@@ -7790,6 +7798,7 @@ dependencies = [
 name = "solana-program-runtime"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "base64 0.23.1",
  "bincode",
  "cfg-if 1.0.4",
@@ -9517,6 +9526,7 @@ dependencies = [
 name = "solana-streamer"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "bytes",
  "crossbeam-channel",
  "futures 0.3.34",
@@ -9939,6 +9949,7 @@ dependencies = [
 name = "solana-tpu-client-next"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "async-trait",
  "bytes",
  "futures 0.3.34",
@@ -10208,6 +10219,7 @@ dependencies = [
 name = "solana-vote"
 version = "4.5.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
  "bincode",
  "log",
  "qualifier_attr",
