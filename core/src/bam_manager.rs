@@ -428,8 +428,8 @@ impl BamManager {
             let duplicate = processed - invalid - shred_receiver_addresses.len();
             let unprocessed = bam_config.shred_socks.len() - processed;
             warn!(
-                "Ignoring {ignored} BAM shred receiver socket(s): {invalid} invalid, \
-                 {duplicate} duplicate, {unprocessed} unprocessed after \
+                "Ignoring {ignored} BAM shred receiver socket(s): {invalid} invalid, {duplicate} \
+                 duplicate, {unprocessed} unprocessed after \
                  {MAX_SHRED_RECEIVER_ADDRESSES}-address limit"
             );
         }
