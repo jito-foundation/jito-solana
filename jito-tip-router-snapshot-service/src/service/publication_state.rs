@@ -287,3 +287,129 @@ impl SnapshotPublicationTracker {
         self.phase = SnapshotPublicationPhase::AwaitingCandidate;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use {super::SnapshotPublicationTracker, crate::CandidateIdentity, solana_clock::BankId};
+
+    fn parent(slot: u64, bank_id: BankId) -> CandidateIdentity {
+        CandidateIdentity {
+            epoch: 3,
+            slot,
+            bank_id,
+        }
+    }
+
+    #[test]
+    fn rooted_parents_do_not_select_or_block_their_boundary_children() {
+        let mut tracker = SnapshotPublicationTracker::new();
+        // Forks: 98 -> 100 and 98 -> 99 -> 104. Only child 104 survives.
+        let ancestor = parent(98, 198);
+        let winner = parent(99, 199);
+        tracker.record_spawned_candidate(ancestor, (100, 200));
+        tracker.record_spawned_candidate(winner, (104, 204));
+        assert_eq!(tracker.record_candidate_written(ancestor), None);
+        assert_eq!(tracker.record_candidate_written(winner), None);
+
+        assert_eq!(tracker.select_winner_for_publication(&[(98, 198)]), None);
+        assert!(tracker.can_spawn_candidate(parent(97, 197)));
+        assert_eq!(
+            tracker.select_winner_for_publication(&[(99, 199), (98, 198)]),
+            None
+        );
+        assert!(tracker.can_spawn_candidate(parent(97, 197)));
+
+        assert_eq!(
+            tracker.select_winner_for_publication(&[(104, 204), (99, 199), (98, 198)]),
+            Some(winner)
+        );
+    }
+
+    #[test]
+    fn descendant_root_selects_parent_through_boundary_child() {
+        let mut tracker = SnapshotPublicationTracker::new();
+        let winner = parent(99, 199);
+        tracker.record_spawned_candidate(winner, (104, 204));
+        assert_eq!(tracker.record_candidate_written(winner), None);
+
+        assert_eq!(
+            tracker.select_winner_for_publication(&[(110, 210), (104, 204), (99, 199)]),
+            Some(winner)
+        );
+    }
+
+    #[test]
+    fn completing_parent_worker_without_rooted_child_does_not_publish() {
+        let mut tracker = SnapshotPublicationTracker::new();
+        let candidate = parent(99, 199);
+        tracker.record_spawned_candidate(candidate, (104, 204));
+
+        assert_eq!(tracker.select_winner_for_publication(&[(99, 199)]), None);
+        assert_eq!(tracker.record_candidate_written(candidate), None);
+        assert!(tracker.can_spawn_candidate(parent(97, 197)));
+        assert_eq!(
+            tracker.select_winner_for_publication(&[(104, 204), (99, 199)]),
+            Some(candidate)
+        );
+    }
+
+    #[test]
+    fn shared_parent_children_are_idempotent_and_preserve_written_artifact() {
+        let candidate = parent(99, 199);
+        let first_child = (104, 204);
+        let second_child = (105, 205);
+        let mut tracker = SnapshotPublicationTracker::new();
+        tracker.record_spawned_candidate(candidate, first_child);
+        assert!(tracker.record_boundary_child_for_existing_candidate(candidate, first_child));
+        assert_eq!(tracker.record_candidate_written(candidate), None);
+        assert!(tracker.record_boundary_child_for_existing_candidate(candidate, second_child));
+        assert!(tracker.record_boundary_child_for_existing_candidate(candidate, second_child));
+        assert_eq!(
+            tracker.tracked_candidates().unwrap()[&candidate].boundary_children,
+            vec![first_child, second_child]
+        );
+        assert_eq!(
+            tracker.select_winner_for_publication(&[second_child]),
+            Some(candidate)
+        );
+
+        let mut tracker = SnapshotPublicationTracker::new();
+        tracker.record_spawned_candidate(candidate, first_child);
+        assert!(tracker.record_boundary_child_for_existing_candidate(candidate, second_child));
+        assert_eq!(tracker.record_candidate_written(candidate), None);
+        assert_eq!(
+            tracker.select_winner_for_publication(&[first_child]),
+            Some(candidate)
+        );
+    }
+
+    #[test]
+    fn boundary_child_must_match_bank_id() {
+        let mut tracker = SnapshotPublicationTracker::new();
+        let candidate = parent(99, 199);
+        tracker.record_spawned_candidate(candidate, (104, 204));
+        assert_eq!(tracker.record_candidate_written(candidate), None);
+
+        assert_eq!(tracker.select_winner_for_publication(&[(104, 999)]), None);
+        assert!(tracker.can_spawn_candidate(parent(97, 197)));
+        assert_eq!(
+            tracker.select_winner_for_publication(&[(104, 204)]),
+            Some(candidate)
+        );
+    }
+
+    #[test]
+    fn rooted_child_locks_pending_winner_until_its_worker_completes() {
+        let mut tracker = SnapshotPublicationTracker::new();
+        let loser = parent(98, 198);
+        let winner = parent(99, 199);
+        tracker.record_spawned_candidate(loser, (100, 200));
+        tracker.record_spawned_candidate(winner, (104, 204));
+
+        assert_eq!(tracker.select_winner_for_publication(&[(104, 204)]), None);
+        assert!(!tracker.can_spawn_candidate(parent(97, 197)));
+        assert_eq!(tracker.select_winner_for_publication(&[(100, 200)]), None);
+        assert_eq!(tracker.record_candidate_written(loser), None);
+        assert_eq!(tracker.record_candidate_written(winner), Some(winner));
+    }
+}
