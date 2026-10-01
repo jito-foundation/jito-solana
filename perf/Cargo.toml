@@ -22,6 +22,7 @@ name = "solana_perf"
 agave-unstable-api = []
 dev-context-only-utils = [
     "agave-feature-set/dev-context-only-utils",
+    "dep:agave-feature-set",
     "dep:solana-clock",
     "dep:solana-keypair",
     "dep:solana-signer",

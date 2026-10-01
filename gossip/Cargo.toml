@@ -38,6 +38,7 @@ agave-unstable-api = []
 dev-context-only-utils = [
     "agave-feature-set/dev-context-only-utils",
     "agave-votor-messages/dev-context-only-utils",
+    "dep:agave-feature-set",
     "dep:qualifier_attr",
     "solana-bloom/dev-context-only-utils",
 ]

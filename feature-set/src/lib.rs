@@ -1,6 +1,6 @@
 #![cfg(feature = "agave-unstable-api")]
 
-/// True when development-only utilities were enabled anywhere in the build graph.
+/// True when a workspace crate enabled development-only utilities in this build graph.
 #[doc(hidden)]
 pub const DEV_CONTEXT_ONLY_UTILS_ENABLED: bool = cfg!(feature = "dev-context-only-utils");
 

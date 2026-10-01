@@ -21,7 +21,7 @@ name = "solana_poh"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:agave-feature-set"]
 shuttle-test = ["dep:shuttle"]
 
 [dependencies]

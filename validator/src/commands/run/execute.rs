@@ -153,6 +153,7 @@ pub fn execute(
     };
     let use_progress_bar = log_config.is_none();
     agave_logger::initialize_logging(logfile);
+    crate::check_production_validator_build()?;
 
     cli::warn_for_deprecated_arguments(matches);
 

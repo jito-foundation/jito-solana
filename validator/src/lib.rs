@@ -42,12 +42,12 @@ fn check_production_build(
 #[doc(hidden)]
 pub fn check_production_validator_build() -> Result<(), &'static str> {
     if cfg!(debug_assertions) {
-        eprintln!("Warning: {DEBUG_BUILD_WARNING}");
+        log::warn!("{DEBUG_BUILD_WARNING}");
     }
     let dev_context_only_utils = agave_feature_set::DEV_CONTEXT_ONLY_UTILS_ENABLED;
     let allow_dcou = matches!(std::env::var("AGAVE_ALLOW_DCOU").as_deref(), Ok("1"));
     if dev_context_only_utils && allow_dcou {
-        eprintln!("Warning: {DCOU_OVERRIDE_WARNING}");
+        log::warn!("{DCOU_OVERRIDE_WARNING}");
     }
     check_production_build(dev_context_only_utils, allow_dcou)
 }
@@ -148,7 +148,7 @@ mod tests {
     use super::{DCOU_BUILD_ERROR, check_production_build};
 
     #[test]
-    fn production_build_guard_accepts_release() {
+    fn production_build_guard_accepts_clean_build() {
         assert_eq!(check_production_build(false, false), Ok(()));
     }
 
@@ -158,22 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn production_build_guard_rejects_unified_dcou_feature() {
-        assert_eq!(
-            check_production_build(agave_feature_set::DEV_CONTEXT_ONLY_UTILS_ENABLED, false),
-            Err(DCOU_BUILD_ERROR)
-        );
-    }
-
-    #[test]
     fn production_build_guard_allows_explicit_dcou_override() {
         assert_eq!(check_production_build(true, true), Ok(()));
-    }
-
-    #[test]
-    fn production_build_guard_accepts_custom_profile() {
-        // Profile names and debug symbols are intentionally irrelevant. Custom
-        // profiles are safe when DCOU is absent.
-        assert_eq!(check_production_build(false, false), Ok(()));
     }
 }

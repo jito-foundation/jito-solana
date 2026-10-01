@@ -12,7 +12,7 @@ edition = { workspace = true }
 [lib]
 
 [features]
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:agave-feature-set"]
 agave-unstable-api = []
 
 [dependencies]

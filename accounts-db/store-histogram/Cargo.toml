@@ -12,10 +12,9 @@ rust-version = { workspace = true }
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
+dev-context-only-utils = []
 
 [dependencies]
-agave-feature-set = { workspace = true, optional = true }
 clap = { workspace = true }
 solana-version = { workspace = true }
 

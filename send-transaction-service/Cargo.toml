@@ -17,7 +17,12 @@ rustdoc-args = ["--cfg=docsrs"]
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "solana-net-utils", "solana-signer"]
+dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
+    "dep:agave-feature-set",
+    "solana-net-utils",
+    "solana-signer",
+]
 
 [dependencies]
 agave-feature-set = { workspace = true, optional = true }

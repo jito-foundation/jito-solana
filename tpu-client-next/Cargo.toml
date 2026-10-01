@@ -16,7 +16,7 @@ rustdoc-args = ["--cfg=docsrs"]
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils"]
+dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:agave-feature-set"]
 metrics = ["dep:solana-metrics"]
 tracing = ["dep:tracing"]
 websocket-node-address-service = ["dep:solana-pubsub-client", "dep:tokio-stream"]

@@ -17,7 +17,11 @@ rustdoc-args = ["--cfg=docsrs"]
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:wincode"]
+dev-context-only-utils = [
+    "agave-feature-set/dev-context-only-utils",
+    "dep:agave-feature-set",
+    "dep:wincode",
+]
 
 [dependencies]
 agave-feature-set = { workspace = true, optional = true }

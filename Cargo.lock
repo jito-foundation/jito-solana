@@ -370,7 +370,6 @@ dependencies = [
 name = "agave-store-histogram"
 version = "4.5.0-alpha.0"
 dependencies = [
- "agave-feature-set",
  "clap 2.33.3",
  "solana-version",
 ]
@@ -7224,7 +7223,6 @@ dependencies = [
 name = "solana-accounts-cluster-bench"
 version = "4.5.0-alpha.0"
 dependencies = [
- "agave-feature-set",
  "agave-logger",
  "clap 2.33.3",
  "log",
