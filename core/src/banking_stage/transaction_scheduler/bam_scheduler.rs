@@ -59,6 +59,8 @@ type SchedulerPrioGraph = PrioGraph<
 >;
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
+/// Number of BAM execution workers, also used to cap outstanding BAM batches.
+pub(in crate::banking_stage) const NUM_BAM_WORKERS: usize = 8;
 
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
@@ -340,7 +342,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
         let now = Instant::now();
         let mut num_scheduled = 0;
-        loop {
+        // Do not preadmit more batches than BAM workers.
+        while self.inflight_batch_info.len() < NUM_BAM_WORKERS {
             // A deferred batch holds the head of the line until work on its bank settles or the
             // bank itself changes; either way it gets the next attempt before anything else.
             let (batch_id, id) = if let Some((&batch_id, &(id, attempted_inflight_cost))) =
@@ -421,7 +424,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 work.max_ages.push(max_age);
             }
 
-            // Admit cost here, in pop order, so eight workers racing for the cost tracker cannot
+            // Admit cost here, in pop order, so BAM workers racing for the cost tracker cannot
             // reorder it.
             let attempt = try_admit_transactions(
                 admission_bank,
@@ -477,6 +480,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 },
             );
         }
+        Ok(num_scheduled)
     }
 
     fn release_admission(work: &mut ConsumeWork<Tx>) {
@@ -864,7 +868,7 @@ mod tests {
                 },
                 transaction_scheduler::{
                     bam_receive_and_buffer::tests::{set_leader_bank, test_bank_forks},
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE, NUM_BAM_WORKERS},
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -1737,6 +1741,50 @@ mod tests {
         let decision = BufferedPacketsDecision::Consume(bank.clone());
         test.receive_completed(&mut container, &decision);
         (test, container, bank, decision)
+    }
+
+    #[test]
+    fn test_admission_stops_at_worker_capacity() {
+        let (mut test, bank) = admission_scheduler();
+        set_block_cost_limit(&bank, u64::MAX);
+        let batch_size = MAX_PACKETS_PER_BUNDLE;
+        let mut container =
+            TransactionStateContainer::with_capacity((NUM_BAM_WORKERS + 2) * (batch_size + 1));
+        for seq_id in 0..NUM_BAM_WORKERS + 2 {
+            insert_admission_batch(
+                &mut container,
+                (0..batch_size).map(|_| {
+                    prioritized_tranfers(&Keypair::new(), [Pubkey::new_unique()], 1_000, 0)
+                }),
+                seq_id as u32,
+            );
+        }
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        test.receive_completed(&mut container, &decision);
+
+        assert_eq!(test.schedule(&mut container), NUM_BAM_WORKERS * batch_size);
+        assert_eq!(
+            block_cost_and_in_flight(&bank),
+            (
+                estimated_cost(&bank) * (NUM_BAM_WORKERS * batch_size) as u64,
+                NUM_BAM_WORKERS * batch_size
+            )
+        );
+        let mut work: Vec<_> = test.consume_work_receiver.try_iter().collect();
+        assert_eq!(work.len(), NUM_BAM_WORKERS);
+
+        // A worker settling cost does not free capacity until its completion is received.
+        let mut completed = work.pop().unwrap();
+        settle_committed(&bank, &mut completed, 150);
+        assert_eq!(test.schedule(&mut container), 0);
+
+        finish_committed(&mut test, &mut container, &decision, completed, 150);
+        assert_eq!(test.schedule(&mut container), batch_size);
+        let next = test.consume_work_receiver.try_recv().unwrap();
+        assert_eq!(
+            test.scheduler.inflight_batch_info[&next.batch_id].seq_id,
+            NUM_BAM_WORKERS as u32
+        );
     }
 
     /// JSA-72: later cheap work must wait for the earlier high-CU reservation to settle.
