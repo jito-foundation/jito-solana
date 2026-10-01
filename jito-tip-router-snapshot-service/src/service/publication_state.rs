@@ -19,6 +19,16 @@ struct TrackedCandidate {
     boundary_children: Vec<(Slot, BankId)>,
 }
 
+impl TrackedCandidate {
+    // Checks to see if the candidate's child bank (the bank kicking off the new
+    // epoch) has been rooted. If so, the candidate is eligible for publication.
+    fn has_rooted_boundary_child(&self, rooted_chain: &[(Slot, BankId)]) -> bool {
+        self.boundary_children
+            .iter()
+            .any(|child| rooted_chain.contains(child))
+    }
+}
+
 // At any given time the service is either:
 // 1. (AwaitingCandidate) - waiting for end of epoch
 // 2. (TrackingCandidates) - handling parents of unrooted epoch-boundary children
@@ -191,13 +201,7 @@ impl SnapshotPublicationTracker {
         let (winner, tracked) = self
             .tracked_candidates()?
             .iter()
-            .filter(|(_, tracked)| {
-                tracked
-                    .boundary_children
-                    .iter()
-                    .any(|child| rooted_chain.contains(child))
-            })
-            .max_by_key(|(candidate, _)| candidate.slot)?;
+            .find(|(_, candidate)| candidate.has_rooted_boundary_child(rooted_chain))?;
         let (winner, written) = (*winner, tracked.artifact_state == ArtifactState::Written);
 
         debug!(
