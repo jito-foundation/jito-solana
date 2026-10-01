@@ -64,12 +64,11 @@ fn known_id(value: &str) -> Result<Pubkey> {
 }
 
 impl FeatureSnapshot {
-    fn from_rpc(source: &str) -> Result<Self> {
-        let client = RpcClient::new(source.to_owned());
+    fn from_rpc(client: &RpcClient) -> Result<Self> {
         let mut ids = FEATURE_NAMES.keys().copied().collect::<Vec<_>>();
         ids.sort();
         let mut snapshot = Self {
-            source: source.to_owned(),
+            source: client.url(),
             first_observed_slot: u64::MAX,
             last_observed_slot: 0,
             features: BTreeMap::new(),
@@ -84,17 +83,10 @@ impl FeatureSnapshot {
             snapshot.first_observed_slot = snapshot.first_observed_slot.min(response.context.slot);
             snapshot.last_observed_slot = snapshot.last_observed_slot.max(response.context.slot);
             for (id, account) in chunk.iter().zip(response.value) {
-                let state = match account {
+                let state = match account.as_ref().and_then(feature::from_account) {
+                    Some(feature) if feature.activated_at.is_some() => FeatureState::Active,
+                    Some(_) => FeatureState::Pending,
                     None => FeatureState::Inactive,
-                    Some(account) => {
-                        let state = feature::from_account(&account)
-                            .with_context(|| format!("invalid feature account: {id}"))?;
-                        if state.activated_at.is_some() {
-                            FeatureState::Active
-                        } else {
-                            FeatureState::Pending
-                        }
-                    }
                 };
                 snapshot.features.insert(id.to_string(), state);
             }
@@ -108,8 +100,12 @@ impl ResolvedFeatures {
         let file: FeatureFile = toml::from_str(&fs::read_to_string(path)?)?;
         let config = file.features;
         let baseline = match config.baseline.as_str() {
-            "mainnet-beta" => FeatureSnapshot::from_rpc("https://api.mainnet-beta.solana.com")?,
-            "testnet" => FeatureSnapshot::from_rpc("https://api.testnet.solana.com")?,
+            "mainnet-beta" => {
+                FeatureSnapshot::from_rpc(&RpcClient::new("https://api.mainnet-beta.solana.com"))?
+            }
+            "testnet" => {
+                FeatureSnapshot::from_rpc(&RpcClient::new("https://api.testnet.solana.com"))?
+            }
             _ => {
                 let baseline_path = path
                     .parent()
@@ -221,6 +217,72 @@ mod tests {
             disable: vec![],
             activate_next_epoch: vec![],
         }
+    }
+
+    #[test]
+    fn rpc_snapshot_treats_non_feature_account_as_inactive() {
+        use {serde_json::json, solana_rpc_client::api::request::RpcRequest};
+
+        let id = known_id("7VgiehxNxu53KdxgLspGQY8myE6f7UokaWa4jsGcaSz").unwrap();
+        let mut ids = FEATURE_NAMES.keys().copied().collect::<Vec<_>>();
+        ids.sort();
+        let mocks = ids
+            .chunks(100)
+            .map(|chunk| {
+                let accounts = chunk
+                    .iter()
+                    .map(|key| {
+                        if *key == id {
+                            json!({
+                                "lamports": 1,
+                                "data": ["", "base64"],
+                                "owner": Pubkey::default().to_string(),
+                                "executable": false,
+                                "rentEpoch": 0
+                            })
+                        } else {
+                            json!(null)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    RpcRequest::GetMultipleAccounts,
+                    json!({
+                        "context": { "slot": 42 },
+                        "value": accounts
+                    }),
+                )
+            })
+            .collect();
+        let client = RpcClient::new_mock_with_mocks_map("succeeds", mocks);
+        let snapshot = FeatureSnapshot::from_rpc(&client).unwrap();
+        assert_eq!(snapshot.features.len(), FEATURE_NAMES.len());
+        assert_eq!(snapshot.features[&id.to_string()], FeatureState::Inactive);
+        assert_eq!(snapshot.first_observed_slot, 42);
+        assert_eq!(snapshot.last_observed_slot, 42);
+    }
+
+    #[test]
+    fn example_resolves_with_inactive_baseline() {
+        let file: FeatureFile = toml::from_str(include_str!("../features.example.toml")).unwrap();
+        let mut baseline = baseline();
+        baseline
+            .features
+            .values_mut()
+            .for_each(|state| *state = FeatureState::Inactive);
+        let resolved = ResolvedFeatures::resolve(&baseline, &file.features).unwrap();
+        assert_eq!(
+            resolved.states[&agave_feature_set::alpenglow::id()],
+            FeatureState::Active
+        );
+        assert_eq!(
+            resolved.states[&agave_feature_set::reduce_slot_time_to_200ms::id()],
+            FeatureState::Active
+        );
+        assert_eq!(
+            resolved.states[&agave_feature_set::alpenglow_fast_leader_handover::id()],
+            FeatureState::Pending
+        );
     }
 
     #[test]
