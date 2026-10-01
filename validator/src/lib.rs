@@ -39,8 +39,13 @@ fn check_production_build(
     }
 }
 
-#[doc(hidden)]
-pub fn check_production_validator_build() -> Result<(), &'static str> {
+pub(crate) fn check_production_validator_build() -> Result<(), &'static str> {
+    let dev_context_only_utils = agave_feature_set::DEV_CONTEXT_ONLY_UTILS_ENABLED;
+    let allow_dcou = matches!(std::env::var("AGAVE_ALLOW_DCOU").as_deref(), Ok("1"));
+    check_production_build(dev_context_only_utils, allow_dcou)
+}
+
+pub(crate) fn warn_for_non_production_build() {
     if cfg!(debug_assertions) {
         log::warn!("{DEBUG_BUILD_WARNING}");
     }
@@ -48,8 +53,8 @@ pub fn check_production_validator_build() -> Result<(), &'static str> {
     let allow_dcou = matches!(std::env::var("AGAVE_ALLOW_DCOU").as_deref(), Ok("1"));
     if dev_context_only_utils && allow_dcou {
         log::warn!("{DCOU_OVERRIDE_WARNING}");
+        eprintln!("Warning: {DCOU_OVERRIDE_WARNING}");
     }
-    check_production_build(dev_context_only_utils, allow_dcou)
 }
 
 pub fn format_name_value(name: &str, value: &str) -> String {

@@ -443,7 +443,6 @@ dependencies = [
 name = "agave-store-tool"
 version = "4.5.0-alpha.0"
 dependencies = [
- "agave-feature-set",
  "ahash 0.8.12",
  "clap 2.34.0",
  "rayon",

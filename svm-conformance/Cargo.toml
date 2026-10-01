@@ -42,7 +42,7 @@ required-features = ["cli", "ffi"]
 default = ["cli", "ffi"]
 agave-unstable-api = []
 cli = ["dep:clap"]
-dev-context-only-utils = ["agave-feature-set/dev-context-only-utils", "dep:agave-feature-set"]
+dev-context-only-utils = []
 dummy-for-ci-check = []
 ffi = [
     "dep:agave-feature-set",

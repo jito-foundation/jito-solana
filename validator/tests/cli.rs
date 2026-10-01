@@ -7,15 +7,24 @@ use {
 
 const DCOU_BUILD_ERROR: &str =
     "refusing to run agave-validator: compiled with dev-context-only-utils";
+const DCOU_OVERRIDE_WARNING: &str = "running agave-validator with dev-context-only-utils enabled";
 
 fn validator_command(temp_dir: &TempDir) -> Command {
     let temp_dir_path = temp_dir.path();
     let id_json_path = temp_dir_path.join("id.json");
     let id_json_str = id_json_path.to_str().unwrap();
+    let ledger_path = temp_dir_path.join("ledger");
     write_keypair_file(&Keypair::new(), id_json_str).unwrap();
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!(env!("CARGO_PKG_NAME")));
-    cmd.args(["--identity", id_json_str, "--no-voting", "--no-xdp"]);
+    cmd.env_remove("RUST_LOG").args([
+        "--identity",
+        id_json_str,
+        "--ledger",
+        ledger_path.to_str().unwrap(),
+        "--no-voting",
+        "--no-xdp",
+    ]);
     cmd
 }
 
@@ -30,7 +39,8 @@ fn test_dcou_build_refuses_validator_operations() {
         }
         cmd.assert()
             .failure()
-            .stderr(predicates::str::contains(DCOU_BUILD_ERROR));
+            .stdout(predicates::str::contains(DCOU_BUILD_ERROR));
+        assert!(!temp_dir.path().join("ledger").exists());
     }
 }
 
@@ -43,7 +53,7 @@ fn test_dcou_build_rejects_invalid_override() {
             .env("AGAVE_ALLOW_DCOU", value)
             .assert()
             .failure()
-            .stderr(predicates::str::contains(DCOU_BUILD_ERROR));
+            .stdout(predicates::str::contains(DCOU_BUILD_ERROR));
     }
 }
 
@@ -82,6 +92,28 @@ fn test_build_warnings_are_logged() {
     cmd.assert().failure();
 
     let log = fs::read_to_string(log_path).unwrap();
-    assert!(log.contains("compiled with debug assertions enabled"));
-    assert!(log.contains("AGAVE_ALLOW_DCOU=1"));
+    if cfg!(debug_assertions) {
+        assert!(log.contains("compiled with debug assertions enabled"));
+    }
+    assert!(log.contains(DCOU_OVERRIDE_WARNING));
+}
+
+#[test]
+fn test_dcou_override_warning_ignores_rust_log() {
+    let temp_dir = TempDir::new().unwrap();
+    let shared_path = temp_dir.path().join("shared");
+    let mut cmd = validator_command(&temp_dir);
+    cmd.env("AGAVE_ALLOW_DCOU", "1")
+        .env("RUST_LOG", "solana=info")
+        .args([
+            "--log",
+            "-",
+            "--accounts",
+            shared_path.to_str().unwrap(),
+            "--snapshots",
+            shared_path.to_str().unwrap(),
+        ]);
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains(DCOU_OVERRIDE_WARNING));
 }

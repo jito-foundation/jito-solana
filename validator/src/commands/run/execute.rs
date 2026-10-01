@@ -111,6 +111,8 @@ pub fn execute(
     operation: Operation,
     config: super::Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    crate::check_production_validator_build()?;
+
     // Debugging panics is easier with a backtrace
     if env::var_os("RUST_BACKTRACE").is_none() {
         // Safety: env update is made before any spawned threads might access the environment
@@ -153,7 +155,7 @@ pub fn execute(
     };
     let use_progress_bar = log_config.is_none();
     agave_logger::initialize_logging(logfile);
-    crate::check_production_validator_build()?;
+    crate::warn_for_non_production_build();
 
     cli::warn_for_deprecated_arguments(matches);
 
