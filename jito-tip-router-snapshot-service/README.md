@@ -174,15 +174,8 @@ separate worker pool.
 
 Additional guards reject candidates older than the epoch currently being
 tracked, candidates at or before the latest published epoch, and new candidates
-while publication is pending. Later root notifications cannot replace a pending
-winner. Selecting a winner discards the other candidates from tracking, but
+while publication is pending. Selecting a winner discards the other candidates from tracking, but
 their workers may still complete.
-
-A worker failure before selection removes its candidate from tracking. A worker
-failure for the selected winner is fatal; fatal service errors set the
-validator's shared exit flag. Publication errors are handled separately as shown
-above. During normal shutdown the service waits up to 30 seconds for in-flight
-candidate workers.
 
 The lifecycle in its compact form is:
 
@@ -196,32 +189,4 @@ WinnerPendingPublication
     -- winner's worker finishes --------> publish artifact
     -- publish success/already exists --> AwaitingCandidate
     -- publish failure -----------------> AwaitingCandidate
-```
-
-## Tests
-
-From the repository root, run the service's library tests:
-
-```bash
-cargo test --locked -p jito-tip-router-snapshot-service --lib
-```
-
-To run only the publication-tracker regressions:
-
-```bash
-cargo test --locked -p jito-tip-router-snapshot-service --lib service::publication_state::tests
-```
-
-These cover shared-ancestor parents rooting before the surviving boundary child,
-child ancestry in a later root notification, multiple children sharing a parent,
-duplicate child registration, exact bank ID matching, and both worker/root
-completion orders. The full library suite also covers epoch-boundary notification
-filtering, including skipped slots and skipped epochs.
-
-On macOS with Command Line Tools installed, the RocksDB dependency may require
-these settings before running Cargo:
-
-```bash
-export LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib
-export DYLD_LIBRARY_PATH=/Library/Developer/CommandLineTools/usr/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}
 ```
