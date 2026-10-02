@@ -111,7 +111,7 @@ pub fn execute(
     operation: Operation,
     config: super::Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::check_production_validator_build()?;
+    let dcou_override = crate::check_production_validator_build()?;
 
     // Debugging panics is easier with a backtrace
     if env::var_os("RUST_BACKTRACE").is_none() {
@@ -155,7 +155,7 @@ pub fn execute(
     };
     let use_progress_bar = log_config.is_none();
     agave_logger::initialize_logging(logfile);
-    crate::warn_for_non_production_build();
+    crate::warn_for_non_production_build(dcou_override);
 
     cli::warn_for_deprecated_arguments(matches);
 

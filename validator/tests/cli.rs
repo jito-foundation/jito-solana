@@ -8,6 +8,7 @@ use {
 const DCOU_BUILD_ERROR: &str =
     "refusing to run agave-validator: compiled with dev-context-only-utils";
 const DCOU_OVERRIDE_WARNING: &str = "running agave-validator with dev-context-only-utils enabled";
+const DEBUG_BUILD_WARNING: &str = "compiled with debug assertions enabled";
 
 fn validator_command(temp_dir: &TempDir) -> Command {
     let temp_dir_path = temp_dir.path();
@@ -93,7 +94,7 @@ fn test_build_warnings_are_logged() {
 
     let log = fs::read_to_string(log_path).unwrap();
     if cfg!(debug_assertions) {
-        assert!(log.contains("compiled with debug assertions enabled"));
+        assert!(log.contains(DEBUG_BUILD_WARNING));
     }
     assert!(log.contains(DCOU_OVERRIDE_WARNING));
 }
@@ -113,7 +114,11 @@ fn test_dcou_override_warning_ignores_rust_log() {
             "--snapshots",
             shared_path.to_str().unwrap(),
         ]);
-    cmd.assert()
+    let assert = cmd
+        .assert()
         .failure()
-        .stderr(predicates::str::contains(DCOU_OVERRIDE_WARNING));
+        .stdout(predicates::str::contains(DCOU_OVERRIDE_WARNING));
+    if cfg!(debug_assertions) {
+        assert.stdout(predicates::str::contains(DEBUG_BUILD_WARNING));
+    }
 }
