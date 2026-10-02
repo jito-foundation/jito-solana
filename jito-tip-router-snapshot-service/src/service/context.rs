@@ -64,8 +64,8 @@ impl TipRouterSnapshotServiceContext {
         rooted_chain: Vec<(Slot, BankId)>,
         artifact_store: &ArtifactStore,
     ) -> TipRouterSnapshotServiceResult {
-        // Returns a winner only once its artifact is written; a rooted-but-unwritten winner
-        // is published from `record_worker_completion` when the worker finishes instead.
+        // Returns a winner only once its artifact is written; a parent selected through a
+        // rooted boundary child is published when its worker finishes if still unwritten.
         let Some(winner) = self
             .publication_state
             .select_winner_for_publication(&rooted_chain)
@@ -73,7 +73,7 @@ impl TipRouterSnapshotServiceContext {
             return Ok(());
         };
 
-        debug!("selected rooted tip-router snapshot candidate {winner}");
+        debug!("selected tip-router snapshot parent {winner} through a rooted boundary child");
 
         self.publish_winner(winner, artifact_store)
     }
@@ -113,6 +113,7 @@ impl TipRouterSnapshotServiceContext {
         artifact_store: &ArtifactStore,
         boundary_child_bank: Arc<Bank>,
     ) -> TipRouterSnapshotServiceResult {
+        let boundary_child = (boundary_child_bank.slot(), boundary_child_bank.bank_id());
         let Some((candidate, parent_bank)) = self
             .publication_state
             .eligible_candidate_from_boundary_child(boundary_child_bank)
@@ -122,6 +123,13 @@ impl TipRouterSnapshotServiceContext {
             // side)
             return Ok(());
         };
+
+        if self
+            .publication_state
+            .record_boundary_child_for_existing_candidate(candidate, boundary_child)
+        {
+            return Ok(());
+        }
 
         if !self.publication_state.can_spawn_candidate(candidate) {
             return Ok(());
@@ -143,7 +151,8 @@ impl TipRouterSnapshotServiceContext {
             return Ok(());
         }
 
-        self.publication_state.record_spawned_candidate(candidate);
+        self.publication_state
+            .record_spawned_candidate(candidate, boundary_child);
         Ok(())
     }
 
@@ -174,8 +183,8 @@ impl TipRouterSnapshotServiceContext {
                     "wrote tip-router snapshot candidate {candidate} to {}",
                     path.display()
                 );
-                // If this candidate was already rooted, its publication was deferred until
-                // the artifact write finished; complete it now.
+                // If one of this parent's boundary children already rooted, publication was
+                // deferred until the artifact write finished; complete it now.
                 if let Some(winner) = self.publication_state.record_candidate_written(candidate) {
                     return self.publish_winner(winner, artifact_store);
                 }
