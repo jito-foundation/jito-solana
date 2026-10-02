@@ -62,6 +62,47 @@ Key configuration options:
 - `gossip_host`: Optional validator gossip advertisement override passed through as `--gossip-host`
 - `validators`: Array of validator configurations (first is bootstrap node)
 
+<<<<<<< HEAD
+=======
+## Feature configuration
+
+Pass `--features-config bam-local-cluster/features.example.toml` alongside
+`--config` (see [example](features.example.toml)). In `[features]`,
+`baseline = "mainnet-beta"` or `baseline = "testnet"` starts with that
+cluster's active features at genesis; pending and absent features stay
+inactive. Override by feature public key:
+
+- `enable`: activate at genesis.
+- `disable`: leave inactive.
+- `activate_next_epoch`: request runtime activation at the first epoch
+  boundary.
+- `activate_at_epoch`: map Alpenglow, fast leader handover, or the 200 ms slot
+  feature to a target epoch (1 or later). Other gates are rejected because some
+  have extra activation hooks. The feature becomes active at that epoch's first
+  slot. For example:
+
+  ```toml
+  [features.activate_at_epoch]
+  "FastLeaderHandover11111111111111111111111111" = 3
+  ```
+
+BAM's `local-cluster/FEATURES.md` has launcher examples for these schedules.
+Slot-time reductions take effect in the epoch *after* feature activation.
+
+The source baseline is saved as `features-baseline.toml` beside the ledger
+directory. Copy it outside the output directory before rerunning; set
+`baseline` to that path (relative to the feature TOML) to reuse it. RPC
+reads span multiple finalized slots, recorded in the snapshot.
+
+Alpenglow enabled at genesis uses a synthetic certificate and skips migration;
+later-epoch activation requires the real migration and does not guarantee it
+completes. The production migration starts 5,000 slots after the Alpenglow
+feature activates. On a short local run, activating the feature does not mean
+the cluster has switched consensus. Invalid or conflicting overrides and
+missing prerequisites are rejected. Do not combine with `enable_tx_v1 = true`
+or `slot_time_ms`. Without `--features-config`, existing behavior is unchanged.
+
+>>>>>>> 05e26f34fd (Allow local-cluster features to activate at a chosen epoch (#1703))
 ## How It Works
 
 The tool spawns `agave-validator` processes as subprocesses, automatically handling:
