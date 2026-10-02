@@ -9281,7 +9281,6 @@ dependencies = [
  "agave-logger",
  "agave-xdp",
  "anyhow",
- "bincode",
  "bytes",
  "dashmap",
  "hxdmp",
@@ -9291,17 +9290,16 @@ dependencies = [
  "pcap-file",
  "quinn",
  "rand 0.9.4",
- "serde",
  "shuttle",
  "socket2 0.6.5",
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
  "solana-net-utils",
- "solana-serde",
  "solana-svm-type-overrides",
  "thiserror 2.0.21",
  "tokio",
  "url 2.5.8",
+ "wincode",
 ]
 
 [[package]]
