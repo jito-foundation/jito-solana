@@ -343,6 +343,7 @@ mod tests {
     /// scan_accounts and scan_accounts_without_data each visit every account except those marked
     /// obsolete or recorded as a tombstone, and return the number of accounts excluded.
     #[test_case(AccountsFileProvider::AppendVec)]
+    #[test_case(AccountsFileProvider::Split)]
     fn test_scan_accounts_excludes_obsolete_and_tombstones(
         accounts_file_provider: AccountsFileProvider,
     ) {

@@ -236,6 +236,7 @@ mod tests {
     };
 
     #[test_case(AccountsFileProvider::AppendVec)]
+    #[test_case(AccountsFileProvider::Split)]
     fn test_account_storage_reader_no_obsolete_accounts(provider: AccountsFileProvider) {
         let slot = 0;
         let temp_dir = TempDir::new().unwrap();
@@ -604,7 +605,7 @@ mod tests {
     /// * excluded accounts
     /// * exceeding the file reader's stack buffer
     #[test_matrix(
-        [AccountsFileProvider::AppendVec],
+        [AccountsFileProvider::AppendVec, AccountsFileProvider::Split],
         [false, true],
         [0, 1, 2, 3, 4, 5, 6, 7])
     ]
