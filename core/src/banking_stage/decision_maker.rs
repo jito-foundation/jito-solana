@@ -232,6 +232,29 @@ mod tests {
             BufferedPacketsDecision::Forward
         );
 
+        // Atomic batches wait until the optimistic parent is confirmed, even after migration.
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(Arc::new(Bank::default_for_tests())),
+            0,
+            None,
+            None,
+            false,
+        )));
+        assert_matches!(
+            decision_maker.make_consume_or_forward_decision_at(started_at, true),
+            BufferedPacketsDecision::Hold
+        );
+        shared_leader_state.load().enable_atomic_batches();
+        assert_matches!(
+            decision_maker.make_consume_or_forward_decision_at(started_at, true),
+            BufferedPacketsDecision::Consume(_)
+        );
+        shared_leader_state.set_bank_replacement();
+        assert_matches!(
+            decision_maker.make_consume_or_forward_decision_at(started_at, false),
+            BufferedPacketsDecision::Hold
+        );
+
         // A working bank takes precedence over timing and schedule information.
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(Arc::new(Bank::default_for_tests())),

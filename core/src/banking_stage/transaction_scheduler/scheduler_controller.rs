@@ -1376,7 +1376,11 @@ mod tests {
         let (bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        let decision_maker = DecisionMaker::new(shared_leader_state.clone());
+        let decision_maker = DecisionMaker::new(
+            shared_leader_state.clone(),
+            bank_forks.read().unwrap().migration_status(),
+            SharedAlpenglowSlotClock::default(),
+        );
 
         let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Connected as u8));
         let exit = Arc::new(AtomicBool::new(false));
