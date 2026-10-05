@@ -6974,6 +6974,7 @@ dependencies = [
  "agave-random",
  "agave-votor-messages",
  "arc-swap",
+ "arrayvec",
  "assert_matches",
  "bv",
  "bytes",
