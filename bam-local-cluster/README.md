@@ -1,0 +1,159 @@
+# BAM Local Cluster
+
+A tool for spinning up local Solana clusters with BAM (Block Assembly Marketplace) support for testing purposes. This
+tool uses subprocess-based execution to spawn `agave-validator` instances.
+
+## Overview
+
+BAM Local Cluster is a development tool for spinning up local Solana clusters with BAM (Block Assembly Marketplace)
+support. It's designed for testing BAM-related functionality in a controlled local environment.
+
+The tool automatically handles:
+
+- Validator process management and monitoring
+- Genesis configuration with SPL programs
+- Keypair generation and ledger setup
+- Bootstrap node coordination
+- Process health monitoring and graceful shutdown
+
+## Quick Start
+
+The cluster tool belongs to the `dev-bins` workspace so its development
+features do not propagate into production validator builds. Run these
+commands from the repository root.
+
+1. **Build the binaries**:
+
+   ```bash
+   # Build agave-validator
+   cargo build --release -p agave-validator
+
+   # Build the development tools separately
+   cargo build --release --manifest-path dev-bins/Cargo.toml \
+     --bin bam-local-cluster --bin agave-ledger-tool
+   ```
+
+2. **Create a configuration file** (see `examples/example_config.toml`)
+
+3. **Run the cluster**:
+
+   ```bash
+   RUST_LOG=info ./dev-bins/target/release/bam-local-cluster \
+     --config bam-local-cluster/examples/example_config.toml
+   ```
+
+## Configuration
+
+The configuration file specifies BAM service URLs, tip program IDs, and validator settings. See
+`examples/example_config.toml` for a complete example.
+
+Key configuration options:
+
+- `bam_url`: BAM service endpoint
+- `tip_payment_program_id` / `tip_distribution_program_id`: Tip manager programs
+- `faucet_address`: Faucet service for airdrops
+- `mint_sol`: Optional faucet genesis balance in SOL
+- `enable_tx_v1`: Optional transaction v1 genesis feature activation for BAM conformance tests
+- `ledger_base_directory`: Base directory for validator ledgers
+- `validator_build_path`: Build output directory (e.g., "target/debug" or "target/release") - required
+- `ledger_tool_build_path`: Ledger tool output directory, such as
+  "dev-bins/target/debug" or "dev-bins/target/release" - required
+- `bind_address`: Optional validator listen address override passed through as `--bind-address`
+- `gossip_host`: Optional validator gossip advertisement override passed through as `--gossip-host`
+- `validators`: Array of validator configurations (first is bootstrap node)
+
+## Feature configuration
+
+Pass `--features-config bam-local-cluster/features.example.toml` alongside
+`--config` (see [example](features.example.toml)). In `[features]`,
+`baseline = "mainnet-beta"` or `baseline = "testnet"` starts with that
+cluster's active features at genesis; pending and absent features stay
+inactive. Override by feature public key:
+
+- `enable`: activate at genesis.
+- `disable`: leave inactive.
+- `activate_next_epoch`: request runtime activation at the first epoch
+  boundary.
+- `activate_at_epoch`: map Alpenglow, fast leader handover, or the 200 ms slot
+  feature to a target epoch (1 or later). Other gates are rejected because some
+  have extra activation hooks. The feature becomes active at that epoch's first
+  slot. For example:
+
+  ```toml
+  [features.activate_at_epoch]
+  "FastLeaderHandover11111111111111111111111111" = 3
+  ```
+
+BAM's `local-cluster/FEATURES.md` has launcher examples for these schedules.
+Slot-time reductions take effect in the epoch *after* feature activation.
+
+The source baseline is saved as `features-baseline.toml` beside the ledger
+directory. Copy it outside the output directory before rerunning; set
+`baseline` to that path (relative to the feature TOML) to reuse it. RPC
+reads span multiple finalized slots, recorded in the snapshot.
+
+Alpenglow enabled at genesis uses a synthetic certificate and skips migration;
+later-epoch activation requires the real migration and does not guarantee it
+completes. The production migration starts 5,000 slots after the Alpenglow
+feature activates. On a short local run, activating the feature does not mean
+the cluster has switched consensus. Invalid or conflicting overrides and
+missing prerequisites are rejected. Do not combine with `enable_tx_v1 = true`
+or `slot_time_ms`. Without `--features-config`, existing behavior is unchanged.
+
+## How It Works
+
+The tool spawns `agave-validator` processes as subprocesses, automatically handling:
+
+1. Genesis configuration with SPL programs
+2. Keypair generation and ledger setup
+3. Bootstrap node startup and coordination
+4. Validator process spawning and monitoring
+5. Graceful shutdown on Ctrl+C or process failure
+
+## Usage
+
+The cluster runs until you press Ctrl+C or a validator process fails. All validator output is streamed to the console
+for debugging.
+
+Use `--skip-last-validator` to omit starting the final validator (useful when running an alternate validator for testing
+purposes); the validator still receives stake/airdrop in genesis and remains in the leader schedule.
+
+## Remote Validator Notes
+
+`bam-local-cluster` can consume optional `bind_address` and `gossip_host` fields from the generated TOML. This is how
+the BAM wrapper enables remote-validator testing:
+
+- `bind_address = "0.0.0.0"` makes the validator listen on all interfaces
+- `gossip_host = "<reachable-ip-or-dns>"` controls the host advertised in gossip for bootstrap, TVU, TPU, and repair
+
+The higher-level BAM wrapper script `scripts/run-local-cluster.sh --skip-last-validator-remote` uses those fields to:
+
+1. Omit the last validator process while still leaving it in genesis
+2. Start the remaining validators with a non-loopback gossip advertisement
+3. Serve the omitted validator's keypairs and cluster bootstrap metadata over HTTP for a second machine to consume
+
+If neither `gossip_host` nor a non-loopback bind address is provided, a bootstrap validator without an entrypoint can
+still fall back to advertising `127.0.0.1`, which is not reachable by remote peers.
+
+## Troubleshooting
+
+Common issues:
+
+- **Port conflicts**: Bootstrap node uses gossip port 8001 and RPC port 8899
+- **Binary not found**: Check `validator_build_path` and
+  `ledger_tool_build_path` against the separate build output directories
+- **Permission errors**: Make sure the ledger base directory is writable
+
+Validator output is streamed to the console for debugging.
+
+## Development
+
+To modify the cluster behavior:
+
+1. Update `src/cluster_manager.rs` for process spawning logic
+2. Modify `src/config.rs` for configuration structure
+3. Update `src/main.rs` for command-line interface
+
+## License
+
+This project is part of the Jito Solana JDS repository and follows the same license terms.

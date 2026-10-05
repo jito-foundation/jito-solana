@@ -123,7 +123,9 @@ mod tests {
 #[cfg(unix)]
 pub(crate) mod external {
     use {
-        crate::banking_stage::transaction_scheduler::receive_and_buffer::translate_sanitized_to_runtime_view,
+        crate::banking_stage::transaction_scheduler::receive_and_buffer::{
+            contains_blacklisted_account, translate_sanitized_to_runtime_view,
+        },
         agave_scheduler_bindings::{
             CheckResponseRegion, CheckWorkerToPackMessage, MAX_TRANSACTIONS_PER_MESSAGE,
             PackToCheckWorkerMessage, SharablePubkeys, check_message_flags, processed_codes,
@@ -140,6 +142,7 @@ pub(crate) mod external {
             resolved_transaction_view::ResolvedTransactionView,
             transaction_view::SanitizedTransactionView,
         },
+        ahash::HashSet as AHashSet,
         arrayvec::ArrayVec,
         solana_account::ReadableAccount,
         solana_clock::Slot,
@@ -156,7 +159,7 @@ pub(crate) mod external {
             transaction_meta::TransactionMeta,
         },
         solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-        solana_svm_transaction::svm_message::SVMStaticMessage,
+        solana_svm_transaction::svm_message::{SVMMessage, SVMStaticMessage},
         solana_transaction::TransactionError,
         std::{
             ptr::NonNull,
@@ -194,6 +197,7 @@ pub(crate) mod external {
 
         shared_leader_state: SharedLeaderState,
         sharable_banks: SharableBanks,
+        blacklisted_accounts: Arc<AHashSet<Pubkey>>,
     }
 
     #[allow(dead_code)]
@@ -207,6 +211,7 @@ pub(crate) mod external {
             allocator: rts_alloc::Allocator,
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
+            blacklisted_accounts: Arc<AHashSet<Pubkey>>,
         ) -> Self {
             Self {
                 exit,
@@ -215,6 +220,7 @@ pub(crate) mod external {
                 allocator,
                 shared_leader_state,
                 sharable_banks,
+                blacklisted_accounts,
             }
         }
 
@@ -348,6 +354,21 @@ pub(crate) mod external {
                         }
                         return Ok(None);
                     };
+                    if contains_blacklisted_account(
+                        transaction
+                            .static_account_keys()
+                            .iter()
+                            .chain(addresses.iter().flat_map(|addresses| {
+                                addresses.writable.iter().chain(addresses.readonly.iter())
+                            })),
+                        &self.blacklisted_accounts,
+                    ) {
+                        response.resolve_flags |= resolve_flags::FAILED;
+                        if flags & check_message_flags::CALCULATE_SCHEDULING_DETAILS != 0 {
+                            response.scheduling_details_flags |= scheduling_details_flags::FAILED;
+                        }
+                        return Ok(None);
+                    }
                     self.export_resolved_pubkeys(
                         addresses.as_ref().unwrap_or(&LoadedAddresses::default()),
                         deactivation_slot,
@@ -369,6 +390,7 @@ pub(crate) mod external {
             let Ok((transaction, _)) = translate_sanitized_to_runtime_view(
                 transaction,
                 root_bank,
+                root_bank.vote_only_bank(),
                 root_bank.get_transaction_account_lock_limit(),
                 preloaded_addresses,
             ) else {
@@ -377,6 +399,16 @@ pub(crate) mod external {
                 }
                 return Ok(None);
             };
+
+            if contains_blacklisted_account(
+                transaction.account_keys().iter(),
+                &self.blacklisted_accounts,
+            ) {
+                if flags & check_message_flags::CALCULATE_SCHEDULING_DETAILS != 0 {
+                    response.scheduling_details_flags |= scheduling_details_flags::FAILED;
+                }
+                return Ok(None);
+            }
 
             if flags & check_message_flags::CALCULATE_SCHEDULING_DETAILS != 0 {
                 Self::check_scheduling_details(&transaction, response, working_bank);
@@ -814,6 +846,7 @@ pub(crate) mod external {
                 worker_allocator,
                 shared_leader_state,
                 bank_forks.read().unwrap().sharable_banks(),
+                Arc::new(AHashSet::default()),
             );
 
             CheckWorkerTestFrame {
@@ -1079,6 +1112,91 @@ pub(crate) mod external {
                 allocated_accounts_data_size
             );
 
+            test_frame.free_batch(batch);
+        }
+
+        #[test_case(false, false; "static_without_export")]
+        #[test_case(false, true; "static_with_export")]
+        #[test_case(true, false; "loaded_without_export")]
+        #[test_case(true, true; "loaded_with_export")]
+        fn test_blacklisted_accounts(loaded: bool, export: bool) {
+            let mut test_frame = setup_check_worker_test_frame();
+            let payer = Keypair::new();
+            let recipient = Pubkey::new_unique();
+            test_frame.worker.blacklisted_accounts = Arc::new([recipient].into_iter().collect());
+            let table_key = Pubkey::new_unique();
+            let table_data = AddressLookupTable {
+                meta: LookupTableMeta::default(),
+                addresses: vec![recipient].into(),
+            }
+            .serialize_for_tests()
+            .unwrap();
+            let mut table_account = AccountSharedData::new(1, table_data.len(), &program::id());
+            table_account.set_data_from_slice(&table_data);
+            test_frame.bank.store_account(&table_key, &table_account);
+            let lookup_tables = if loaded {
+                vec![AddressLookupTableAccount {
+                    key: table_key,
+                    addresses: vec![recipient],
+                }]
+            } else {
+                vec![]
+            };
+            let transaction = VersionedTransaction::try_new(
+                VersionedMessage::V0(
+                    v0::Message::try_compile(
+                        &payer.pubkey(),
+                        &[solana_system_interface::instruction::transfer(
+                            &payer.pubkey(),
+                            &recipient,
+                            1,
+                        )],
+                        &lookup_tables,
+                        test_frame.bank.confirmed_last_blockhash(),
+                    )
+                    .unwrap(),
+                ),
+                &[&payer],
+            )
+            .unwrap();
+            let batch = test_frame.allocate_batch(&[wincode::serialize(&transaction).unwrap()]);
+            let flags = check_message_flags::CALCULATE_SCHEDULING_DETAILS
+                | check_message_flags::STATUS_CHECKS
+                | check_message_flags::LOAD_FEE_PAYER_BALANCE
+                | if export {
+                    check_message_flags::LOAD_ADDRESS_LOOKUP_TABLES
+                } else {
+                    0
+                };
+            test_frame.send_message(PackToCheckWorkerMessage {
+                flags,
+                batch: batch.region,
+            });
+            test_frame.iterate().unwrap();
+            let response = test_frame.recv_response();
+            let responses = test_frame.check_responses(&response.responses);
+            assert_eq!(
+                responses[0].scheduling_details_flags,
+                scheduling_details_flags::REQUESTED
+                    | scheduling_details_flags::PERFORMED
+                    | scheduling_details_flags::FAILED
+            );
+            assert_eq!(
+                responses[0].status_check_flags,
+                status_check_flags::REQUESTED
+            );
+            assert_eq!(
+                responses[0].fee_payer_balance_flags,
+                fee_payer_balance_flags::REQUESTED | fee_payer_balance_flags::PERFORMED
+            );
+            assert_eq!(
+                responses[0].resolve_flags,
+                if export {
+                    resolve_flags::REQUESTED | resolve_flags::PERFORMED | resolve_flags::FAILED
+                } else {
+                    0
+                }
+            );
             test_frame.free_batch(batch);
         }
 

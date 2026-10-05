@@ -74,6 +74,7 @@ use {
     },
     solana_time_utils::timestamp,
     solana_transaction::Transaction,
+    solana_version::ClientId,
     solana_vote::vote_parser,
     std::{
         borrow::Borrow,
@@ -341,6 +342,10 @@ impl ClusterInfo {
     /// notifications; leaving it unset is the zero-cost default.
     pub fn set_contact_info_sender(&self, sender: crate::contact_info_notifier::ContactInfoSender) {
         self.gossip.crds.write().set_contact_info_sender(sender);
+    }
+
+    pub fn set_my_contact_info(&self, my_contact_info: ContactInfo) {
+        *self.my_contact_info.write() = my_contact_info;
     }
 
     pub fn save_contact_info(&self) {
@@ -2436,6 +2441,15 @@ impl ClusterInfo {
             shred_version,
         );
         (contact_info, gossip_socket, None)
+    }
+
+    pub fn set_client_id(&self, client_id: ClientId) {
+        self.my_contact_info.write().version.set_client(client_id);
+        self.refresh_my_gossip_contact_info();
+    }
+
+    pub fn get_client_id(&self) -> ClientId {
+        *self.my_contact_info.read().version.client()
     }
 }
 

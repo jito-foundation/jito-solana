@@ -65,7 +65,7 @@ pub enum InvalidCacheEntryReason {
     WrongOwner,
 }
 
-type StakeAccount = stake_account::StakeAccount<Delegation>;
+pub type StakeAccount = stake_account::StakeAccount<Delegation>;
 pub(crate) type DelegatedStakes = ImblHashMap<Pubkey, u64>;
 
 /// Maximum number of inert delegations evicted from StakesCache at epoch
@@ -83,7 +83,7 @@ pub(crate) struct EpochBoundaryStakes {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct StakesCache(RwLock<Stakes<StakeAccount>>);
+pub struct StakesCache(RwLock<Stakes<StakeAccount>>);
 
 impl StakesCache {
     pub(crate) fn new(stakes: Stakes<StakeAccount>) -> Self {
@@ -231,7 +231,7 @@ pub struct Stakes<T: Clone> {
         stable_abi_sample(with = "sample_collection_sized(rng, SequenceLenMax(1))")
     )]
     #[wincode(with = "FromIntoIterator<ImblHashMap<Pubkey, T>, BincodeLen>")]
-    stake_delegations: ImblHashMap<Pubkey, T>,
+    pub stake_delegations: ImblHashMap<Pubkey, T>,
 
     /// current effective stake delegated to each vote account pubkey
     #[cfg_attr(feature = "stable-abi", stable_abi_sample(with = "Default::default()"))]
@@ -755,7 +755,7 @@ impl Stakes<StakeAccount> {
     /// iterate over it with [`rayon`].
     ///
     /// [hamt]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
-    pub(crate) fn stake_delegations(&self) -> &ImblHashMap<Pubkey, StakeAccount> {
+    pub fn stake_delegations(&self) -> &ImblHashMap<Pubkey, StakeAccount> {
         &self.stake_delegations
     }
 
