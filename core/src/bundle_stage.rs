@@ -20,6 +20,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    agave_votor::slot_clock::SharedAlpenglowSlotClock,
     ahash::HashSet,
     arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvTimeoutError},
@@ -38,7 +39,6 @@ use {
     std::{
         collections::VecDeque,
         num::{NonZeroUsize, Saturating},
-        ops::Deref,
         sync::{
             Arc, RwLock,
             atomic::{AtomicBool, AtomicU8, Ordering},
@@ -334,6 +334,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<BankForks>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
+        alpenglow_slot_clock: SharedAlpenglowSlotClock,
         transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
@@ -351,6 +352,7 @@ impl BundleStage {
             cluster_info,
             bank_forks,
             poh_recorder,
+            alpenglow_slot_clock,
             transaction_recorder,
             bundle_receiver,
             transaction_status_sender,
@@ -375,6 +377,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<BankForks>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
+        alpenglow_slot_clock: SharedAlpenglowSlotClock,
         transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
@@ -393,7 +396,12 @@ impl BundleStage {
             replay_vote_sender,
             prioritization_fee_cache,
         );
-        let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
+        let migration_status = bank_forks.read().unwrap().migration_status();
+        let decision_maker = DecisionMaker::new(
+            poh_recorder.read().unwrap().shared_leader_state(),
+            migration_status,
+            alpenglow_slot_clock,
+        );
 
         let consumer =
             BundleConsumer::new(committer, transaction_recorder, log_message_bytes_limit);
@@ -1104,6 +1112,71 @@ mod tests {
     }
 
     #[test]
+    fn test_alpenglow_buffering_with_stopped_ticks() {
+        use {solana_clock::DEFAULT_TICKS_PER_SLOT, solana_poh::poh_recorder::SharedLeaderState};
+
+        let (bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
+        let migration_status = bank_forks.read().unwrap().migration_status();
+        let shared_leader_state =
+            SharedLeaderState::new(0, Some(24 * DEFAULT_TICKS_PER_SLOT), Some((24, 27)));
+        let clock = SharedAlpenglowSlotClock::default();
+        let mut decision_maker =
+            DecisionMaker::new(shared_leader_state, migration_status.clone(), clock.clone());
+        // Migration and clock observations arrive after the decision maker is created.
+        migration_status.enable_alpenglow_for_tests();
+
+        let mut storage = BundleStorage::with_capacity(1);
+        storage
+            .insert_bundle(
+                VerifiedPacketBundle::new(PacketBatch::from(vec![
+                    BytesPacket::from_data(test_tx()).unwrap(),
+                ])),
+                &bank,
+                &bank,
+                &HashSet::default(),
+            )
+            .unwrap();
+        let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let mut consumer = BundleConsumer::new(
+            Committer::new(None, replay_vote_sender, None),
+            TransactionRecorder::new(record_sender),
+            None,
+        );
+        let mut metrics = BundleStageLoopMetrics::default();
+        let mut last_tip_update_slot = Slot::MAX;
+        let identity = Arc::new(Keypair::new());
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&identity.pubkey(), timestamp()),
+            identity,
+            SocketAddrSpace::Unspecified,
+        ));
+
+        // Hold before and during our leader window, then drop after it ends.
+        // PoH stays at tick zero throughout, far outside the PoH buffering window.
+        for (slot, expected_bundles) in [(20, 1), (24, 1), (28, 0)] {
+            clock.update(slot, Instant::now(), Duration::from_millis(200));
+            BundleStage::process_buffered_bundles(
+                &mut decision_maker,
+                &mut consumer,
+                &mut storage,
+                &BundleAccountLocker::default(),
+                &mut metrics,
+                &mut last_tip_update_slot,
+                &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+                &TipManager::new(TipManagerConfig::default()),
+                &cluster_info,
+                &ConsumeWorkerMetrics::new(10_000),
+            );
+            assert_eq!(
+                storage.unprocessed_bundles_len(),
+                expected_bundles,
+                "slot {slot}"
+            );
+        }
+    }
+
+    #[test]
     fn test_missing_block_builder_fee_info_is_retryable() {
         let bank = Arc::new(Bank::new_for_tests(&GenesisConfig::default()));
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
@@ -1301,6 +1374,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1440,6 +1514,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1531,6 +1606,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1648,6 +1724,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1764,6 +1841,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
