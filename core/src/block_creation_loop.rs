@@ -1787,7 +1787,6 @@ mod tests {
         let initial_leader_state = shared_leader_state.load();
 
         // A window for the new identity can arrive before the loop refreshes its cached identity.
-        let mut slot_metrics = SlotMetrics::new(1, fast_leader_handover);
         let err = produce_window(
             fast_leader_handover,
             1,
@@ -1798,7 +1797,6 @@ mod tests {
             },
             Instant::now(),
             ctx,
-            &mut slot_metrics,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1806,7 +1804,7 @@ mod tests {
             StartLeaderError::LeaderIdentityMismatch { slot: 1, identity, leader }
                 if identity == old_identity && leader == new_identity
         ));
-        assert_eq!(slot_metrics.attempt_start_leader_count, 1);
+        assert_eq!(ctx.slot_metrics.attempt_start_leader_count, 1);
         assert!(!ctx.poh_recorder.read().unwrap().has_bank());
         assert_eq!(
             ctx.poh_recorder.read().unwrap().start_bank_id(),
@@ -1825,13 +1823,12 @@ mod tests {
         // After refreshing the identity, a later window can still start a bank.
         ctx.my_pubkey = new_identity;
         let bank = start_leader_wait_for_parent_replay(
-            ctx,
-            &mut SlotMetrics::new(4, fast_leader_handover),
             4,
             0,
             Some(parent_block_id),
             !fast_leader_handover,
             Instant::now(),
+            ctx,
         )
         .unwrap();
         assert_eq!(bank.slot(), 4);

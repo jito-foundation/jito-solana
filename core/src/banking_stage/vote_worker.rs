@@ -701,10 +701,15 @@ mod tests {
             None,
             None,
         )));
+        let migration_status = bank_forks.read().unwrap().migration_status();
         let mut worker = VoteWorker::new(
             Arc::new(AtomicBool::new(false)),
             CancellationToken::new(),
-            DecisionMaker::new(shared_leader_state.clone()),
+            DecisionMaker::new(
+                shared_leader_state.clone(),
+                migration_status,
+                agave_votor::slot_clock::SharedAlpenglowSlotClock::default(),
+            ),
             VotePacketReceiver::new(never(), Arc::default()),
             VotePacketReceiver::new(never(), Arc::default()),
             VoteStorage::new(&bank_a),
