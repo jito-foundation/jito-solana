@@ -74,6 +74,18 @@ inactive. Override by feature public key:
 - `disable`: leave inactive.
 - `activate_next_epoch`: request runtime activation at the first epoch
   boundary.
+- `activate_at_epoch`: map Alpenglow, fast leader handover, or the 200 ms slot
+  feature to a target epoch (1 or later). Other gates are rejected because some
+  have extra activation hooks. The feature becomes active at that epoch's first
+  slot. For example:
+
+  ```toml
+  [features.activate_at_epoch]
+  "FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH" = 3
+  ```
+
+BAM's `local-cluster/FEATURES.md` has launcher examples for these schedules.
+Slot-time reductions take effect in the epoch *after* feature activation.
 
 The source baseline is saved as `features-baseline.toml` beside the ledger
 directory. Copy it outside the output directory before rerunning; set
@@ -81,10 +93,12 @@ directory. Copy it outside the output directory before rerunning; set
 reads span multiple finalized slots, recorded in the snapshot.
 
 Alpenglow enabled at genesis uses a synthetic certificate and skips migration;
-next-epoch activation does not guarantee migration completes. Invalid or
-conflicting overrides and missing prerequisites are rejected. Do not combine
-with `enable_tx_v1 = true` or `slot_time_ms`. Without `--features-config`,
-existing behavior is unchanged.
+later-epoch activation requires the real migration and does not guarantee it
+completes. The production migration starts 5,000 slots after the Alpenglow
+feature activates. On a short local run, activating the feature does not mean
+the cluster has switched consensus. Invalid or conflicting overrides and
+missing prerequisites are rejected. Do not combine with `enable_tx_v1 = true`
+or `slot_time_ms`. Without `--features-config`, existing behavior is unchanged.
 
 ## How It Works
 
