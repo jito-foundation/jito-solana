@@ -29,6 +29,8 @@ struct FeatureConfig {
     disable: Vec<String>,
     #[serde(default)]
     activate_next_epoch: Vec<String>,
+    #[serde(default)]
+    activate_at_epoch: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +54,7 @@ struct FeatureSnapshot {
 #[derive(Debug)]
 pub struct ResolvedFeatures {
     states: BTreeMap<Pubkey, FeatureState>,
+    scheduled: BTreeMap<Pubkey, u64>,
 }
 
 fn known_id(value: &str) -> Result<Pubkey> {
@@ -124,6 +127,7 @@ impl ResolvedFeatures {
 
     fn resolve(baseline: &FeatureSnapshot, config: &FeatureConfig) -> Result<Self> {
         let mut states = BTreeMap::new();
+        let mut scheduled = BTreeMap::new();
         for (ids, state) in [
             (&config.enable, FeatureState::Active),
             (&config.disable, FeatureState::Inactive),
@@ -136,6 +140,27 @@ impl ResolvedFeatures {
                     "duplicate or conflicting feature override: {id}"
                 );
             }
+        }
+        for (value, epoch) in &config.activate_at_epoch {
+            let id = known_id(value)?;
+            ensure!(
+                [
+                    agave_feature_set::alpenglow::id(),
+                    agave_feature_set::alpenglow_fast_leader_handover::id(),
+                    agave_feature_set::reduce_slot_time_to_200ms::id(),
+                ]
+                .contains(&id),
+                "scheduled activation is not supported for feature: {id}"
+            );
+            ensure!(
+                *epoch > 0,
+                "scheduled feature epoch must be at least 1: {id}"
+            );
+            ensure!(
+                states.insert(id, FeatureState::Inactive).is_none(),
+                "duplicate or conflicting feature override: {id}"
+            );
+            scheduled.insert(id, *epoch);
         }
         for (id, state) in &baseline.features {
             // Pending features stay inactive unless explicitly requested.
@@ -156,7 +181,7 @@ impl ResolvedFeatures {
                 FEATURE_NAMES[&id]
             );
         }
-        Ok(Self { states })
+        Ok(Self { states, scheduled })
     }
 
     pub fn apply(&self, genesis: &mut GenesisConfig) {
@@ -176,7 +201,20 @@ impl ResolvedFeatures {
                         )),
                     );
                 }
-                FeatureState::Inactive => (),
+                FeatureState::Inactive => {
+                    if let Some(epoch) = self.scheduled.get(id) {
+                        let slot = genesis.epoch_schedule.get_first_slot_in_epoch(*epoch);
+                        genesis.accounts.insert(
+                            *id,
+                            Account::from(feature::create_account(
+                                &Feature {
+                                    activated_at: Some(slot),
+                                },
+                                genesis.rent.minimum_balance(Feature::size_of()).max(1),
+                            )),
+                        );
+                    }
+                }
             }
         }
         if self.states.get(&agave_feature_set::alpenglow::id()) == Some(&FeatureState::Active) {
@@ -216,6 +254,7 @@ mod tests {
             enable: vec![],
             disable: vec![],
             activate_next_epoch: vec![],
+            activate_at_epoch: BTreeMap::new(),
         }
     }
 
@@ -425,5 +464,46 @@ mod tests {
         assert_eq!(bank.compute_pending_activation_slot(&id), Some(next_epoch));
         let bank = Bank::new_from_parent(bank, Default::default(), next_epoch);
         assert!(bank.feature_set.is_active(&id));
+    }
+
+    #[test]
+    fn scheduled_feature_activates_only_at_chosen_epoch() {
+        use solana_runtime::{bank::Bank, genesis_utils::create_genesis_config};
+        let id = agave_feature_set::alpenglow_fast_leader_handover::id();
+        let mut config = config();
+        config.activate_at_epoch.insert(id.to_string(), 3);
+        let mut genesis = create_genesis_config(1_000_000_000).genesis_config;
+        ResolvedFeatures::resolve(&baseline(), &config)
+            .unwrap()
+            .apply(&mut genesis);
+        let epoch_2 = genesis.epoch_schedule.get_first_slot_in_epoch(2);
+        let epoch_3 = genesis.epoch_schedule.get_first_slot_in_epoch(3);
+        assert_eq!(
+            feature::from_account(&genesis.accounts[&id])
+                .unwrap()
+                .activated_at,
+            Some(epoch_3)
+        );
+        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis);
+        assert!(!bank.feature_set.is_active(&id));
+        let bank = Bank::new_from_parent(bank, Default::default(), epoch_2);
+        assert!(!bank.feature_set.is_active(&id));
+        let bank = Bank::new_from_parent(bank.into(), Default::default(), epoch_3);
+        assert!(bank.feature_set.is_active(&id));
+    }
+
+    #[test]
+    fn scheduled_activation_rejects_unsupported_feature() {
+        let mut config = config();
+        config.activate_at_epoch.insert(
+            agave_feature_set::remaining_compute_units_syscall_enabled::id().to_string(),
+            2,
+        );
+        assert!(
+            ResolvedFeatures::resolve(&baseline(), &config)
+                .unwrap_err()
+                .to_string()
+                .contains("not supported")
+        );
     }
 }
