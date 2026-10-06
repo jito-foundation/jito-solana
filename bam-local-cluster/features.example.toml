@@ -10,4 +10,4 @@ enable = [
     "Gx4XFcrVMt4HUvPzTpTSVkdDVgcDSjKhDN1RqRS6KDuZ",  # Vote state v4
 ]
 disable = []
-activate_next_epoch = ["FastLeaderHandover11111111111111111111111111"]
+activate_next_epoch = ["FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH"]
