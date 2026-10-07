@@ -62,8 +62,6 @@ Key configuration options:
 - `gossip_host`: Optional validator gossip advertisement override passed through as `--gossip-host`
 - `validators`: Array of validator configurations (first is bootstrap node)
 
-<<<<<<< HEAD
-=======
 ## Feature configuration
 
 Pass `--features-config bam-local-cluster/features.example.toml` alongside
@@ -83,7 +81,7 @@ inactive. Override by feature public key:
 
   ```toml
   [features.activate_at_epoch]
-  "FastLeaderHandover11111111111111111111111111" = 3
+  "FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH" = 3
   ```
 
 BAM's `local-cluster/FEATURES.md` has launcher examples for these schedules.
@@ -102,7 +100,6 @@ the cluster has switched consensus. Invalid or conflicting overrides and
 missing prerequisites are rejected. Do not combine with `enable_tx_v1 = true`
 or `slot_time_ms`. Without `--features-config`, existing behavior is unchanged.
 
->>>>>>> 05e26f34fd (Allow local-cluster features to activate at a chosen epoch (#1703))
 ## How It Works
 
 The tool spawns `agave-validator` processes as subprocesses, automatically handling:
