@@ -862,7 +862,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         }
 
         let deadline = (!buffering).then(|| Instant::now() + Duration::from_millis(100));
-        loop {
+        for _ in 0..ATOMIC_TXN_BATCH_BURST {
             let batch = if let Some(deadline) = deadline {
                 let (result, receive_time_us) =
                     measure_us!(self.parsed_batch_receiver.recv_deadline(deadline));
@@ -1422,6 +1422,46 @@ pub(super) mod tests {
 
         metrics.sigverify_metrics.oversized_packets = 1;
         assert!(metrics.has_data());
+    }
+
+    #[test]
+    fn test_receive_pass_is_bounded_and_preserves_fifo() {
+        let (bank_forks, mint) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let (sender, raw_receiver) = unbounded();
+        let (_exit, mut receiver, _, _) =
+            setup_bam_receive_and_buffer(raw_receiver, bank_forks, None, HashSet::new());
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: (0..=ATOMIC_TXN_BATCH_BURST)
+                    .map(|seq_id| transfer_batch(&mint, &bank, seq_id as u32))
+                    .collect(),
+            })
+            .unwrap();
+        receiver.wait_for_parsed_batches(ATOMIC_TXN_BATCH_BURST + 1);
+        let mut container =
+            TransactionStateContainer::with_capacity(2 * (ATOMIC_TXN_BATCH_BURST + 1));
+
+        let decision = BufferedPacketsDecision::Consume(bank);
+        receiver
+            .receive_and_buffer_packets(&mut container, &decision)
+            .unwrap();
+        assert_eq!(container.queue_size(), ATOMIC_TXN_BATCH_BURST);
+        assert_eq!(receiver.parsed_batch_receiver.len(), 1);
+
+        receiver
+            .receive_and_buffer_packets(&mut container, &decision)
+            .unwrap();
+        let seq_ids = (0..=ATOMIC_TXN_BATCH_BURST)
+            .map(|_| {
+                let id = container.pop().unwrap();
+                container.get_batch(id.id).unwrap().3
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            seq_ids,
+            (0..=ATOMIC_TXN_BATCH_BURST as u32).collect::<Vec<_>>()
+        );
     }
 
     #[test]
