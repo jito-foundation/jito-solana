@@ -1893,6 +1893,7 @@ impl Bank {
             .clone_and_filter_for_vat(
                 MAX_ALPENGLOW_VOTE_ACCOUNTS,
                 self.minimum_vote_account_balance_for_vat(),
+                self.feature_set.snapshot().block_revenue_sharing,
             );
         if AlpenglowEpochType::is_alpenglow_or_migration_epoch(self, rewarded_epoch) {
             reward_epoch_delegated_stakes.set(self, &filtered_distribution_vote_accounts);
@@ -6947,6 +6948,7 @@ impl Bank {
         self.stakes_cache.stakes().clone_and_filter_for_vat(
             MAX_ALPENGLOW_VOTE_ACCOUNTS,
             self.minimum_vote_account_balance_for_vat(),
+            self.feature_set.snapshot().block_revenue_sharing,
         )
     }
 
