@@ -1,0 +1,13 @@
+[features]
+# Use "testnet" for a testnet baseline, or a saved snapshot path.
+baseline = "mainnet-beta"
+# Alpenglow active at genesis; fast leader handover activates next epoch.
+# The 200 ms slot timing takes effect after the next epoch boundary.
+enable = [
+    "A1pengvuM6JEcyNuTnMqepBKhwHE3N6PmUrdATGawhJS",  # Alpenglow
+    "iBRLjhJnkmDZgNoZRDMW11d8ZV7HvsL3vAyRjZB5npW",  # 200 ms slots
+    "5TuppMutoyzhUSfuYdhgzD47F92GL1g89KpCZQKqedxP",  # Remaining compute units syscall
+    "Gx4XFcrVMt4HUvPzTpTSVkdDVgcDSjKhDN1RqRS6KDuZ",  # Vote state v4
+]
+disable = []
+activate_next_epoch = ["FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH"]
