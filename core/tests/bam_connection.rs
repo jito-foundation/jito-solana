@@ -228,6 +228,7 @@ impl BamNodeApi for MockBamNode {
                         if let Some(batch) = batch {
                             let resp = v0_response(Resp::MultipleAtomicTxnBatch(MultipleAtomicTxnBatch {
                                 batches: vec![batch],
+                                mss_padding: vec![0; 3072].into(),
                             }));
                             if tx.send(Ok(resp)).await.is_err() {
                                 break;
