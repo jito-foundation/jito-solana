@@ -1498,7 +1498,12 @@ pub(super) mod tests {
                 let batches = (70_001..=70_002)
                     .map(|seq_id| transfer_batch(&mint, &replacement, seq_id))
                     .collect();
-                sender.send(MultipleAtomicTxnBatch { batches }).unwrap();
+                sender
+                    .send(MultipleAtomicTxnBatch {
+                        batches,
+                        ..Default::default()
+                    })
+                    .unwrap();
                 // Prepare real parsed work first; delivery below is independent of parser timing.
                 let batches = (0..2)
                     .map(|_| {
