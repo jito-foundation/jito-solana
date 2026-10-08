@@ -1327,7 +1327,10 @@ pub(super) mod tests {
         let mut prevalidated = Vec::new();
         let mut packet_data = Vec::new();
         let mut verification_results = Vec::new();
-        let mut batches = vec![MultipleAtomicTxnBatch { batches }];
+        let mut batches = vec![MultipleAtomicTxnBatch {
+            batches,
+            ..Default::default()
+        }];
         let stats = BamReceiveAndBuffer::batch_verify(
             &thread_pool,
             &mut batches,
@@ -1612,6 +1615,7 @@ pub(super) mod tests {
             sender
                 .send(MultipleAtomicTxnBatch {
                     batches: vec![transfer_batch(&mint, &bank, 1)],
+                    ..Default::default()
                 })
                 .unwrap();
             // Observe the actual parser holding raw ingress before publishing the new bank.
@@ -1651,6 +1655,7 @@ pub(super) mod tests {
         sender
             .send(MultipleAtomicTxnBatch {
                 batches: vec![transfer_batch(&mint, &root, 1)],
+                ..Default::default()
             })
             .unwrap();
         receiver.wait_for_parsed_batches(1);
@@ -1685,6 +1690,7 @@ pub(super) mod tests {
         sender
             .send(MultipleAtomicTxnBatch {
                 batches: vec![bundle],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1756,6 +1762,7 @@ pub(super) mod tests {
                     }],
                     max_schedule_slot: Slot::MAX,
                 }],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2059,6 +2066,7 @@ pub(super) mod tests {
                 packets: vec![Packet::default(), Packet::default()],
                 max_schedule_slot: Slot::MAX,
             }],
+            ..Default::default()
         }];
         let mut prevalidated = Vec::new();
         let (stats, packet_count) =
