@@ -1286,6 +1286,20 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
             .help("The commission validator takes from tips expressed in basis points."),
     )
+    .arg(
+        Arg::with_name("tip_distribution_account_signer")
+            .long("tip-distribution-account-signer")
+            .value_name("KEYPAIR")
+            .takes_value(true)
+            .validator(is_keypair_or_ask_keyword)
+            .help(
+                "Keypair used to initialize the tip distribution account when the vote account's \
+                 node identity differs from the validator identity, e.g. while the old identity \
+                 is still producing blocks after an identity rotation. Must be the vote account's \
+                 node identity, and it pays the account rent. Requires --vote-account. Loaded at \
+                 startup only; unused once the validator identity matches the vote account again.",
+            ),
+    )
     .arg(jito_args::disable_block_engine_autoconfig())
     .arg(jito_args::shred_receiver_address())
     .arg(jito_args::shred_retransmit_receiver_address())
