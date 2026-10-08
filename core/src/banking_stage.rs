@@ -12,7 +12,7 @@ use {
             consume_worker::ConsumeWorker,
             transaction_scheduler::{
                 bam_receive_and_buffer::BamReceiveAndBuffer,
-                bam_scheduler::BamScheduler,
+                bam_scheduler::{BamScheduler, NUM_BAM_WORKERS},
                 scheduler_controller::{
                     DEFAULT_SCHEDULER_PACING_FILL_TIME_MILLIS, SchedulerConfig, SchedulerController,
                 },
@@ -673,7 +673,6 @@ impl BankingStage {
         if let Some(bam_dependencies) = bam_dependencies {
             // Spawn BAM workers
             // Create channels for communication between scheduler and workers
-            const NUM_BAM_WORKERS: usize = 8;
             let num_workers = NUM_BAM_WORKERS;
             let (work_sender, work_receiver) = unbounded();
             let (finished_work_sender, finished_work_receiver) = unbounded();
