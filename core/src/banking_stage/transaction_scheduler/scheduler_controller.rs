@@ -1444,6 +1444,7 @@ mod tests {
             bundle_sender
                 .send(jito_protos::proto::bam_types::MultipleAtomicTxnBatch {
                     batches: vec![transfer_batch(&mint_keypair, &bank, seq_id as u32)],
+                    mss_padding: vec![0; 3072].into(),
                 })
                 .unwrap();
             controller.receive_and_buffer.wait_for_parsed_batches(1);
