@@ -260,6 +260,7 @@ impl MockBamServer {
             batch_sender
                 .send(MultipleAtomicTxnBatch {
                     batches: vec![atomic_txn_batch],
+                    ..Default::default()
                 })
                 .unwrap();
 
