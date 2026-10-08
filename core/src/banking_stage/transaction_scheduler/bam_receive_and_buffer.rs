@@ -1439,6 +1439,7 @@ pub(super) mod tests {
                 batches: (0..=ATOMIC_TXN_BATCH_BURST)
                     .map(|seq_id| transfer_batch(&mint, &bank, seq_id as u32))
                     .collect(),
+                ..Default::default()
             })
             .unwrap();
         receiver.wait_for_parsed_batches(ATOMIC_TXN_BATCH_BURST + 1);
