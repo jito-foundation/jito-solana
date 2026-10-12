@@ -108,6 +108,7 @@ use {
     serde::{Deserialize, Serialize},
     solana_account::{
         Account, AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
+        state_traits::StateMutWincode as _,
     },
     solana_accounts_db::{
         account_locks::validate_account_locks,
@@ -2743,9 +2744,9 @@ impl Bank {
 
     fn update_slot_history(&self) {
         self.update_sysvar_account(&sysvar::slot_history::id(), |account| {
-            let mut slot_history = account
+            let mut slot_history: SlotHistory = account
                 .as_ref()
-                .map(|account| wincode::deserialize::<SlotHistory>(account.data()).unwrap())
+                .map(|account| account.state().unwrap())
                 .unwrap_or_default();
             slot_history.add(self.slot());
             create_account(
@@ -2757,9 +2758,9 @@ impl Bank {
 
     fn update_slot_hashes(&self) {
         self.update_sysvar_account(&sysvar::slot_hashes::id(), |account| {
-            let mut slot_hashes = account
+            let mut slot_hashes: SlotHashes = account
                 .as_ref()
-                .map(|account| wincode::deserialize::<SlotHashes>(account.data()).unwrap())
+                .map(|account| account.state().unwrap())
                 .unwrap_or_default();
             slot_hashes.add(self.parent_slot, self.parent_hash);
             create_account(
@@ -2770,8 +2771,7 @@ impl Bank {
     }
 
     pub fn get_slot_history(&self) -> Option<SlotHistory> {
-        wincode::deserialize::<SlotHistory>(self.get_account(&sysvar::slot_history::id())?.data())
-            .ok()
+        self.get_account(&sysvar::slot_history::id())?.state().ok()
     }
 
     fn update_epoch_stakes(
@@ -3586,7 +3586,8 @@ impl Bank {
             // The address is known in advance, so the account could already exist if it was prefunded.
             // However this account cannot be written to except by us in `set_alpenglow_genesis_certificate`,
             // so this deserialize is safe if the account is non-empty
-            let cert: WireBlockCertMessage = wincode::deserialize(acct.data())
+            let cert: WireBlockCertMessage = acct
+                .state()
                 .expect("Programmer error deserializing genesis certificate");
             GenesisCert {
                 block: cert.block,
@@ -3617,8 +3618,7 @@ impl Bank {
         };
         let data = wincode::serialize(&cert).unwrap();
         let lamports = Rent::default().minimum_balance(data.len());
-        let mut cert_acct = AccountSharedData::new(lamports, data.len(), &system_program::ID);
-        cert_acct.set_data_from_slice(&data);
+        let cert_acct = AccountSharedData::new_with_data(lamports, data, &system_program::ID);
 
         self.store_account_and_update_capitalization(&GENESIS_CERTIFICATE_ACCOUNT, &cert_acct);
         self.set_is_alpenglow();
@@ -3667,8 +3667,7 @@ impl Bank {
         // Update Alpenglow clock
         let data = wincode::serialize(&unix_timestamp_nanos).unwrap();
         let lamports = Rent::default().minimum_balance(data.len());
-        let mut alpenclock_acct = AccountSharedData::new(lamports, data.len(), &system_program::ID);
-        alpenclock_acct.set_data_from_slice(&data);
+        let alpenclock_acct = AccountSharedData::new_with_data(lamports, data, &system_program::ID);
 
         self.store_account_and_update_capitalization(&NANOSECOND_CLOCK_ACCOUNT, &alpenclock_acct);
 
@@ -3683,7 +3682,7 @@ impl Bank {
         (!acct.data().is_empty()).then(|| {
             // This address is known in advance, so the account could already exist if it was prefunded.
             // The deserialize is only safe when the account is non-empty
-            wincode::deserialize(acct.data())
+            acct.state()
                 .expect("Couldn't deserialize nanosecond resolution clock")
         })
     }
@@ -4167,9 +4166,9 @@ impl Bank {
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
             let current_account = self.get_account_with_fixed_root(&slot_history_id);
-            let slot_history = current_account
+            let slot_history: SlotHistory = current_account
                 .as_ref()
-                .map(|account| wincode::deserialize::<SlotHistory>(account.data()).unwrap())
+                .map(|account| account.state().unwrap())
                 .unwrap_or_default();
             if slot_history.check(self.slot()) == Check::Found {
                 let mut ancestors = self.ancestors.clone();
