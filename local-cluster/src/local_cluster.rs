@@ -19,6 +19,7 @@ use {
     solana_commitment_config::CommitmentConfig,
     solana_core::{
         consensus::tower_storage::FileTowerStorage,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
@@ -38,7 +39,9 @@ use {
     solana_native_token::LAMPORTS_PER_SOL,
     solana_net_utils::{SocketAddrSpace, sockets::bind_to_localhost_unique},
     solana_poh_config::PohConfig,
-    solana_program_binaries::core_bpf_programs,
+    solana_program_binaries::{
+        core_bpf_programs, jito_tip_distribution, jito_tip_payment, spl_programs,
+    },
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_rpc_client::rpc_client::RpcClient,
@@ -202,6 +205,23 @@ impl LocalCluster {
         }
     }
 
+    /// Point TipManager at the tip programs deployed from genesis via `spl_programs`.
+    fn configure_tip_manager(
+        config: &mut ValidatorConfig,
+        identity: &Pubkey,
+        vote_account: &Pubkey,
+    ) {
+        config.tip_manager_config = TipManagerConfig {
+            tip_payment_program_id: jito_tip_payment::id(),
+            tip_distribution_program_id: jito_tip_distribution::id(),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: *identity,
+                vote_account: *vote_account,
+                commission_bps: 10,
+            },
+        };
+    }
+
     pub fn new(config: &mut ClusterConfig, socket_addr_space: SocketAddrSpace) -> Self {
         Self::init(config, socket_addr_space, AlpenglowMode::Disabled)
     }
@@ -233,6 +253,9 @@ impl LocalCluster {
             config
                 .additional_accounts
                 .push(core_program_account.clone());
+        }
+        for program_account in spl_programs(&Rent::default()) {
+            config.additional_accounts.push(program_account);
         }
 
         // Mint used to fund validator identities for non-genesis accounts.
@@ -414,6 +437,11 @@ impl LocalCluster {
                     .iter()
                     .all(|cfg| cfg.wait_for_supermajority.is_none()),
                 "Cannot partially specify WFSM in local cluster"
+            );
+            Self::configure_tip_manager(
+                &mut leader_config,
+                &leader_keypair.pubkey(),
+                &leader_vote_keypair.pubkey(),
             );
             let leader_server = Validator::new(
                 leader_node,
@@ -625,6 +653,7 @@ impl LocalCluster {
             validator_node.info.rpc_pubsub().unwrap(),
         ));
         Self::sync_ledger_path_across_nested_config_fields(&mut config, &ledger_path);
+        Self::configure_tip_manager(&mut config, &validator_pubkey, &voting_keypair.pubkey());
         let validator_server = Validator::new(
             validator_node,
             validator_keypair.clone(),
@@ -678,7 +707,7 @@ impl LocalCluster {
         let (
             leader_pubkey,
             leader_node,
-            leader_config,
+            mut leader_config,
             leader_keypair,
             leader_vote_keypair,
             leader_ledger_path,
@@ -690,6 +719,11 @@ impl LocalCluster {
         let handle = std::thread::spawn(move || {
             info!("Starting boostrap {leader_pubkey}");
 
+            Self::configure_tip_manager(
+                &mut leader_config,
+                &leader_keypair.pubkey(),
+                &leader_vote_keypair.pubkey(),
+            );
             let leader_server = Validator::new(
                 leader_node,
                 leader_keypair.clone(),
@@ -749,6 +783,11 @@ impl LocalCluster {
                     validator_node.info.rpc_pubsub().unwrap(),
                 ));
                 Self::sync_ledger_path_across_nested_config_fields(&mut config, &ledger_path);
+                Self::configure_tip_manager(
+                    &mut config,
+                    &validator_pubkey,
+                    &voting_keypair.pubkey(),
+                );
 
                 let validator_server = Validator::new(
                     validator_node,
@@ -1322,11 +1361,19 @@ impl Cluster for LocalCluster {
         socket_addr_space: SocketAddrSpace,
     ) -> ClusterValidatorInfo {
         // Restart the node
-        let validator_info = &cluster_validator_info.info;
+        let ledger_path = cluster_validator_info.info.ledger_path.clone();
+        let identity = cluster_validator_info.info.keypair.pubkey();
+        let vote_account = cluster_validator_info.info.voting_keypair.pubkey();
         LocalCluster::sync_ledger_path_across_nested_config_fields(
             &mut cluster_validator_info.config,
-            &validator_info.ledger_path,
+            &ledger_path,
         );
+        LocalCluster::configure_tip_manager(
+            &mut cluster_validator_info.config,
+            &identity,
+            &vote_account,
+        );
+        let validator_info = &cluster_validator_info.info;
         let restarted_node = Validator::new(
             node,
             validator_info.keypair.clone(),
