@@ -2,10 +2,11 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
     solana_clock::BankId,
     solana_entry::{
-        block_component::VersionedBlockMarker, entry::EntrySummary, entry_or_marker::EntryOrMarker,
+        block_component::VersionedBlockMarker, entry::EntrySummary,
+        recorder_message::RecorderMessage,
     },
     solana_ledger::entry_notifier_service::{EntryNotification, EntryNotifierSender},
-    solana_poh::poh_recorder::WorkingBankEntryOrMarker,
+    solana_poh::poh_recorder::WorkingBankMessage,
     std::{
         sync::{
             Arc,
@@ -22,9 +23,9 @@ pub(crate) struct TpuEntryNotifier {
 
 impl TpuEntryNotifier {
     pub(crate) fn new(
-        entry_receiver: Receiver<WorkingBankEntryOrMarker>,
+        entry_receiver: Receiver<WorkingBankMessage>,
         entry_notification_sender: EntryNotifierSender,
-        broadcast_entry_sender: Sender<WorkingBankEntryOrMarker>,
+        broadcast_message_sender: Sender<WorkingBankMessage>,
         exit: Arc<AtomicBool>,
     ) -> Self {
         let thread_hdl = Builder::new()
@@ -43,7 +44,7 @@ impl TpuEntryNotifier {
                         exit.clone(),
                         &entry_receiver,
                         &entry_notification_sender,
-                        &broadcast_entry_sender,
+                        &broadcast_message_sender,
                         &mut current_slot,
                         &mut current_bank_id,
                         &mut current_index,
@@ -59,16 +60,15 @@ impl TpuEntryNotifier {
 
     pub(crate) fn send_entry_notification(
         exit: Arc<AtomicBool>,
-        entry_receiver: &Receiver<WorkingBankEntryOrMarker>,
+        entry_receiver: &Receiver<WorkingBankMessage>,
         entry_notification_sender: &EntryNotifierSender,
-        broadcast_entry_sender: &Sender<WorkingBankEntryOrMarker>,
+        broadcast_message_sender: &Sender<WorkingBankMessage>,
         current_slot: &mut u64,
         current_bank_id: &mut BankId,
         current_index: &mut usize,
         current_transaction_index: &mut usize,
     ) -> Result<(), RecvTimeoutError> {
-        let (bank, (entry_or_marker, tick_height)) =
-            entry_receiver.recv_timeout(Duration::from_secs(1))?;
+        let (bank, (message, tick_height)) = entry_receiver.recv_timeout(Duration::from_secs(1))?;
         let slot = bank.slot();
         let bank_id = bank.bank_id();
         if slot != *current_slot || bank_id != *current_bank_id {
@@ -79,8 +79,9 @@ impl TpuEntryNotifier {
         };
         let index = *current_index;
 
-        match &entry_or_marker {
-            EntryOrMarker::Entry(entry) => {
+        match &message {
+            RecorderMessage::SlotStart => {}
+            RecorderMessage::Entry(entry) => {
                 let entry_summary = EntrySummary {
                     num_hashes: entry.num_hashes,
                     hash: entry.hash,
@@ -101,7 +102,7 @@ impl TpuEntryNotifier {
                 *current_index += 1;
                 *current_transaction_index += entry.transactions.len();
             }
-            EntryOrMarker::Marker(VersionedBlockMarker::V1(marker)) => {
+            RecorderMessage::Marker(VersionedBlockMarker::V1(marker)) => {
                 if let Some(block_footer) = marker.as_block_footer()
                     && let Err(err) =
                         entry_notification_sender.send(EntryNotification::BlockFooter {
@@ -118,10 +119,10 @@ impl TpuEntryNotifier {
             }
         }
 
-        if let Err(err) = broadcast_entry_sender.send((bank, (entry_or_marker, tick_height))) {
+        if let Err(err) = broadcast_message_sender.send((bank, (message, tick_height))) {
             warn!(
-                "Failed to send slot {slot:?} entry/marker {index:?} from Tpu to BroadcastStage, \
-                 error {err:?}",
+                "Failed to send slot {slot:?} recorder message {index:?} from Tpu to \
+                 BroadcastStage, error {err:?}",
             );
             // If the BroadcastStage channel is closed, the validator has halted. Try to exit
             // gracefully.
@@ -168,11 +169,11 @@ mod tests {
 
         let (entry_sender, entry_receiver) = unbounded();
         let (entry_notification_sender, entry_notification_receiver) = unbounded();
-        let (broadcast_entry_sender, broadcast_entry_receiver) = unbounded();
+        let (broadcast_message_sender, broadcast_message_receiver) = unbounded();
         entry_sender
             .send((
                 bank.clone(),
-                (EntryOrMarker::Marker(marker.clone()), tick_height),
+                (RecorderMessage::Marker(marker.clone()), tick_height),
             ))
             .unwrap();
 
@@ -184,7 +185,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             &entry_receiver,
             &entry_notification_sender,
-            &broadcast_entry_sender,
+            &broadcast_message_sender,
             &mut current_slot,
             &mut current_bank_id,
             &mut current_index,
@@ -205,14 +206,14 @@ mod tests {
         assert_eq!(*notified_block_footer, expected_block_footer);
         assert!(entry_notification_receiver.try_recv().is_err());
 
-        let (forwarded_bank, (forwarded_entry_or_marker, forwarded_tick_height)) =
-            broadcast_entry_receiver.try_recv().unwrap();
+        let (forwarded_bank, (forwarded_message, forwarded_tick_height)) =
+            broadcast_message_receiver.try_recv().unwrap();
         assert!(Arc::ptr_eq(&forwarded_bank, &bank));
         assert_eq!(forwarded_tick_height, tick_height);
-        let EntryOrMarker::Marker(forwarded_marker) = forwarded_entry_or_marker else {
+        let RecorderMessage::Marker(forwarded_marker) = forwarded_message else {
             panic!("expected forwarded block footer marker");
         };
         assert_eq!(forwarded_marker, marker);
-        assert!(broadcast_entry_receiver.try_recv().is_err());
+        assert!(broadcast_message_receiver.try_recv().is_err());
     }
 }

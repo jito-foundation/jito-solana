@@ -5,7 +5,8 @@ use {
     itertools::Itertools,
     rand::{Rng, rng},
     solana_account::ReadableAccount as _,
-    solana_clock::Epoch,
+    solana_clock::{BankId, Epoch, Slot},
+    solana_hash::Hash,
     solana_perf::packet::bytes::Bytes,
     solana_pubkey::Pubkey,
     solana_runtime::{
@@ -51,6 +52,8 @@ pub struct VoteStorage {
     cached_epoch_authorized_voters: Arc<EpochAuthorizedVoters>,
     deprecate_legacy_vote_ixs: bool,
     current_epoch: Epoch,
+    /// Most recent leader bank observed by the vote worker.
+    last_bank: (Slot, BankId),
 }
 
 impl VoteStorage {
@@ -68,6 +71,7 @@ impl VoteStorage {
             cached_epoch_authorized_voters,
             current_epoch: bank.epoch(),
             deprecate_legacy_vote_ixs: bank.feature_set.snapshot().deprecate_legacy_vote_ixs,
+            last_bank: (bank.slot(), bank.bank_id()),
         }
     }
 
@@ -90,6 +94,7 @@ impl VoteStorage {
             cached_epoch_authorized_voters: epoch_authorized_voters,
             current_epoch: 0,
             deprecate_legacy_vote_ixs: true,
+            last_bank: Default::default(),
         }
     }
 
@@ -137,42 +142,112 @@ impl VoteStorage {
         }
     }
 
-    pub fn drain_unprocessed(&mut self, bank: &Bank) -> Vec<SanitizedTransactionView<Bytes>> {
-        let slot_hashes = bank
-            .get_account(&sysvar::slot_hashes::id())
-            .and_then(|account| wincode::deserialize::<SlotHashes>(account.data()).ok());
-        if slot_hashes.is_none() {
-            error!(
-                "Slot hashes sysvar doesn't exist on bank {}. Including all votes without \
-                 filtering",
-                bank.slot()
-            );
-        }
+    pub(crate) fn retain_processed_vote(&mut self, pubkey: Pubkey, bytes: Bytes) {
+        let vote = self
+            .latest_vote_per_vote_pubkey
+            .get_mut(&pubkey)
+            .expect("drained vote entry must still exist");
+        vote.retained_vote = Some((bytes, vote.source(), (vote.slot(), vote.hash())));
+        vote.restore_retained_on_failure = false;
+    }
 
-        self.weighted_random_order_by_stake()
+    pub fn drain_unprocessed(
+        &mut self,
+        bank: &Bank,
+    ) -> Vec<(Pubkey, SanitizedTransactionView<Bytes>)> {
+        self.drain_unprocessed_with_deferred_restores(bank).0
+    }
+
+    pub(crate) fn drain_unprocessed_with_deferred_restores(
+        &mut self,
+        bank: &Bank,
+    ) -> (Vec<(Pubkey, SanitizedTransactionView<Bytes>)>, usize) {
+        let slot_hashes = Self::load_slot_hashes(bank);
+        let mut deferred_restore_count = 0;
+
+        let votes = self
+            .weighted_random_order_by_stake()
             .filter_map(|pubkey| {
                 self.latest_vote_per_vote_pubkey
                     .get_mut(&pubkey)
                     .and_then(|latest_vote| {
-                        if !Self::is_valid_for_our_fork(latest_vote, &slot_hashes) {
-                            return None;
-                        }
-                        latest_vote.take_vote().inspect(|_vote| {
+                        let current_vote_is_valid = Self::is_valid_for_our_fork(
+                            (latest_vote.slot(), latest_vote.hash()),
+                            &slot_hashes,
+                        );
+                        let vote = if current_vote_is_valid {
+                            latest_vote.take_vote()
+                        } else {
+                            latest_vote
+                                .take_deferred_retained_vote(self.deprecate_legacy_vote_ixs)
+                                .inspect(|_| deferred_restore_count += 1)
+                        };
+                        vote.map(|vote| {
                             self.num_unprocessed_votes -= 1;
+                            (pubkey, vote)
                         })
                     })
             })
-            .collect_vec()
+            .collect_vec();
+        (votes, deferred_restore_count)
     }
 
+    /// Restores successfully landed votes when the leader bank is replaced at the same slot.
+    pub(crate) fn restore_taken_votes_for_bank(&mut self, bank: &Bank) -> usize {
+        let bank_identity = (bank.slot(), bank.bank_id());
+        let previous_bank = std::mem::replace(&mut self.last_bank, bank_identity);
+        if previous_bank == bank_identity
+            || !self
+                .latest_vote_per_vote_pubkey
+                .values()
+                .any(|vote| vote.retained_vote.is_some())
+        {
+            return 0;
+        }
+
+        if previous_bank.0 != bank.slot() {
+            self.latest_vote_per_vote_pubkey
+                .values_mut()
+                .for_each(|vote| {
+                    vote.retained_vote = None;
+                    vote.restore_retained_on_failure = false;
+                });
+            return 0;
+        }
+
+        let slot_hashes = Self::load_slot_hashes(bank);
+        let mut restored_vote_count = 0;
+        for vote in self.latest_vote_per_vote_pubkey.values_mut() {
+            if let Some(newly_unprocessed) = vote.restore_for_bank(
+                |slot_hash| Self::is_valid_for_our_fork(slot_hash, &slot_hashes),
+                self.deprecate_legacy_vote_ixs,
+            ) {
+                restored_vote_count += 1;
+                self.num_unprocessed_votes += newly_unprocessed;
+            }
+        }
+        restored_vote_count
+    }
+
+    /// Clears unprocessed votes while retaining same-slot handover state.
     pub fn clear(&mut self) {
         self.latest_vote_per_vote_pubkey
             .values_mut()
             .for_each(|vote| {
-                if vote.take_vote().is_some() {
-                    self.num_unprocessed_votes -= 1;
-                }
+                drop(vote.take_vote());
+                vote.restore_retained_on_failure = false;
             });
+        self.num_unprocessed_votes = 0;
+    }
+
+    pub(crate) fn take_deferred_retained_vote(
+        &mut self,
+        pubkey: Pubkey,
+    ) -> Option<(Pubkey, SanitizedTransactionView<Bytes>)> {
+        self.latest_vote_per_vote_pubkey
+            .get_mut(&pubkey)?
+            .take_deferred_retained_vote(self.deprecate_legacy_vote_ixs)
+            .map(|vote| (pubkey, vote))
     }
 
     pub fn cache_epoch_boundary_info(&mut self, bank: &Bank) {
@@ -280,7 +355,9 @@ impl VoteStorage {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let latest_vote = entry.get_mut();
                 if Self::allow_update(&vote, latest_vote, should_replenish_taken_votes) {
-                    let old_vote = std::mem::replace(latest_vote, vote);
+                    let mut old_vote = std::mem::replace(latest_vote, vote);
+                    latest_vote.retained_vote = old_vote.retained_vote.take();
+                    latest_vote.restore_retained_on_failure = old_vote.restore_retained_on_failure;
                     if old_vote.is_vote_taken() {
                         self.num_unprocessed_votes += 1;
                         return None;
@@ -345,15 +422,23 @@ impl VoteStorage {
     }
 
     /// Check if `vote` can land in our fork based on `slot_hashes`
-    fn is_valid_for_our_fork(vote: &LatestValidatorVote, slot_hashes: &Option<SlotHashes>) -> bool {
-        let Some(slot_hashes) = slot_hashes else {
-            // When slot hashes is not present we do not filter
-            return true;
-        };
+    fn is_valid_for_our_fork((slot, hash): (Slot, Hash), slot_hashes: &Option<SlotHashes>) -> bool {
         slot_hashes
-            .get(&vote.slot())
-            .map(|found_hash| *found_hash == vote.hash())
-            .unwrap_or(false)
+            .as_ref()
+            .is_none_or(|hashes| hashes.get(&slot) == Some(&hash))
+    }
+
+    fn load_slot_hashes(bank: &Bank) -> Option<SlotHashes> {
+        bank.get_account(&sysvar::slot_hashes::id())
+            .and_then(|account| wincode::deserialize::<SlotHashes>(account.data()).ok())
+            .or_else(|| {
+                error!(
+                    "Slot hashes sysvar doesn't exist on bank {}. Including all votes without \
+                     filtering",
+                    bank.slot()
+                );
+                None
+            })
     }
 
     #[cfg(test)]
@@ -378,7 +463,6 @@ pub(crate) mod tests {
         solana_clock::UnixTimestamp,
         solana_epoch_schedule::MINIMUM_SLOTS_PER_EPOCH,
         solana_genesis_config::GenesisConfig,
-        solana_hash::Hash,
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
         solana_perf::packet::{BytesPacket, PacketFlags},
@@ -455,7 +539,17 @@ pub(crate) mod tests {
         keypairs: &ValidatorVoteKeypairs,
         timestamp: Option<UnixTimestamp>,
     ) -> BytesPacket {
+        packet_from_slots_with_hash(slots, keypairs, timestamp, Hash::default())
+    }
+
+    fn packet_from_slots_with_hash(
+        slots: Vec<(u64, u32)>,
+        keypairs: &ValidatorVoteKeypairs,
+        timestamp: Option<UnixTimestamp>,
+        vote_hash: Hash,
+    ) -> BytesPacket {
         let mut vote = TowerSync::from(slots);
+        vote.hash = vote_hash;
         vote.timestamp = timestamp;
         let vote_tx = new_tower_sync_transaction(
             vote,
@@ -510,7 +604,7 @@ pub(crate) mod tests {
         packet
     }
 
-    fn to_sanitized_view(packet: BytesPacket) -> SanitizedTransactionView<Bytes> {
+    pub(crate) fn to_sanitized_view(packet: BytesPacket) -> SanitizedTransactionView<Bytes> {
         SanitizedTransactionView::try_new_sanitized(packet.buffer().clone(), &sanitize_config())
             .unwrap()
     }
@@ -526,24 +620,61 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_reinsert_packets() {
+    fn test_retained_vote_handover() {
         let keypair = ValidatorVoteKeypairs::new_rand();
         let genesis_config =
             genesis_utils::create_genesis_config_with_vote_accounts(100, &[&keypair], vec![200])
                 .genesis_config;
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (root_bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let bank_a = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        let bank_b = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        let bank_d = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 2);
 
-        let vote = packet_from_slots(vec![(0, 1)], &keypair, None);
-        let mut vote_storage = VoteStorage::new(&bank);
+        let vote = packet_from_slots_with_hash(vec![(0, 1)], &keypair, None, root_bank.hash());
+        let mut vote_storage = VoteStorage::new(&bank_a);
         vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote));
-        assert_eq!(1, vote_storage.len());
 
-        // Drain all packets, then re-insert.
-        let packets = vote_storage.drain_unprocessed(&bank);
-        vote_storage.reinsert_packets(packets.into_iter());
+        let (vote_pubkey, vote) = vote_storage.drain_unprocessed(&bank_a).pop().unwrap();
+        vote_storage.retain_processed_vote(vote_pubkey, vote.into_inner_data());
 
-        // All packets should remain in the transaction storage
-        assert_eq!(1, vote_storage.len());
+        // An invalid newer vote must not destroy the retained fallback.
+        vote_storage.insert_packet(
+            VoteSource::Tpu,
+            to_sanitized_view(packet_from_slots(vec![(0, 2), (1, 1)], &keypair, None)),
+        );
+
+        vote_storage.clear();
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_b), 1);
+        assert_eq!(
+            vote_storage.get_latest_vote_slot(keypair.vote_keypair.pubkey()),
+            Some(0)
+        );
+
+        assert_eq!(vote_storage.drain_unprocessed(&bank_b).len(), 1);
+
+        // A valid newer vote is preferred, but its retained fallback survives a retry and a
+        // subsequent incompatible vote.
+        let vote_b = packet_from_slots_with_hash(vec![(0, 1)], &keypair, Some(1), root_bank.hash());
+        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote_b));
+
+        // Prefer the newer, fork-compatible B while retaining A as a fallback for bank A.
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_a), 0);
+
+        // A retry of B must carry its retained fallback state.
+        let (_, vote_b) = vote_storage.drain_unprocessed(&bank_a).pop().unwrap();
+        vote_storage.reinsert_packets(std::iter::once(vote_b));
+
+        // A newer C that is incompatible with bank B must not continue to mask A.
+        let vote_c = packet_from_slots(vec![(0, 2), (1, 1)], &keypair, None);
+        vote_storage.insert_packet(VoteSource::Tpu, to_sanitized_view(vote_c));
+        let (restored_votes, deferred_restore_count) =
+            vote_storage.drain_unprocessed_with_deferred_restores(&bank_a);
+        assert_eq!(deferred_restore_count, 1);
+        assert_eq!(restored_votes.len(), 1);
+        assert_eq!(vote_storage.len(), 0);
+        assert_eq!(vote_storage.get_latest_vote_slot(vote_pubkey), Some(0));
+        assert_eq!(vote_storage.restore_taken_votes_for_bank(&bank_d), 0);
+        assert_eq!(vote_storage.len(), 0);
     }
 
     #[test]
