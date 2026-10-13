@@ -20,6 +20,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    agave_votor::slot_clock::SharedAlpenglowSlotClock,
     ahash::HashSet,
     arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvTimeoutError},
@@ -38,7 +39,6 @@ use {
     std::{
         collections::VecDeque,
         num::{NonZeroUsize, Saturating},
-        ops::Deref,
         sync::{
             Arc, RwLock,
             atomic::{AtomicBool, AtomicU8, Ordering},
@@ -339,6 +339,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<BankForks>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
+        alpenglow_slot_clock: SharedAlpenglowSlotClock,
         transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
@@ -356,6 +357,7 @@ impl BundleStage {
             cluster_info,
             bank_forks,
             poh_recorder,
+            alpenglow_slot_clock,
             transaction_recorder,
             bundle_receiver,
             transaction_status_sender,
@@ -380,6 +382,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<BankForks>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
+        alpenglow_slot_clock: SharedAlpenglowSlotClock,
         transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
@@ -398,7 +401,12 @@ impl BundleStage {
             replay_vote_sender,
             prioritization_fee_cache,
         );
-        let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
+        let migration_status = bank_forks.read().unwrap().migration_status();
+        let decision_maker = DecisionMaker::new(
+            poh_recorder.read().unwrap().shared_leader_state(),
+            migration_status,
+            alpenglow_slot_clock,
+        );
 
         let consumer =
             BundleConsumer::new(committer, transaction_recorder, log_message_bytes_limit);
@@ -1371,6 +1379,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1510,6 +1519,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1601,6 +1611,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1718,6 +1729,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
@@ -1834,6 +1846,7 @@ mod tests {
             &cluster_info,
             bank_forks,
             &poh_recorder,
+            SharedAlpenglowSlotClock::default(),
             transaction_recorder,
             verified_bundle_receiver,
             None,
