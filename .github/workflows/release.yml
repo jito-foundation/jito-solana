@@ -39,7 +39,7 @@ jobs:
               tag_name: process.env.REF_NAME,
               name: `Release ${process.env.REF_NAME}`,
               body: '🚧',
-              draft: false,
+              draft: true,
               prerelease: true
             })
 
