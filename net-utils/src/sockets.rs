@@ -556,25 +556,14 @@ mod tests {
     fn test_verify_many_ports_reachable() {
         agave_logger::setup();
         let ip_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let config = SocketConfiguration::default();
         let mut tcp_listeners = vec![];
         let mut udp_sockets = vec![];
 
-        let port_range = unique_port_range_for_tests(1);
-        let (_server_port, (_, server_tcp_listener)) =
-            bind_common_in_range_with_config(ip_addr, (port_range.start, port_range.end), config)
-                .unwrap();
+        // TCP and UDP reachability are checked separately, so let the OS choose free ports.
+        let server_tcp_listener = TcpListener::bind((ip_addr, 0)).unwrap();
         for _ in 0..MAX_PORT_VERIFY_THREADS * 2 {
-            let port_range = unique_port_range_for_tests(1);
-            let (_client_port, (client_udp_socket, client_tcp_listener)) =
-                bind_common_in_range_with_config(
-                    ip_addr,
-                    (port_range.start, port_range.end),
-                    config,
-                )
-                .unwrap();
-            tcp_listeners.push(client_tcp_listener);
-            udp_sockets.push(client_udp_socket);
+            tcp_listeners.push(TcpListener::bind((ip_addr, 0)).unwrap());
+            udp_sockets.push(bind_to(ip_addr, 0).unwrap());
         }
 
         let ip_echo_server_addr = server_tcp_listener.local_addr().unwrap();
