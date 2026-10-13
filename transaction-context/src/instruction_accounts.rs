@@ -134,7 +134,6 @@ impl BorrowedInstructionAccount<'_, '_> {
 
         let lamports_balance = (lamports as i128).saturating_sub(old_lamports as i128);
         self.transaction_context
-            .accounts
             .add_lamports_delta(lamports_balance)?;
 
         self.touch()?;
