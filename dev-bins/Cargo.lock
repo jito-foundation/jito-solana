@@ -9014,6 +9014,7 @@ version = "4.5.0-alpha.2"
 dependencies = [
  "agave-votor",
  "agave-votor-messages",
+ "agave-wake-channel",
  "bytes",
  "crossbeam-channel",
  "itertools 0.15.0",
