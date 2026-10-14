@@ -34,16 +34,22 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_NUMBER_INPUT: ${{ inputs.pull_number }}
+          PR_NUMBER_PR: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          MATRIX_TARGET: ${{ matrix.target }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PR_NUMBER="${{ inputs.pull_number }}"
-            LABELS=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels -q '[.labels[].name]')
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PR_NUMBER="$PULL_NUMBER_INPUT"
+            LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json labels -q '[.labels[].name]')
           else
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-            LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+            PR_NUMBER="$PR_NUMBER_PR"
+            LABELS="$PR_LABELS_JSON"
           fi
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          if echo "$LABELS" | jq -e 'index("${{ matrix.target }}")' > /dev/null 2>&1; then
+          if echo "$LABELS" | jq -e --arg t "$MATRIX_TARGET" 'index($t)' > /dev/null 2>&1; then
             echo "match=true" >> "$GITHUB_OUTPUT"
           fi
 
