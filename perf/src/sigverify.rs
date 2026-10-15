@@ -14,10 +14,33 @@ use {
 // Empirically derived to constrain max verify latency to ~8ms at lower packet counts
 pub const VERIFY_PACKET_CHUNK_SIZE: usize = 128;
 
+/// Returns `(is_simple_vote_transaction, is_valid)` for a sanitized transaction view.
+#[must_use]
+pub fn verify_transaction_view<D: TransactionData>(
+    view: &SanitizedTransactionView<D>,
+    reject_non_vote: bool,
+    enable_tx_v1: bool,
+) -> (bool, bool) {
+    if !enable_tx_v1 && matches!(view.version(), TransactionVersion::V1) {
+        return (false, false);
+    }
+
+    let is_simple_vote_transaction = is_simple_vote_transaction_view(view);
+    let message = view.message_data();
+    let is_valid = (!reject_non_vote || is_simple_vote_transaction)
+        && view
+            .signatures()
+            .iter()
+            .zip(view.static_account_keys())
+            .all(|(signature, pubkey)| signature.verify(pubkey.as_ref(), message));
+
+    (is_simple_vote_transaction, is_valid)
+}
+
 /// Returns true if the signature on the packet verifies.
 /// Caller must do packet.set_discard(true) if this returns false.
 #[must_use]
-fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool, enable_tx_v1: bool) -> bool {
+pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool, enable_tx_v1: bool) -> bool {
     // If this packet was already marked as discard, drop it
     if packet.meta().discard() {
         return false;
@@ -27,39 +50,17 @@ fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool, enable_tx_v1:
         return false;
     };
 
-    let (is_simple_vote_tx, verified) = {
-        let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config()) else {
-            return false;
-        };
-
-        if !enable_tx_v1 && matches!(view.version(), TransactionVersion::V1) {
-            return false;
-        }
-
-        let is_simple_vote_tx = is_simple_vote_transaction_view(&view);
-        if reject_non_vote && !is_simple_vote_tx {
-            (is_simple_vote_tx, false)
-        } else {
-            let signatures = view.signatures();
-            if signatures.is_empty() {
-                (is_simple_vote_tx, false)
-            } else {
-                let message = view.message_data();
-                let static_account_keys = view.static_account_keys();
-                let verified = signatures
-                    .iter()
-                    .zip(static_account_keys.iter())
-                    .all(|(signature, pubkey)| signature.verify(pubkey.as_ref(), message));
-                (is_simple_vote_tx, verified)
-            }
-        }
+    let Ok(view) = SanitizedTransactionView::try_new_sanitized(data, &sanitize_config()) else {
+        return false;
     };
+    let (is_simple_vote_transaction, is_valid) =
+        verify_transaction_view(&view, reject_non_vote, enable_tx_v1);
 
-    if is_simple_vote_tx {
+    if is_simple_vote_transaction {
         packet.meta_mut().flags |= PacketFlags::SIMPLE_VOTE_TX;
     }
 
-    verified
+    is_valid
 }
 
 pub fn count_packets_in_batches(batches: &[PacketBatch]) -> usize {

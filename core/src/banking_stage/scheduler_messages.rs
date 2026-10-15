@@ -1,7 +1,11 @@
 use {
     crate::banking_stage::consumer::RetryableIndex,
+    jito_protos::proto::bam_types::TransactionCommittedResult,
+    smallvec::SmallVec,
     solana_clock::{Epoch, Slot},
-    std::fmt::Display,
+    solana_runtime::bank::Bank,
+    solana_transaction_error::{TransactionError, TransactionResult as CostResult},
+    std::{fmt::Display, sync::Arc},
 };
 
 /// A unique identifier for a transaction batch.
@@ -12,7 +16,14 @@ impl TransactionBatchId {
     pub fn new(index: u64) -> Self {
         Self(index)
     }
+
+    /// Dispatch order of the batch, for callers that need to key on it.
+    pub fn index(&self) -> u64 {
+        self.0
+    }
 }
+
+impl solana_nohash_hasher::IsEnabled for TransactionBatchId {}
 
 impl Display for TransactionBatchId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -39,10 +50,17 @@ impl MaxAge {
 /// Message: [Scheduler -> Worker]
 /// Transactions to be consumed (i.e. executed, recorded, and committed)
 pub struct ConsumeWork<Tx> {
+    /// BAM pins admitted work to its prepared Bank's slot. Greedy work has no such reservation.
+    pub target_slot: Option<Slot>,
     pub batch_id: TransactionBatchId,
     pub ids: Vec<TransactionId>,
     pub transactions: Vec<Tx>,
     pub max_ages: Vec<MaxAge>,
+    pub revert_on_error: bool,
+    pub respond_with_extra_info: bool,
+    /// Admission bank and cost results, taken when settled or returned for release.
+    #[allow(clippy::type_complexity)]
+    pub admission: Option<(Arc<Bank>, SmallVec<[CostResult<()>; 1]>)>,
 }
 
 /// Message: [Worker -> Scheduler]
@@ -50,4 +68,17 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<RetryableIndex>,
+    pub extra_info: Option<Vec<TransactionResult>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TransactionResult {
+    Committed(TransactionCommittedResult),
+    NotCommitted(NotCommittedReason),
+}
+
+#[derive(Clone, Debug)]
+pub enum NotCommittedReason {
+    PohTimeout,
+    Error(TransactionError),
 }

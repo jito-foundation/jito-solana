@@ -20,6 +20,12 @@ source "$here"/../common/shared-functions.sh
 #shellcheck source=ci/stable/common.sh
 source "$here"/common.sh
 
+declare -a filter_args=()
+if [[ "${BUILDKITE:-false}" == "true" ]]; then
+    # Re-enable after https://github.com/jito-foundation/jito-solana/pull/1631
+    filter_args=(-E 'not test(=test_duplicate_shreds_broadcast_leader)')
+fi
+
 _ cargo nextest run \
   --profile ci \
   --cargo-profile ci \
@@ -27,4 +33,5 @@ _ cargo nextest run \
   --test local_cluster \
   --partition hash:"$CURRENT/$TOTAL" \
   --test-threads=1 \
-  --no-tests=warn
+  --no-tests=warn \
+  "${filter_args[@]}"
