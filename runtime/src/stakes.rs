@@ -71,6 +71,17 @@ pub enum InvalidCacheEntryReason {
 type StakeAccount = stake_account::StakeAccount<Delegation>;
 pub(crate) type DelegatedStakes = ImblHashMap<Pubkey, u64>;
 
+/// StakeStateV2::Stake, a stake with a delegation.
+const STAKE_STATE_STAKE_TAG: [u8; 4] = 2u32.to_le_bytes();
+
+fn stakes_cache_account_shared_data(account: &AccountSharedData) -> AccountSharedData {
+    if account.capacity() > account.data().len() {
+        create_account_shared_data(account)
+    } else {
+        account.clone()
+    }
+}
+
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
 #[derive(Default, Debug)]
 pub(crate) struct StakesCache(RwLock<Stakes<StakeAccount>>);
@@ -117,7 +128,7 @@ impl StakesCache {
         debug_assert_ne!(account.lamports(), 0u64);
         if solana_vote_program::check_id(owner) {
             if VoteStateVersions::is_correct_size_and_initialized(account.data()) {
-                match VoteAccount::try_from(account.clone()) {
+                match VoteAccount::try_from(stakes_cache_account_shared_data(account)) {
                     Ok(vote_account) => {
                         // drop the old account after releasing the lock
                         let _old_vote_account = {
@@ -141,24 +152,24 @@ impl StakesCache {
                 };
             };
         } else if stake_program::check_id(owner) {
-            match StakeAccount::try_from(account.clone()) {
-                Ok(stake_account) => {
-                    let mut stakes = self.0.write().unwrap();
-                    stakes.upsert_stake_delegation(
-                        *pubkey,
-                        stake_account,
-                        new_rate_activation_epoch,
-                        use_fixed_point_stake_math,
-                    );
-                }
-                Err(_) => {
-                    let mut stakes = self.0.write().unwrap();
-                    stakes.remove_stake_delegation(
-                        pubkey,
-                        new_rate_activation_epoch,
-                        use_fixed_point_stake_math,
-                    );
-                }
+            if account.data().starts_with(&STAKE_STATE_STAKE_TAG)
+                && let Ok(stake_account) =
+                    StakeAccount::try_from(stakes_cache_account_shared_data(account))
+            {
+                let mut stakes = self.0.write().unwrap();
+                stakes.upsert_stake_delegation(
+                    *pubkey,
+                    stake_account,
+                    new_rate_activation_epoch,
+                    use_fixed_point_stake_math,
+                );
+            } else {
+                let mut stakes = self.0.write().unwrap();
+                stakes.remove_stake_delegation(
+                    pubkey,
+                    new_rate_activation_epoch,
+                    use_fixed_point_stake_math,
+                );
             }
         }
     }
