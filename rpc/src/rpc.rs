@@ -4668,12 +4668,19 @@ pub fn account_configs_to_accounts(
         let accounts = match account_config {
             Some(account_config) => {
                 let mut accounts = Vec::with_capacity(account_config.addresses.len());
+                let mut unique_accounts = HashSet::with_capacity(account_config.addresses.len());
                 for address in &account_config.addresses {
-                    accounts.push(Pubkey::from_str(address).map_err(|_| {
+                    let pubkey = Pubkey::from_str(address).map_err(|_| {
                         Error::invalid_params(format!(
                             "invalid pubkey for pre/post accounts provided: {address}"
                         ))
-                    })?);
+                    })?;
+                    if !unique_accounts.insert(pubkey) {
+                        return Err(Error::invalid_params(format!(
+                            "duplicate pre/post account address provided: {address}"
+                        )));
+                    }
+                    accounts.push(pubkey);
                 }
                 accounts
             }
