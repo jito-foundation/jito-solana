@@ -2440,6 +2440,13 @@ impl AccountsDb {
         num_selected
     }
 
+    /// Returns ancestors holding only `root`, with the id of the bank that stored it.
+    /// If `root` was already flushed, so were all older roots, and `BankId::FIRST` hides the rest.
+    fn root_as_ancestors(&self, root: Slot) -> Ancestors {
+        let bank_id = self.accounts_cache.bank_id(root).unwrap_or(BankId::FIRST);
+        Ancestors::from(vec![(root, bank_id)])
+    }
+
     /// Scans all accounts visible from `ancestors`, invoking `scan_func` for each.
     /// Pre-scans the write cache to capture entries not yet flushed to the accounts index, then
     /// deduplicates against the index scan, calling `scan_func` with the newest version of each
@@ -2464,7 +2471,7 @@ impl AccountsDb {
         // If the scan's ancestors are all rooted, drop them and scan roots only
         // Scan Guard max root must be used as the scan guard guarantees that
         // the account state as of max root is persisted in the database
-        let max_root_ancestors = Ancestors::from(vec![scan_guard.max_root()]);
+        let max_root_ancestors = self.root_as_ancestors(scan_guard.max_root());
         let ancestors = if scan_guard.should_use_ancestors(ancestors) {
             ancestors
         } else {
@@ -2571,7 +2578,7 @@ impl AccountsDb {
         // If the scan's ancestors are all rooted, drop them and scan roots only
         // Scan Guard max root must be used as the scan guard guarantees that
         // the account state as of max root is persisted in the database
-        let max_root_ancestors = Ancestors::from(vec![scan_guard.max_root()]);
+        let max_root_ancestors = self.root_as_ancestors(scan_guard.max_root());
         let ancestors = if scan_guard.should_use_ancestors(ancestors) {
             ancestors
         } else {
@@ -2651,11 +2658,11 @@ impl AccountsDb {
         R: Send,
         B: Send + Default + Sync,
     {
-        if let Some(slot_cache) = self.accounts_cache.slot_cache(slot) {
+        if let Some(slot_cache) = self.accounts_cache.bank_cache(bank_id) {
             debug_assert_eq!(
-                slot_cache.bank_id(),
-                bank_id,
-                "slot {slot} holds accounts stored by another bank"
+                slot_cache.slot(),
+                slot,
+                "{bank_id:?} stored at another slot"
             );
             // If we see the slot in the cache, then all the account information
             // is in this cached slot
@@ -3359,16 +3366,9 @@ impl AccountsDb {
             ..FlushStats::default()
         };
         for root in flushed_roots {
-            if let Some(stats) = self.flush_slot_cache(root, &pubkeys_to_store[&root]) {
-                num_roots_flushed += 1;
-                flush_stats.accumulate(&stats);
-            } else {
-                // A root with no cache to flush (e.g. genesis, whose accounts load straight to
-                // storage) was still tracked by `add_root`. `flush_slot_cache` couldn't drop it
-                // via `remove_slot`, so untrack it here to keep it from lingering as an unflushed
-                // root at or below max_flushed_root.
-                self.accounts_cache.remove_unflushed_root(root);
-            }
+            let stats = self.flush_slot_cache(root, &pubkeys_to_store[&root]);
+            num_roots_flushed += 1;
+            flush_stats.accumulate(&stats);
         }
 
         max_flush_root.inspect(|&root| self.accounts_cache.set_max_flush_root(root));
@@ -3535,15 +3535,16 @@ impl AccountsDb {
     /// `pubkeys_to_store` selects which accounts are written to storage: `Only(set)` stores
     /// just the pubkeys in the set, dropping the rest with the cache, while `All` stores every
     /// account in the slot.
-    fn flush_slot_cache(
-        &self,
-        slot: Slot,
-        pubkeys_to_store: &PubkeysToStore,
-    ) -> Option<FlushStats> {
-        // If a slot cache exists for this slot, flush it.
-        self.accounts_cache
-            .slot_cache(slot)
-            .map(|slot_cache| self.do_flush_slot_cache(slot, &slot_cache, pubkeys_to_store))
+    fn flush_slot_cache(&self, slot: Slot, pubkeys_to_store: &PubkeysToStore) -> FlushStats {
+        let slot_cache = self.accounts_cache.slot_cache(slot);
+        // Only roots with a slot cache are tracked, and nothing else removes a root's slot cache
+        debug_assert!(
+            slot_cache.is_some(),
+            "unflushed root {slot} has no slot cache"
+        );
+        slot_cache.map_or_else(FlushStats::default, |slot_cache| {
+            self.do_flush_slot_cache(slot, &slot_cache, pubkeys_to_store)
+        })
     }
 
     fn report_store_stats(&self) {
@@ -5474,7 +5475,11 @@ impl AccountsDb {
     /// useful to adapt tests written prior to introduction of the write cache
     /// to use the write cache
     pub fn flush_root_write_cache(&self, root: Slot) {
-        assert!(self.accounts_cache.contains_unflushed_root(root));
+        // A root without a slot cache is not tracked
+        assert!(
+            self.accounts_cache.contains_unflushed_root(root)
+                || !self.accounts_cache.contains(root)
+        );
         self.flush_accounts_cache(true, Some(root));
     }
 
