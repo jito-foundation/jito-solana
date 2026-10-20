@@ -6,6 +6,7 @@ use {
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
         rpc::{rpc_accounts::*, rpc_accounts_scan::*, rpc_bank::*, rpc_full::*, rpc_minimal::*, *},
+        rpc_batch_limit::BatchSizeLimit,
         rpc_cache::{LargestAccountsCache, RankMapCache},
         rpc_health::*,
     },
@@ -723,7 +724,7 @@ impl JsonRpcService {
             .spawn(move || {
                 renice_this_thread(rpc_niceness_adj).unwrap();
 
-                let mut io = MetaIoHandler::default();
+                let mut io = MetaIoHandler::with_middleware(BatchSizeLimit);
 
                 io.extend_with(rpc_minimal::MinimalImpl.to_delegate());
                 if full_api {

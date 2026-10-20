@@ -1,5 +1,7 @@
 use {
     assert_matches::assert_matches,
+    reqwest::header::CONTENT_TYPE,
+    serde_json::{Value, json},
     solana_account_decoder::UiAccountEncoding,
     solana_fee_calculator::FeeRateGovernor,
     solana_hash::Hash,
@@ -83,6 +85,7 @@ fn test_simulate_bundle() {
     test_last_tx_fails(&rpc_client, &mint_keypair);
     test_duplicate_transactions(&rpc_client, &mint_keypair);
     test_program_execution_error(&rpc_client, &mint_keypair);
+    test_batch_size_limit(&rpc_client);
 }
 
 fn test_too_many_bundles(rpc_client: &RpcClient, mint_keypair: &Keypair) {
@@ -752,5 +755,39 @@ fn test_program_execution_error(rpc_client: &RpcClient, mint_keypair: &Keypair) 
     assert_eq!(
         result.err,
         Some(TransactionError::InsufficientFundsForRent { account_index: 0 })
+    );
+}
+
+fn test_batch_size_limit(rpc_client: &RpcClient) {
+    let post_batch = |len: usize| -> Value {
+        let batch: Vec<_> = (0..len)
+            .map(|id| {
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "simulateBundle",
+                    "params": [{"encodedTransactions": []}],
+                })
+            })
+            .collect();
+        let response = reqwest::blocking::Client::new()
+            .post(rpc_client.url())
+            .header(CONTENT_TYPE, "application/json")
+            .body(Value::from(batch).to_string())
+            .send()
+            .unwrap();
+        serde_json::from_str(&response.text().unwrap()).unwrap()
+    };
+
+    let response = post_batch(16);
+    let outputs = response.as_array().expect("batch response");
+    assert_eq!(outputs.len(), 16);
+    assert!(outputs.iter().all(|output| output["result"].is_object()));
+
+    let response = post_batch(17);
+    assert_eq!(response["error"]["code"], -32600);
+    assert_eq!(
+        response["error"]["message"],
+        "Batch request too large; max 16 calls"
     );
 }
