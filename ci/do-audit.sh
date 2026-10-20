@@ -217,6 +217,30 @@ default_cargo_audit_extra_args=(
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
   # Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
   --ignore RUSTSEC-2026-0104
+<<<<<<< HEAD
+=======
+
+  # Crate:     h2
+  # Version:   0.4.13
+  # Title:     h2 unbounded empty DATA frames
+  # Date:      2026-08-17
+  # ID:        RUSTSEC-2026-0258
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0258
+  # Solution:  Upgrade to >=0.4.16
+  --ignore RUSTSEC-2026-0258
+
+  # Crate:     webpki-roots
+  # Version:   0.26.11
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
+  # patched 1.0.10; no fixed 0.26 exists.
+  --ignore RUSTSEC-2026-0381
+
+>>>>>>> d33a18ac24 (fix(deps): Bump webpki crates off distrusted roots (#1730))
 )
 
 xtask_cargo_audit_extra_args=(
