@@ -12,8 +12,6 @@ name: Nightly Agave Rebase
 # SLACK_WEBHOOK_URL.
 
 on:
-  schedule:
-    - cron: "00 19 * * 1-5"
   workflow_dispatch:
 
 permissions: {}
