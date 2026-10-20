@@ -1,12 +1,15 @@
 # Keeping jito-solana rebased on Agave
 
-Every weekday at 19:00 UTC the `Nightly Agave Rebase` workflow rebases each
+The rebase bot handles rebases for master, v4.3, and v4.4. Scheduled CI
+rebases are disabled to avoid conflicts with the bot.
+
+When manually dispatched, the `Nightly Agave Rebase` workflow rebases each
 channel in `.github/rebase-channels.json` onto its Agave branch and posts one
 Slack summary. What you do next depends on the channel's `landing` mode and
 the status in that summary.
 
 ```text
-weekdays 19:00 UTC, one job per channel in rebase-channels.json
+manual dispatch, one job per channel in rebase-channels.json
 
   agave/<upstream>                   origin/<channel>
         │                                  │
