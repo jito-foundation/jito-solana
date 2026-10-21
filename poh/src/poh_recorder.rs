@@ -891,6 +891,11 @@ impl PohRecorder {
         self.start_bank.slot()
     }
 
+    /// Returns the bank on which the current PoH state is based.
+    pub fn start_bank(&self) -> &Arc<Bank> {
+        &self.start_bank
+    }
+
     /// Returns the unique identity of the bank on which the current PoH state is based.
     pub fn start_bank_id(&self) -> BankId {
         self.start_bank.bank_id()

@@ -11,6 +11,7 @@ use {
             certs_requestor::CertsRequestor, msg_types::RewardRespSucc,
             reward_certs_service::RewardCertsService,
         },
+        drop_bank_service::DropBankService,
         replay_stage::{Finalizer, ReplayStage},
     },
     agave_bls_sigverify::rewards::RewardInput,
@@ -19,7 +20,7 @@ use {
         consensus_message::{Block, BlockId},
         reward_certificate::{NUM_SLOTS_FOR_REWARD, NotarRewardCertificate, SkipRewardCertificate},
     },
-    crossbeam_channel::{Receiver, Sender, select_biased},
+    crossbeam_channel::{Receiver, Sender, select_biased, unbounded},
     solana_clock::Slot,
     solana_entry::block_component::{
         BlockFooterV1, GenesisCertBlockMarker, UpdateParentV1, VersionedBlockMarker,
@@ -47,6 +48,7 @@ use {
         bank_forks::{BankForks, SharableBanks},
         bank_forks_controller::{BankForksController, BankForksControllerError},
         block_component_processor::BlockComponentProcessor,
+        installed_scheduler_pool::BankWithScheduler,
         leader_schedule_utils::{last_of_consecutive_leader_slots, leader_slot_index},
         transaction_execution::{
             TransactionHistoryPurgeInput, TransactionHistoryPurgeSource, TransactionStatusSender,
@@ -98,6 +100,7 @@ enum ParentSource {
 
 pub struct BlockCreationLoop {
     t_block_creation_loop: JoinHandle<()>,
+    drop_bank_service: DropBankService,
     reward_certs_service: RewardCertsService,
 }
 
@@ -109,11 +112,13 @@ impl BlockCreationLoop {
                 config.sharable_banks.clone(),
                 config.exit.clone(),
             );
+        let (drop_bank_sender, drop_bank_receiver) = unbounded();
+        let drop_bank_service = DropBankService::new(drop_bank_receiver);
         let t_block_creation_loop = Builder::new()
             .name("solBlkCreatLoop".to_string())
             .spawn(move || {
                 info!("BlockCreationLoop has started");
-                start_loop(config, certs_requestor);
+                start_loop(config, certs_requestor, drop_bank_sender);
                 info!("BlockCreationLoop has stopped");
             })
             .unwrap();
@@ -121,6 +126,7 @@ impl BlockCreationLoop {
         (
             Self {
                 t_block_creation_loop,
+                drop_bank_service,
                 reward_certs_service,
             },
             reward_aggregates_sender,
@@ -128,7 +134,9 @@ impl BlockCreationLoop {
     }
 
     pub fn join(self) -> thread::Result<()> {
+        // The loop holds the drop-bank sender, so join it first.
         self.t_block_creation_loop.join()?;
+        self.drop_bank_service.join()?;
         self.reward_certs_service.join()
     }
 }
@@ -195,6 +203,8 @@ struct LeaderContext {
     reward_certs_requestor: CertsRequestor,
     /// Banking-stage ingress used to reschedule transactions after sad handover.
     banking_stage_sender: BankingPacketSender,
+    /// Drops replaced PoH start banks off the leader path.
+    drop_bank_sender: Sender<Vec<BankWithScheduler>>,
 
     // Metrics
     metrics: LoopMetrics,
@@ -262,7 +272,11 @@ enum StartLeaderError {
 /// The `votor::consensus_pool_service` tracks when it is our leader window, and
 /// communicates the skip timer and parent slot for our window. This loop takes the responsibility
 /// of creating our `NUM_CONSECUTIVE_LEADER_SLOTS` blocks and finishing them within the required timeout.
-fn start_loop(config: BlockCreationLoopConfig, reward_certs_requestor: CertsRequestor) {
+fn start_loop(
+    config: BlockCreationLoopConfig,
+    reward_certs_requestor: CertsRequestor,
+    drop_bank_sender: Sender<Vec<BankWithScheduler>>,
+) {
     let BlockCreationLoopConfig {
         exit,
         bank_forks,
@@ -337,6 +351,7 @@ fn start_loop(config: BlockCreationLoopConfig, reward_certs_requestor: CertsRequ
         replay_highest_frozen,
         reward_certs_requestor,
         banking_stage_sender,
+        drop_bank_sender,
         metrics: LoopMetrics::default(),
         highest_finalized,
         genesis_cert_block_marker,
@@ -461,11 +476,20 @@ fn reset_poh_recorder(bank: &Arc<Bank>, ctx: &LeaderContext, preserve_replacemen
     );
 
     let mut poh_recorder = ctx.poh_recorder.write().unwrap();
+    let replaced_start_bank = poh_recorder.start_bank().clone();
     if preserve_replacement_slot {
         poh_recorder.reset_for_bank_replacement(bank.clone(), next_leader_slot);
     } else {
         poh_recorder.reset(bank.clone(), next_leader_slot);
     }
+    drop(poh_recorder);
+    // The replaced bank can be thousands of slots old, and dropping it can take tens of ms.
+    // Drop it off the leader path (here, as before, if the drop service is gone).
+    let _ = ctx
+        .drop_bank_sender
+        .send(vec![BankWithScheduler::new_without_scheduler(
+            replaced_start_bank,
+        )]);
 }
 
 /// Returns the elapsed leader-window time at which `slot` must be completed.
@@ -1612,7 +1636,7 @@ mod tests {
         },
         solana_poh_config::PohConfig,
         solana_runtime::{
-            bank::{Bank, test_utils},
+            bank::{Bank, DropCallback, test_utils},
             bank_forks::BankForks,
             genesis_utils::create_genesis_config_with_leader,
             installed_scheduler_pool::BankWithScheduler,
@@ -1740,6 +1764,8 @@ mod tests {
         let (leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
         let (banking_stage_sender, banking_stage_receiver) = BankingTracer::channel_for_test();
         let (reward_certs_requestor, reward_requests) = CertsRequestor::new();
+        // Receiver dropped: replaced start banks drop in place.
+        let (drop_bank_sender, _) = unbounded();
         let ctx = LeaderContext {
             exit,
             my_pubkey,
@@ -1763,6 +1789,7 @@ mod tests {
             replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
             reward_certs_requestor,
             banking_stage_sender,
+            drop_bank_sender,
             metrics: LoopMetrics::default(),
             genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
@@ -1974,6 +2001,57 @@ mod tests {
         let (announced_bank, (message, _)) = context.entry_receiver.try_recv().unwrap();
         assert_eq!(announced_bank.bank_id(), bank.bank_id());
         assert!(matches!(message, RecorderMessage::SlotStart));
+    }
+
+    /// Reports the thread that drops the bank.
+    #[derive(Debug, Clone)]
+    struct DropThreadCallback(Sender<thread::ThreadId>);
+
+    impl DropCallback for DropThreadCallback {
+        fn callback(&self, _bank: &Bank) {
+            self.0.send(thread::current().id()).unwrap();
+        }
+
+        fn clone_box(&self) -> Box<dyn DropCallback + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn test_reset_poh_recorder_drops_replaced_start_bank_off_thread() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
+        let my_pubkey = Pubkey::new_unique();
+        let genesis = create_genesis_config_with_leader(10_000, &my_pubkey, 1_000);
+        let root_bank = Bank::new_for_tests(&genesis.genesis_config);
+        root_bank.freeze();
+        let bank_forks = BankForks::new_rw_arc(root_bank);
+        let root_bank = bank_forks.read().unwrap().root_bank();
+        let mut context = test_context(my_pubkey, bank_forks, blockstore, (1, 1));
+        let (drop_bank_sender, drop_bank_receiver) = unbounded();
+        let drop_bank_service = DropBankService::new(drop_bank_receiver);
+        context.ctx.drop_bank_sender = drop_bank_sender;
+
+        // PoH is based on bank1 and holds its last reference.
+        let bank1 = Arc::new(Bank::new_from_parent(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            1,
+        ));
+        let (dropped_on_sender, dropped_on_receiver) = unbounded();
+        bank1.set_callback(Some(Box::new(DropThreadCallback(dropped_on_sender))));
+        reset_poh_recorder(&bank1, &context.ctx, false);
+        drop(bank1);
+
+        // Replacing bank1 drops it on the drop service, not on this thread.
+        reset_poh_recorder(&root_bank, &context.ctx, true);
+        let dropped_on = dropped_on_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_ne!(dropped_on, thread::current().id());
+
+        drop(context);
+        drop_bank_service.join().unwrap();
     }
 
     #[test]
