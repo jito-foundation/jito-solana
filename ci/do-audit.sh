@@ -187,6 +187,17 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=0.4.16
   --ignore RUSTSEC-2026-0258
 
+  # Crate:     webpki-roots
+  # Version:   0.26.11
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
+  # patched 1.0.10; no fixed 0.26 exists.
+  --ignore RUSTSEC-2026-0381
+
 )
 
 xtask_cargo_audit_extra_args=(
