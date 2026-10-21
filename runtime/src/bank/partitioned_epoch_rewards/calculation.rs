@@ -1193,7 +1193,7 @@ impl Bank {
                             },
                         )| {
                             let maybe_commission_account =
-                                self.get_account_with_fixed_root_no_cache(commission_pubkey);
+                                self.get_account_do_not_populate_read_cache(commission_pubkey);
                             let mut commission_account = if custom_commission_collector {
                                 // If the account doesn't exist, the vote commission
                                 // may be enough lamports to cover rent-exemption
@@ -1298,7 +1298,7 @@ impl Bank {
                                 return None;
                             }
                             let mut account =
-                                self.get_account_with_fixed_root_no_cache(vote_address)?;
+                                self.get_account_do_not_populate_read_cache(vote_address)?;
                             let maybe_stake = reward_epoch_delegated_stakes
                                 .delegated_stakes
                                 .get(vote_address);
@@ -1586,9 +1586,7 @@ mod tests {
 
         // load accounts to make sure they were stored correctly
         for (commission_pubkey, _, commission_account) in &entries {
-            let loaded_account = bank
-                .load_slow_with_fixed_root(&bank.ancestors, commission_pubkey)
-                .unwrap();
+            let loaded_account = bank.load(&bank.ancestors, commission_pubkey).unwrap();
             assert!(accounts_equal(&loaded_account.0, commission_account));
         }
     }
@@ -2633,10 +2631,7 @@ mod tests {
 
         let vote_pubkey = voters.first().unwrap();
         let stake_pubkey = *stakers.first().unwrap();
-        let stake_account = bank
-            .load_slow_with_fixed_root(&bank.ancestors, &stake_pubkey)
-            .unwrap()
-            .0;
+        let stake_account = bank.load(&bank.ancestors, &stake_pubkey).unwrap().0;
 
         let thread_pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
         let mut rewards_metrics = RewardsMetrics::default();
@@ -2674,10 +2669,7 @@ mod tests {
             );
         drop(stakes);
 
-        let vote_account = bank
-            .load_slow_with_fixed_root(&bank.ancestors, vote_pubkey)
-            .unwrap()
-            .0;
+        let vote_account = bank.load(&bank.ancestors, vote_pubkey).unwrap().0;
         let vote_state = VoteStateV4::deserialize(vote_account.data(), vote_pubkey).unwrap();
 
         assert_eq!(vote_rewards_accounts.len(), 1);
@@ -4867,7 +4859,7 @@ mod tests {
 
         // check all vote accounts were swept
         for vote_address in voters.iter() {
-            let vote_account = bank.get_account_with_fixed_root(vote_address).unwrap();
+            let vote_account = bank.get_account(vote_address).unwrap();
             let vote_state_versions: VoteStateVersions = vote_account.state().unwrap();
             let VoteStateVersions::V4(vote_state) = vote_state_versions else {
                 panic!("unexpected version");
