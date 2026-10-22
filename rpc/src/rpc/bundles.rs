@@ -439,6 +439,58 @@ mod tests {
     }
 
     #[test]
+    fn test_rpc_simulate_bundle_accounts_data_limit_boundary() {
+        let rpc = RpcHandler::start();
+        let bank = rpc.working_bank();
+        let store_account = |data_len: usize| {
+            let pubkey = solana_pubkey::new_rand();
+            bank.store_account(
+                &pubkey,
+                &AccountSharedData::new(
+                    bank.get_minimum_balance_for_rent_exemption(data_len),
+                    data_len,
+                    &system_program::id(),
+                ),
+            );
+            pubkey
+        };
+
+        let mut data_lens = vec![MAX_PERMITTED_DATA_LENGTH as usize; 6];
+        data_lens.push(MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES - data_lens.iter().sum::<usize>());
+        let mut addresses: Vec<_> = data_lens.into_iter().map(store_account).collect();
+        let one_byte_account = store_account(1);
+        bank.freeze();
+
+        let config = |addresses: &[Pubkey]| RpcSimulateBundleConfig {
+            pre_execution_accounts_configs: vec![accounts_config(addresses)],
+            post_execution_accounts_configs: vec![None],
+            ..RpcSimulateBundleConfig::default()
+        };
+
+        // Exactly at the limit is accepted.
+        match simulate(&rpc, encoded_transfers(&rpc, 1), config(&addresses)) {
+            Output::Success(success) => assert_eq!(
+                success.result["value"]["transactionResults"][0]["preExecutionAccounts"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(addresses.len()),
+            ),
+            Output::Failure(failure) => panic!("expected success, got {}", failure.error.message),
+        }
+
+        // One more byte is rejected.
+        addresses.push(one_byte_account);
+        assert_eq!(
+            simulate_error_message(&rpc, encoded_transfers(&rpc, 1), config(&addresses)),
+            format!(
+                "Too much account data requested across all pre/post execution accounts: {} \
+                 bytes; max {MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES} bytes",
+                MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES + 1,
+            ),
+        );
+    }
+
+    #[test]
     fn test_rpc_simulate_bundle_happy_path() {
         // 1. setup
         let rpc = RpcHandler::start();
