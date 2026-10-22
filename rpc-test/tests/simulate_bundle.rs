@@ -759,16 +759,9 @@ fn test_program_execution_error(rpc_client: &RpcClient, mint_keypair: &Keypair) 
 }
 
 fn test_batch_size_limit(rpc_client: &RpcClient) {
-    let post_batch = |len: usize| -> Value {
+    let post_batch = |method: &str, params: Value, len: usize| -> Vec<Value> {
         let batch: Vec<_> = (0..len)
-            .map(|id| {
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "method": "simulateBundle",
-                    "params": [{"encodedTransactions": []}],
-                })
-            })
+            .map(|id| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .collect();
         let response = reqwest::blocking::Client::new()
             .post(rpc_client.url())
@@ -776,18 +769,29 @@ fn test_batch_size_limit(rpc_client: &RpcClient) {
             .body(Value::from(batch).to_string())
             .send()
             .unwrap();
-        serde_json::from_str(&response.text().unwrap()).unwrap()
+        let response: Value = serde_json::from_str(&response.text().unwrap()).unwrap();
+        response.as_array().expect("batch response").clone()
     };
 
-    let response = post_batch(16);
-    let outputs = response.as_array().expect("batch response");
-    assert_eq!(outputs.len(), 16);
-    assert!(outputs.iter().all(|output| output["result"].is_object()));
+    // Other methods are not limited.
+    let outputs = post_batch("getSlot", json!([]), 33);
+    assert_eq!(outputs.len(), 33);
+    assert!(outputs.iter().all(|output| output["result"].is_u64()));
 
-    let response = post_batch(17);
-    assert_eq!(response["error"]["code"], -32600);
+    // simulateBundle calls past the limit fail individually, in place.
+    let outputs = post_batch("simulateBundle", json!([{"encodedTransactions": []}]), 17);
+    assert_eq!(outputs.len(), 17);
+    for (id, output) in outputs.iter().enumerate() {
+        assert_eq!(output["id"], id);
+    }
+    assert!(
+        outputs[..16]
+            .iter()
+            .all(|output| output["result"].is_object())
+    );
+    assert_eq!(outputs[16]["error"]["code"], -32602);
     assert_eq!(
-        response["error"]["message"],
-        "Batch request too large; max 16 calls"
+        outputs[16]["error"]["message"],
+        "Too many simulateBundle calls in batch; max 16"
     );
 }
