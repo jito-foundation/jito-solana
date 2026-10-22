@@ -2,6 +2,7 @@
 pull_request_rules:
   - name: label changes from community
     conditions:
+      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -14,6 +15,7 @@ pull_request_rules:
           - need:merge-assist
   - name: request review for community changes
     conditions:
+      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -29,9 +31,21 @@ pull_request_rules:
     actions:
       request_reviews:
         teams:
-          - "@anza-xyz/community-pr-subscribers"
+          - "@jito-foundation/jito-solana"
+  - name: label changes from monorepo-triage
+    conditions:
+      - author≠@anza
+      - author≠mergify[bot]
+      - author≠dependabot[bot]
+      - author≠github-actions[bot]
+      - author=@agave-external-triage
+    actions:
+      label:
+        add:
+          - need:merge-assist
   - name: v4.3 backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.3
     actions:
       backport:
@@ -43,6 +57,7 @@ pull_request_rules:
           - v4.3
   - name: v4.4 backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.4
     actions:
       backport:
@@ -72,7 +87,7 @@ pull_request_rules:
   - name: close PRs against EoL version branches
     conditions:
       - base ~= ^v[0-9]+\.[0-9]+$
-      - base != v4.3
+      - base != v4.3 # still maintained by Jito
       - base != v4.4
     actions:
       close:
@@ -118,4 +133,4 @@ commands_restrictions:
   # Restrict `copy` access to Core Contributors
   copy:
     conditions:
-    - author=@anza
+    - sender=@jito-foundation/jito-solana

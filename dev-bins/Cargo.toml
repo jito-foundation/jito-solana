@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "../accounts-db/store-tool",
+    "../bam-local-cluster",
     "../conformance",
     "../ledger-tool",
     "../svm-conformance",
@@ -45,6 +46,7 @@ agave-snapshots = { path = "../snapshots", version = "=4.5.0-alpha.2", features 
 agave-transaction-view = "8.0.0"
 agave-votor-messages = { path = "../votor-messages", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 ahash = "0.8.11"
+anyhow = "1.0.104"
 assert_cmd = "2.2.2"
 bv = "0.11.1"
 bytes = "1.12.1"
@@ -78,11 +80,13 @@ solana-clap-utils = { path = "../clap-utils", version = "=4.5.0-alpha.2", featur
 solana-cli-output = { path = "../cli-output", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-clock = "4.0.0"
 solana-cluster-type = "3.2.1"
+solana-commitment-config = "3.0.0"
 solana-compute-budget = { path = "../compute-budget", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-core = { path = "../core", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-cost-model = { path = "../cost-model", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-entry = { path = "../entry", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-epoch-schedule = "3.2.0"
+solana-faucet = { path = "../faucet", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-feature-gate-interface = "5.0.0"
 solana-fee-calculator = "3.2.2"
 solana-genesis-config = "5.0.0"
@@ -97,14 +101,17 @@ solana-lattice-hash = { path = "../lattice-hash", version = "=4.5.0-alpha.2", fe
 solana-leader-schedule = { path = "../leader-schedule", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-ledger = { path = "../ledger", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-loader-v3-interface = "9.0.0"
+solana-local-cluster = { path = "../local-cluster", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-measure = { path = "../measure", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-message = "5.1.0"
 solana-native-token = "3.0.0"
 solana-packet = "4.2.0"
+solana-program-binaries = { path = "../program-binaries", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-program-runtime = { path = "../program-runtime", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-pubkey = { version = "4.2.0", default-features = false }
 solana-rent = "4.2.1"
 solana-rpc = { path = "../rpc", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
+solana-rpc-client = { path = "../rpc-client", version = "=4.5.0-alpha.2", default-features = false }
 solana-runtime = { path = "../runtime", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-runtime-transaction = { path = "../runtime-transaction", version = "=4.5.0-alpha.2", features = ["agave-unstable-api"] }
 solana-sanitize = "3.0.1"
@@ -145,6 +152,7 @@ tempfile = "3.23.0"
 test-case = "3.4.0"
 thiserror = "2.0.17"
 tokio = "1.48.0"
+toml = "0.9.11"
 wincode = { version = "0.6.3", features = ["derive"] }
 
 [profile.dev]
