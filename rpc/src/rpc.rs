@@ -4349,6 +4349,18 @@ pub mod rpc_full {
                     "Too many accounts provided; max {max_accounts}"
                 )));
             }
+            let total_accounts: usize = pre_execution_accounts_configs
+                .iter()
+                .chain(&post_execution_accounts_configs)
+                .flatten()
+                .map(|config| config.addresses.len())
+                .sum();
+            if total_accounts > MAX_SIMULATE_BUNDLE_ACCOUNTS {
+                return Err(Error::invalid_params(format!(
+                    "Too many accounts provided across all pre/post execution accounts configs; \
+                     max {MAX_SIMULATE_BUNDLE_ACCOUNTS}"
+                )));
+            }
 
             let mut blockhash: Option<RpcBlockhash> = None;
             if replace_recent_blockhash {
@@ -4402,6 +4414,22 @@ pub mod rpc_full {
                 &post_execution_accounts,
                 Some(1_000),
             );
+
+            let accounts_data_len: usize = results
+                .iter()
+                .flat_map(|(pre_accounts, _result, post_accounts)| {
+                    pre_accounts.iter().chain(post_accounts)
+                })
+                .map(|(_address, account)| account.data().len())
+                .sum();
+            if accounts_data_len > MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES {
+                return Err(Error::invalid_params(format!(
+                    "Too much account data requested across all pre/post execution accounts: \
+                     {accounts_data_len} bytes; max {MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES} \
+                     bytes"
+                )));
+            }
+
             let result = RpcSimulateBundleResult {
                 // if any of them errored out, return the first one that did
                 summary: if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
@@ -4795,6 +4823,13 @@ fn sanitize_transaction(
     .map_err(|err| Error::invalid_params(format!("invalid transaction: {err}")))
 }
 
+/// Maximum number of addresses across all pre/post execution accounts configs in one request.
+const MAX_SIMULATE_BUNDLE_ACCOUNTS: usize = 256;
+
+/// Maximum account data returned across all pre/post execution accounts in one request.
+const MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES: usize =
+    solana_program_runtime::execution_budget::MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES.get() as usize;
+
 /// Outer vector is for each transaction, inner vector is for each account
 pub fn account_configs_to_accounts(
     accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
@@ -4804,12 +4839,19 @@ pub fn account_configs_to_accounts(
         let accounts = match account_config {
             Some(account_config) => {
                 let mut accounts = Vec::with_capacity(account_config.addresses.len());
+                let mut unique_accounts = HashSet::with_capacity(account_config.addresses.len());
                 for address in &account_config.addresses {
-                    accounts.push(Pubkey::from_str(address).map_err(|_| {
+                    let pubkey = Pubkey::from_str(address).map_err(|_| {
                         Error::invalid_params(format!(
                             "invalid pubkey for pre/post accounts provided: {address}"
                         ))
-                    })?);
+                    })?;
+                    if !unique_accounts.insert(pubkey) {
+                        return Err(Error::invalid_params(format!(
+                            "duplicate pre/post account address provided: {address}"
+                        )));
+                    }
+                    accounts.push(pubkey);
                 }
                 accounts
             }
@@ -6458,6 +6500,232 @@ pub mod tests {
         );
         let result: Vec<RpcKeyedAccount> = parse_success_result(rpc.handle_request_sync(request));
         assert_eq!(result.len(), 0);
+    }
+
+    mod simulate_bundle_limits {
+        use {
+            super::*, solana_rpc_client_api::bundles::RpcSimulateBundleConfig,
+            solana_system_interface::MAX_PERMITTED_DATA_LENGTH,
+        };
+
+        /// Encodes `count` distinct transfers from the mint, each of which succeeds.
+        fn encoded_transfers(rpc: &RpcHandler, count: usize) -> Vec<String> {
+            let bank = rpc.working_bank();
+            let lamports = bank.get_minimum_balance_for_rent_exemption(0);
+            (0..count)
+                .map(|_| {
+                    let tx = system_transaction::transfer(
+                        &rpc.mint_keypair,
+                        &solana_pubkey::new_rand(),
+                        lamports,
+                        bank.confirmed_last_blockhash(),
+                    );
+                    general_purpose::STANDARD
+                        .encode(wincode::serialize(&VersionedTransaction::from(tx)).unwrap())
+                })
+                .collect()
+        }
+
+        fn accounts_config(addresses: &[Pubkey]) -> Option<RpcSimulateTransactionAccountsConfig> {
+            Some(RpcSimulateTransactionAccountsConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                addresses: addresses.iter().map(ToString::to_string).collect(),
+            })
+        }
+
+        fn simulate(
+            rpc: &RpcHandler,
+            encoded_transactions: Vec<String>,
+            config: RpcSimulateBundleConfig,
+        ) -> Output {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "simulateBundle",
+                "params": [{"encodedTransactions": encoded_transactions}, config],
+            });
+            let response = rpc
+                .io
+                .handle_request_sync(&request.to_string(), rpc.meta.clone())
+                .expect("response");
+            match serde_json::from_str(&response).expect("response deserialization") {
+                Response::Single(output) => output,
+                Response::Batch(_) => panic!("expected single response"),
+            }
+        }
+
+        fn simulate_error_message(
+            rpc: &RpcHandler,
+            encoded_transactions: Vec<String>,
+            config: RpcSimulateBundleConfig,
+        ) -> String {
+            match simulate(rpc, encoded_transactions, config) {
+                Output::Failure(failure) => failure.error.message,
+                Output::Success(_) => panic!("expected failure, got success"),
+            }
+        }
+
+        #[test]
+        fn test_rpc_simulate_bundle_rejects_duplicate_addresses() {
+            let rpc = RpcHandler::start();
+            let address = solana_pubkey::new_rand();
+            let duplicated = accounts_config(&[address, solana_pubkey::new_rand(), address]);
+
+            let expected = format!("duplicate pre/post account address provided: {address}");
+            for (pre_execution_accounts_configs, post_execution_accounts_configs) in [
+                (vec![duplicated.clone()], vec![None]),
+                (vec![None], vec![duplicated]),
+            ] {
+                let config = RpcSimulateBundleConfig {
+                    pre_execution_accounts_configs,
+                    post_execution_accounts_configs,
+                    ..RpcSimulateBundleConfig::default()
+                };
+                assert_eq!(
+                    simulate_error_message(&rpc, encoded_transfers(&rpc, 1), config),
+                    expected,
+                );
+            }
+        }
+
+        #[test]
+        fn test_rpc_simulate_bundle_rejects_too_many_total_accounts() {
+            let rpc = RpcHandler::start();
+            let max_accounts_per_list = rpc.working_bank().get_transaction_account_lock_limit();
+
+            // Spread exactly the maximum across as many full pre-execution lists as needed.
+            let addresses: Vec<_> = (0..MAX_SIMULATE_BUNDLE_ACCOUNTS)
+                .map(|_| solana_pubkey::new_rand())
+                .collect();
+            let pre_execution_accounts_configs: Vec<_> = addresses
+                .chunks(max_accounts_per_list)
+                .map(accounts_config)
+                .collect();
+            let transaction_count = pre_execution_accounts_configs.len();
+            let config = RpcSimulateBundleConfig {
+                pre_execution_accounts_configs,
+                post_execution_accounts_configs: vec![None; transaction_count],
+                ..RpcSimulateBundleConfig::default()
+            };
+
+            // Exactly at the limit is accepted.
+            assert!(matches!(
+                simulate(
+                    &rpc,
+                    encoded_transfers(&rpc, transaction_count),
+                    config.clone()
+                ),
+                Output::Success(_)
+            ));
+
+            // One more address anywhere in the bundle is rejected.
+            let mut config = config;
+            config.post_execution_accounts_configs[0] =
+                accounts_config(&[solana_pubkey::new_rand()]);
+            assert_eq!(
+                simulate_error_message(&rpc, encoded_transfers(&rpc, transaction_count), config),
+                format!(
+                    "Too many accounts provided across all pre/post execution accounts configs; \
+                     max {MAX_SIMULATE_BUNDLE_ACCOUNTS}"
+                ),
+            );
+        }
+
+        #[test]
+        fn test_rpc_simulate_bundle_rejects_oversized_accounts_data() {
+            let rpc = RpcHandler::start();
+            let bank = rpc.working_bank();
+
+            let data_len = MAX_PERMITTED_DATA_LENGTH as usize;
+            let large_pubkey = solana_pubkey::new_rand();
+            bank.store_account(
+                &large_pubkey,
+                &AccountSharedData::new(
+                    bank.get_minimum_balance_for_rent_exemption(data_len),
+                    data_len,
+                    &system_program::id(),
+                ),
+            );
+            bank.freeze();
+
+            let transaction_count = 4;
+            assert!(2 * transaction_count * data_len > MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES);
+            let config = RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![
+                    accounts_config(&[large_pubkey]);
+                    transaction_count
+                ],
+                post_execution_accounts_configs: vec![
+                    accounts_config(&[large_pubkey]);
+                    transaction_count
+                ],
+                ..RpcSimulateBundleConfig::default()
+            };
+
+            assert_eq!(
+                simulate_error_message(&rpc, encoded_transfers(&rpc, transaction_count), config),
+                format!(
+                    "Too much account data requested across all pre/post execution accounts: {} \
+                     bytes; max {MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES} bytes",
+                    2 * transaction_count * data_len,
+                ),
+            );
+        }
+
+        #[test]
+        fn test_rpc_simulate_bundle_accounts_data_limit_boundary() {
+            let rpc = RpcHandler::start();
+            let bank = rpc.working_bank();
+            let store_account = |data_len: usize| {
+                let pubkey = solana_pubkey::new_rand();
+                bank.store_account(
+                    &pubkey,
+                    &AccountSharedData::new(
+                        bank.get_minimum_balance_for_rent_exemption(data_len),
+                        data_len,
+                        &system_program::id(),
+                    ),
+                );
+                pubkey
+            };
+
+            let mut data_lens = vec![MAX_PERMITTED_DATA_LENGTH as usize; 6];
+            data_lens
+                .push(MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES - data_lens.iter().sum::<usize>());
+            let mut addresses: Vec<_> = data_lens.into_iter().map(store_account).collect();
+            let one_byte_account = store_account(1);
+            bank.freeze();
+
+            let config = |addresses: &[Pubkey]| RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![accounts_config(addresses)],
+                post_execution_accounts_configs: vec![None],
+                ..RpcSimulateBundleConfig::default()
+            };
+
+            // Exactly at the limit is accepted.
+            match simulate(&rpc, encoded_transfers(&rpc, 1), config(&addresses)) {
+                Output::Success(success) => assert_eq!(
+                    success.result["value"]["transactionResults"][0]["preExecutionAccounts"]
+                        .as_array()
+                        .map(Vec::len),
+                    Some(addresses.len()),
+                ),
+                Output::Failure(failure) => {
+                    panic!("expected success, got {}", failure.error.message)
+                }
+            }
+
+            // One more byte is rejected.
+            addresses.push(one_byte_account);
+            assert_eq!(
+                simulate_error_message(&rpc, encoded_transfers(&rpc, 1), config(&addresses)),
+                format!(
+                    "Too much account data requested across all pre/post execution accounts: {} \
+                     bytes; max {MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES} bytes",
+                    MAX_SIMULATE_BUNDLE_ACCOUNTS_DATA_BYTES + 1,
+                ),
+            );
+        }
     }
 
     #[test]
