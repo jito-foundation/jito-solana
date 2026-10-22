@@ -308,7 +308,13 @@ impl PohRecorder {
 
     // synchronize PoH with a bank
     pub fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
-        self.reset_internal(reset_bank, next_leader_slot, None);
+        self.reset_internal(reset_bank, next_leader_slot, None, Level::Info);
+    }
+
+    /// Like `reset`, but logs the reset at debug level, for callers that reset often enough to
+    /// flood the info log.
+    pub fn reset_quietly(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
+        self.reset_internal(reset_bank, next_leader_slot, None, Level::Debug);
     }
 
     /// Reset PoH while preserving the slot of a bank being replaced.
@@ -318,7 +324,7 @@ impl PohRecorder {
         next_leader_slot: Option<(Slot, Slot)>,
     ) {
         let bank_slot = self.shared_leader_state.load().bank_slot();
-        self.reset_internal(reset_bank, next_leader_slot, bank_slot);
+        self.reset_internal(reset_bank, next_leader_slot, bank_slot, Level::Info);
     }
 
     fn reset_internal(
@@ -326,9 +332,10 @@ impl PohRecorder {
         reset_bank: Arc<Bank>,
         next_leader_slot: Option<(Slot, Slot)>,
         bank_slot: Option<Slot>,
+        log_level: Level,
     ) {
         self.clear_bank(false);
-        let tick_height = self.reset_poh(reset_bank, true);
+        let tick_height = self.reset_poh(reset_bank, true, log_level);
 
         let (leader_first_tick_height, leader_last_tick_height, grace_ticks) =
             Self::compute_leader_slot_tick_heights(next_leader_slot, self.ticks_per_slot);
@@ -514,7 +521,7 @@ impl PohRecorder {
                 "resetting poh due to hashes per tick change detected at {}",
                 working_bank.bank.slot()
             );
-            tick_height = self.reset_poh(working_bank.bank.clone(), false);
+            tick_height = self.reset_poh(working_bank.bank.clone(), false, Level::Info);
         }
 
         let leader_state = self.shared_leader_state.load();
@@ -601,7 +608,12 @@ impl PohRecorder {
 
     /// Returns tick_height - does not update the internal state for tick_height.
     #[must_use]
-    fn reset_poh(&mut self, reset_bank: Arc<Bank>, reset_start_bank: bool) -> u64 {
+    fn reset_poh(
+        &mut self,
+        reset_bank: Arc<Bank>,
+        reset_start_bank: bool,
+        log_level: Level,
+    ) -> u64 {
         let blockhash = reset_bank.last_blockhash();
         let hashes_per_tick = reset_bank.hashes_per_tick();
         let poh_hash = {
@@ -609,7 +621,8 @@ impl PohRecorder {
             poh.reset(blockhash, hashes_per_tick);
             poh.hash
         };
-        info!(
+        log!(
+            log_level,
             "reset poh from: {},{},{} to: {},{}",
             poh_hash,
             self.tick_height(),
@@ -853,6 +866,11 @@ impl PohRecorder {
 
     pub fn start_slot(&self) -> Slot {
         self.start_bank.slot()
+    }
+
+    /// Returns the bank on which the current PoH state is based.
+    pub fn start_bank(&self) -> &Arc<Bank> {
+        &self.start_bank
     }
 
     /// Returns the unique identity of the bank on which the current PoH state is based.
