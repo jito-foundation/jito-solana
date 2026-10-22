@@ -90,11 +90,6 @@ const TIME_TO_COMPLETE_BLOCK_BROADCAST: Duration = Duration::from_millis(6);
 // completions.
 const BLOCK_PRODUCTION_BUFFER: Duration = Duration::from_millis(50);
 
-// How far root must move past PoH's start bank before the idle loop rebases PoH on root. Each
-// rebase logs a `reset poh` line at info level, so this keeps that to about one line per this many
-// slots, while the bank PoH holds stays at most this many slots older than root.
-const IDLE_POH_REFRESH_MIN_ROOT_ADVANCE: Slot = 32;
-
 /// Source of a leader-window notification consumed by BCL.
 enum ParentSource {
     /// Parent from ParentReady event for this leader window is already known.
@@ -377,7 +372,11 @@ fn start_loop(
         let mut w_poh_recorder = ctx.poh_recorder.write().unwrap();
         w_poh_recorder.enable_alpenglow();
     }
-    reset_poh_recorder(&ctx.bank_forks.read().unwrap().working_bank(), &ctx, false);
+    reset_poh_recorder(
+        &ctx.bank_forks.read().unwrap().working_bank(),
+        &ctx,
+        PohReset::Normal,
+    );
 
     while !ctx.exit.load(Ordering::Relaxed) {
         // Check if set-identity was called at each leader window start
@@ -475,8 +474,19 @@ fn start_loop(
     info!("{my_pubkey}: Block creation loop shutting down");
 }
 
+/// How [`reset_poh_recorder`] resets PoH.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PohReset {
+    /// Reset onto the bank.
+    Normal,
+    /// Reset onto the bank, keeping the slot of the bank being replaced.
+    BankReplacement,
+    /// The idle start-bank refresh. It runs about once a second, so PoH logs it at debug level.
+    IdleRefresh,
+}
+
 /// Resets poh recorder
-fn reset_poh_recorder(bank: &Arc<Bank>, ctx: &LeaderContext, preserve_replacement_slot: bool) {
+fn reset_poh_recorder(bank: &Arc<Bank>, ctx: &LeaderContext, reset: PohReset) {
     trace!("{}: resetting poh to {}", ctx.my_pubkey, bank.slot());
     assert!(ctx.record_receiver.is_shutdown());
     // A sender that read the channel state just before shutdown can count itself active for a
@@ -493,10 +503,12 @@ fn reset_poh_recorder(bank: &Arc<Bank>, ctx: &LeaderContext, preserve_replacemen
 
     let mut poh_recorder = ctx.poh_recorder.write().unwrap();
     let replaced_start_bank = poh_recorder.start_bank().clone();
-    if preserve_replacement_slot {
-        poh_recorder.reset_for_bank_replacement(bank.clone(), next_leader_slot);
-    } else {
-        poh_recorder.reset(bank.clone(), next_leader_slot);
+    match reset {
+        PohReset::Normal => poh_recorder.reset(bank.clone(), next_leader_slot),
+        PohReset::BankReplacement => {
+            poh_recorder.reset_for_bank_replacement(bank.clone(), next_leader_slot)
+        }
+        PohReset::IdleRefresh => poh_recorder.reset_quietly(bank.clone(), next_leader_slot),
     }
     drop(poh_recorder);
     // The replaced bank can be thousands of slots old, and dropping it can take tens of ms.
@@ -508,8 +520,7 @@ fn reset_poh_recorder(bank: &Arc<Bank>, ctx: &LeaderContext, preserve_replacemen
         )]);
 }
 
-/// Rebases idle PoH on the root bank once root is `IDLE_POH_REFRESH_MIN_ROOT_ADVANCE` slots past
-/// PoH's start bank.
+/// Rebases idle PoH on the root bank once root has passed PoH's start bank.
 ///
 /// Nothing else resets PoH between leader windows, so it would hold our last leader bank until the
 /// next window starts. Once that bank is rooted and pruned, PoH holds its last reference, so its
@@ -523,14 +534,11 @@ fn refresh_idle_poh_start_bank(ctx: &LeaderContext) {
     let root_bank = ctx.sharable_banks.root();
     {
         let poh_recorder = ctx.poh_recorder.read().unwrap();
-        let refresh_slot = poh_recorder
-            .start_slot()
-            .saturating_add(IDLE_POH_REFRESH_MIN_ROOT_ADVANCE);
-        if poh_recorder.has_bank() || root_bank.slot() < refresh_slot {
+        if poh_recorder.has_bank() || root_bank.slot() <= poh_recorder.start_slot() {
             return;
         }
     }
-    reset_poh_recorder(&root_bank, ctx, false);
+    reset_poh_recorder(&root_bank, ctx, PohReset::IdleRefresh);
 }
 
 /// Returns the elapsed leader-window time at which `slot` must be completed.
@@ -1081,7 +1089,7 @@ fn abort_working_bank(ctx: &mut LeaderContext, slot: Slot) -> Result<(), BankFor
         .unwrap_or_else(|| ctx.bank_forks.read().unwrap().root_bank());
     bank.quiesce_transaction_execution();
     ctx.bank_forks_controller.clear_bank(slot)?;
-    reset_poh_recorder(&reset_bank, ctx, false);
+    reset_poh_recorder(&reset_bank, ctx, PohReset::Normal);
     Ok(())
 }
 
@@ -1194,7 +1202,11 @@ fn handle_parent_ready(
                 /*wait_until_finished:*/ false,
             )
             .map_err(|err| {
-                reset_poh_recorder(&ctx.bank_forks.read().unwrap().working_bank(), ctx, false);
+                reset_poh_recorder(
+                    &ctx.bank_forks.read().unwrap().working_bank(),
+                    ctx,
+                    PohReset::Normal,
+                );
                 PohRecorderError::PurgeTransactionHistory(slot, err)
             })?;
     }
@@ -1222,7 +1234,11 @@ fn handle_parent_ready(
         entry_bytes_consumed,
     )
     .map_err(|_| {
-        reset_poh_recorder(&ctx.bank_forks.read().unwrap().working_bank(), ctx, false);
+        reset_poh_recorder(
+            &ctx.bank_forks.read().unwrap().working_bank(),
+            ctx,
+            PohReset::Normal,
+        );
         PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot)
     })?;
     update_leader_window_clock(ctx, slot, *block_timer);
@@ -1510,7 +1526,7 @@ fn create_and_insert_leader_bank(
     if ctx.poh_recorder.read().unwrap().start_bank_id() != parent_bank.bank_id() {
         // PoH must be based on the exact parent bank. Comparing slots is insufficient because
         // fast leader handover can switch between parent banks in the same slot.
-        reset_poh_recorder(&parent_bank, ctx, true);
+        reset_poh_recorder(&parent_bank, ctx, PohReset::BankReplacement);
     }
 
     // After potentially resetting, there should be no working bank.
@@ -2081,11 +2097,11 @@ mod tests {
         ));
         let (dropped_on_sender, dropped_on_receiver) = unbounded();
         bank1.set_callback(Some(Box::new(DropThreadCallback(dropped_on_sender))));
-        reset_poh_recorder(&bank1, &context.ctx, false);
+        reset_poh_recorder(&bank1, &context.ctx, PohReset::Normal);
         drop(bank1);
 
         // Replacing bank1 drops it on the drop service, not on this thread.
-        reset_poh_recorder(&root_bank, &context.ctx, true);
+        reset_poh_recorder(&root_bank, &context.ctx, PohReset::BankReplacement);
         let dropped_on = dropped_on_receiver
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
@@ -2123,7 +2139,7 @@ mod tests {
         let mut context = test_context(my_pubkey, bank_forks, blockstore, leader_slots);
         let (drop_bank_sender, replaced_banks) = unbounded();
         context.ctx.drop_bank_sender = drop_bank_sender;
-        reset_poh_recorder(&banks[1], &context.ctx, false);
+        reset_poh_recorder(&banks[1], &context.ctx, PohReset::Normal);
         replaced_banks.try_iter().for_each(drop);
         (context, banks, replaced_banks)
     }
@@ -2139,29 +2155,26 @@ mod tests {
     fn test_refresh_idle_poh_start_bank_follows_root() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
-        let refresh_slot = 1 + IDLE_POH_REFRESH_MIN_ROOT_ADVANCE;
-        let (context, banks, replaced_banks) = refresh_test_context(blockstore, refresh_slot + 1);
+        let (context, banks, replaced_banks) = refresh_test_context(blockstore, 3);
         let ctx = &context.ctx;
         let start_bank_id = || ctx.poh_recorder.read().unwrap().start_bank_id();
 
-        // PoH is based on bank 1. Root one slot short of the threshold leaves it there.
-        set_root(ctx, refresh_slot - 1);
+        // PoH is based on bank 1, ahead of root: nothing to refresh.
         refresh_idle_poh_start_bank(ctx);
         assert_eq!(start_bank_id(), banks[1].bank_id());
         assert_eq!(replaced_banks.try_iter().count(), 0);
 
-        // At the threshold, PoH follows root.
-        set_root(ctx, refresh_slot);
+        // Root at PoH's start slot has not passed it.
+        set_root(ctx, 1);
         refresh_idle_poh_start_bank(ctx);
-        assert_eq!(start_bank_id(), banks[refresh_slot as usize].bank_id());
-        assert_eq!(replaced_banks.try_iter().count(), 1);
+        assert_eq!(replaced_banks.try_iter().count(), 0);
 
-        // Once PoH is on root, it stays put while root has not moved, or has moved less than the
-        // threshold.
+        // Once root passes the start bank, PoH follows root, and stays put until root moves again.
+        set_root(ctx, 2);
         refresh_idle_poh_start_bank(ctx);
-        set_root(ctx, refresh_slot + 1);
+        assert_eq!(start_bank_id(), banks[2].bank_id());
+        assert_eq!(replaced_banks.try_iter().count(), 1);
         refresh_idle_poh_start_bank(ctx);
-        assert_eq!(start_bank_id(), banks[refresh_slot as usize].bank_id());
         assert_eq!(replaced_banks.try_iter().count(), 0);
     }
 
@@ -2169,12 +2182,10 @@ mod tests {
     fn test_refresh_idle_poh_start_bank_skips_working_bank() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
-        let refresh_slot = 1 + IDLE_POH_REFRESH_MIN_ROOT_ADVANCE;
-        let (context, banks, replaced_banks) = refresh_test_context(blockstore, refresh_slot);
+        let (context, banks, replaced_banks) = refresh_test_context(blockstore, 2);
         let ctx = &context.ctx;
-        set_root(ctx, refresh_slot);
-        let working_bank =
-            Bank::new_from_parent(banks[1].clone(), SlotLeader::new_unique(), refresh_slot + 1);
+        set_root(ctx, 2);
+        let working_bank = Bank::new_from_parent(banks[1].clone(), SlotLeader::new_unique(), 3);
         ctx.poh_recorder
             .write()
             .unwrap()
@@ -2193,7 +2204,7 @@ mod tests {
         refresh_idle_poh_start_bank(ctx);
         assert_eq!(
             ctx.poh_recorder.read().unwrap().start_bank_id(),
-            banks[refresh_slot as usize].bank_id()
+            banks[2].bank_id()
         );
     }
 
@@ -2201,10 +2212,9 @@ mod tests {
     fn test_refresh_idle_poh_start_bank_waits_for_record_intake() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
-        let refresh_slot = 1 + IDLE_POH_REFRESH_MIN_ROOT_ADVANCE;
-        let (mut context, banks, replaced_banks) = refresh_test_context(blockstore, refresh_slot);
-        set_root(&context.ctx, refresh_slot);
-        let root_bank_id = banks[refresh_slot as usize].bank_id();
+        let (mut context, banks, replaced_banks) = refresh_test_context(blockstore, 2);
+        set_root(&context.ctx, 2);
+        let root_bank_id = banks[2].bank_id();
 
         // Never while record intake is open.
         context.ctx.record_receiver.restart(root_bank_id);
