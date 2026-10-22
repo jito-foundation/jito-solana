@@ -680,6 +680,7 @@ fn test_simulate_bundle() {
     test_last_tx_fails(&rpc_client, &mint_keypair);
     test_duplicate_transactions(&rpc_client, &mint_keypair);
     test_program_execution_error(&rpc_client, &mint_keypair);
+    test_batch_size_limit(&rpc_client);
 }
 
 fn test_too_many_bundles(rpc_client: &RpcClient, mint_keypair: &Keypair) {
@@ -1557,5 +1558,43 @@ fn test_program_execution_error(rpc_client: &RpcClient, mint_keypair: &Keypair) 
     assert_eq!(
         result.err,
         Some(TransactionError::InsufficientFundsForRent { account_index: 0 })
+    );
+}
+
+fn test_batch_size_limit(rpc_client: &RpcClient) {
+    let post_batch = |method: &str, params: Value, len: usize| -> Vec<Value> {
+        let batch: Vec<_> = (0..len)
+            .map(|id| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .collect();
+        let response = reqwest::blocking::Client::new()
+            .post(rpc_client.url())
+            .header(CONTENT_TYPE, "application/json")
+            .body(Value::from(batch).to_string())
+            .send()
+            .unwrap();
+        let response: Value = serde_json::from_str(&response.text().unwrap()).unwrap();
+        response.as_array().expect("batch response").clone()
+    };
+
+    // Other methods are not limited.
+    let outputs = post_batch("getSlot", json!([]), 33);
+    assert_eq!(outputs.len(), 33);
+    assert!(outputs.iter().all(|output| output["result"].is_u64()));
+
+    // simulateBundle calls past the limit fail individually, in place.
+    let outputs = post_batch("simulateBundle", json!([{"encodedTransactions": []}]), 17);
+    assert_eq!(outputs.len(), 17);
+    for (id, output) in outputs.iter().enumerate() {
+        assert_eq!(output["id"], id);
+    }
+    assert!(
+        outputs[..16]
+            .iter()
+            .all(|output| output["result"].is_object())
+    );
+    assert_eq!(outputs[16]["error"]["code"], -32602);
+    assert_eq!(
+        outputs[16]["error"]["message"],
+        "Too many simulateBundle calls in batch; max 16"
     );
 }
