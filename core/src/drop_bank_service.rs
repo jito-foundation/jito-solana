@@ -1,6 +1,7 @@
 use {
     crossbeam_channel::Receiver,
     solana_measure::measure::Measure,
+    solana_metrics::datapoint::DataPoint,
     solana_runtime::installed_scheduler_pool::BankWithScheduler,
     std::thread::{self, Builder, JoinHandle},
 };
@@ -11,8 +12,22 @@ pub struct DropBankService {
 
 impl DropBankService {
     pub fn new(bank_receiver: Receiver<Vec<BankWithScheduler>>) -> Self {
+        Self::new_named(
+            bank_receiver,
+            "solDropBankSrvc",
+            "handle_new_root-dropped_banks",
+        )
+    }
+
+    /// Like `new`, but with its own thread and datapoint names, so a second service's metrics
+    /// stay apart from replay's.
+    pub fn new_named(
+        bank_receiver: Receiver<Vec<BankWithScheduler>>,
+        thread_name: &'static str,
+        datapoint_name: &'static str,
+    ) -> Self {
         let thread_hdl = Builder::new()
-            .name("solDropBankSrvc".to_string())
+            .name(thread_name.to_string())
             .spawn(move || {
                 for banks in bank_receiver.iter() {
                     let len = banks.len();
@@ -24,10 +39,12 @@ impl DropBankService {
                     drop(banks);
                     dropped_banks_time.stop();
                     if dropped_banks_time.as_ms() > 10 {
-                        datapoint_info!(
-                            "handle_new_root-dropped_banks",
-                            ("elapsed_ms", dropped_banks_time.as_ms(), i64),
-                            ("len", len, i64)
+                        solana_metrics::submit(
+                            DataPoint::new(datapoint_name)
+                                .add_field_i64("elapsed_ms", dropped_banks_time.as_ms() as i64)
+                                .add_field_i64("len", len as i64)
+                                .to_owned(),
+                            log::Level::Info,
                         );
                     }
                 }

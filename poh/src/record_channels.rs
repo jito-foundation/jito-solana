@@ -257,6 +257,17 @@ impl RecordReceiver {
         self.active_senders.load(Ordering::Acquire) == 0 && self.receiver.is_empty()
     }
 
+    /// Waits until no sender is between reserving capacity and enqueueing.
+    ///
+    /// After `shutdown`, a sender that read the channel state just before it still counts itself
+    /// active for a moment before its reservation fails. Such a sender never enqueues, but until it
+    /// backs out, `is_safe_to_restart` returns false.
+    pub fn wait_for_active_senders(&self) {
+        while self.active_senders.load(Ordering::Acquire) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+
     /// Try to receive a record from the channel.
     ///
     /// If a sender has already reserved capacity for this bank, do not report
@@ -394,6 +405,27 @@ mod tests {
             mixin: Hash::default(),
             reschedule_on_sad_handover: true,
         }
+    }
+
+    #[test]
+    fn test_wait_for_active_senders_after_shutdown() {
+        let (sender, mut receiver) = record_channels(false);
+        receiver.restart(BankId::new(1));
+        receiver.shutdown();
+
+        // A sender that read the channel state before shutdown registers before its reservation
+        // fails.
+        sender.active_senders.fetch_add(1, Ordering::AcqRel);
+        assert!(!receiver.is_safe_to_restart());
+        let active_senders = sender.active_senders.clone();
+        let backs_out = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            active_senders.fetch_sub(1, Ordering::AcqRel);
+        });
+
+        receiver.wait_for_active_senders();
+        assert!(receiver.is_safe_to_restart());
+        backs_out.join().unwrap();
     }
 
     #[test]
