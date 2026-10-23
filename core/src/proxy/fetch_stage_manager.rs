@@ -654,8 +654,11 @@ mod tests {
         check_sending_packet(&mut brain, &packet_rx, true);
     }
 
-    #[test]
-    fn test_original_to_bam_and_back_switch() {
+    #[test_case::test_case(7000, 7001; "standard_ports")]
+    #[test_case::test_case(65529, 7001; "max_legacy_tpu_port")]
+    #[test_case::test_case(7000, 65529; "max_legacy_tpu_forward_port")]
+    #[test_case::test_case(65529, 65529; "max_legacy_tpu_ports")]
+    fn test_original_to_bam_and_back_switch(tpu_port: u16, tpu_fwd_port: u16) {
         let TestContext {
             cluster_info,
             bam_enabled,
@@ -684,8 +687,8 @@ mod tests {
 
         // Enable BAM and set BAM TPU info
         bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
-        let bam_tpu_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
-        let bam_tpu_fwd_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        let bam_tpu_addr = SocketAddr::from(([127, 0, 0, 1], tpu_port));
+        let bam_tpu_fwd_addr = SocketAddr::from(([127, 0, 0, 1], tpu_fwd_port));
         bam_tpu_info.store(Arc::new(Some((bam_tpu_addr, bam_tpu_fwd_addr))));
         assert!(brain.state_machine_tick());
 
