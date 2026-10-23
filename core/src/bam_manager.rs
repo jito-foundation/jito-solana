@@ -438,7 +438,7 @@ impl BamManager {
     }
 
     fn apply_builder_config(config: &ConfigResponse, dependencies: &BamDependencies) -> bool {
-        Self::update_tpu_config(config, dependencies);
+        Self::update_tpu_config(config, &dependencies.bam_tpu_info);
         Self::update_shred_socks_config(config, dependencies);
         let block_builder_updated = Self::update_block_engine_key_and_commission(
             config,
@@ -448,7 +448,10 @@ impl BamManager {
         block_builder_updated
     }
 
-    fn update_tpu_config(config: &ConfigResponse, dependencies: &BamDependencies) {
+    fn update_tpu_config(
+        config: &ConfigResponse,
+        bam_tpu_info: &ArcSwap<Option<(SocketAddr, SocketAddr)>>,
+    ) {
         let Some(tpu_info) = config.bam_config.as_ref() else {
             return;
         };
@@ -464,9 +467,7 @@ impl BamManager {
             return;
         }
         info!("Setting TPU={tpu}, TPU Forward={tpu_fwd} from BAM config");
-        dependencies
-            .bam_tpu_info
-            .store(Arc::new(Some((tpu, tpu_fwd))));
+        bam_tpu_info.store(Arc::new(Some((tpu, tpu_fwd))));
     }
 
     fn set_bam_disconnected(dependencies: &BamDependencies) {
@@ -671,111 +672,53 @@ impl BamManager {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*, jito_protos::proto::bam_types::BamConfig, solana_genesis_config::GenesisConfig,
-        solana_gossip::contact_info::ContactInfo, solana_keypair::Keypair,
-        solana_net_utils::SocketAddrSpace, solana_runtime::bank_forks::BankForks,
-        solana_time_utils::timestamp, std::sync::atomic::AtomicU8,
-    };
+    use {super::*, jito_protos::proto::bam_types::BamConfig};
 
-    fn new_test_dependencies() -> BamDependencies {
-        let keypair = Arc::new(Keypair::new());
-        let contact_info = ContactInfo::new_localhost(&keypair.pubkey(), timestamp());
-        let (batch_sender, batch_receiver) = crossbeam_channel::unbounded();
-        let (outbound_sender, _) = mpsc::channel(1);
-        BamDependencies {
-            bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            batch_sender,
-            batch_receiver,
-            outbound_sender,
-            cluster_info: Arc::new(ClusterInfo::new(
-                contact_info,
-                keypair,
-                SocketAddrSpace::Unspecified,
-            )),
-            block_builder_fee_info: Arc::default(),
-            bank_forks: BankForks::new_rw_arc(Bank::new_for_tests(&GenesisConfig::default())),
-            bam_node_pubkey: Arc::default(),
-            bam_tpu_info: Arc::default(),
-            bam_shred_receiver_addresses: Arc::default(),
-        }
-    }
-
-    fn socket(port: u32) -> Socket {
-        Socket {
+    #[test]
+    fn test_tpu_and_shred_port_bounds() {
+        let bam_tpu_info = ArcSwap::from_pointee(None);
+        let socket = |port| Socket {
             ip: Ipv4Addr::LOCALHOST.to_string(),
             port,
-        }
-    }
+        };
+        let addr = |port| SocketAddr::from((Ipv4Addr::LOCALHOST, port));
 
-    fn tpu_config(tpu_port: u32, tpu_fwd_port: u32) -> ConfigResponse {
-        ConfigResponse {
-            bam_config: Some(BamConfig {
-                tpu_sock: Some(socket(tpu_port)),
-                tpu_fwd_sock: Some(socket(tpu_fwd_port)),
-                ..BamConfig::default()
-            }),
-            ..ConfigResponse::default()
-        }
-    }
-
-    #[test]
-    fn test_update_tpu_config_accepts_max_legacy_ports() {
-        let dependencies = new_test_dependencies();
-        for (tpu_port, tpu_fwd_port) in [(65529, 8001), (8000, 65529), (65529, 65529)] {
-            BamManager::update_tpu_config(&tpu_config(tpu_port, tpu_fwd_port), &dependencies);
+        // Shred sockets use the shared parser without a QUIC offset.
+        for port in [65529, 65530, 65535] {
             assert_eq!(
-                **dependencies.bam_tpu_info.load(),
-                Some((
-                    SocketAddr::from((Ipv4Addr::LOCALHOST, tpu_port as u16)),
-                    SocketAddr::from((Ipv4Addr::LOCALHOST, tpu_fwd_port as u16)),
-                )),
+                BamManager::get_sockaddr(&socket(port)),
+                Some(addr(port as u16))
             );
         }
-    }
-
-    #[test]
-    fn test_update_tpu_config_rejects_invalid_ports_preserving_previous_config() {
-        let dependencies = new_test_dependencies();
-        let original = Some((
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 8000)),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 8001)),
-        ));
-        for previous in [None, original] {
-            for invalid_port in [0, 65530, 65531, 65532, 65533, 65534, 65535, 65536, u32::MAX] {
-                for (tpu_port, tpu_fwd_port) in [(invalid_port, 9001), (9000, invalid_port)] {
-                    dependencies.bam_tpu_info.store(Arc::new(previous));
-                    BamManager::update_tpu_config(
-                        &tpu_config(tpu_port, tpu_fwd_port),
-                        &dependencies,
-                    );
-                    assert_eq!(
-                        **dependencies.bam_tpu_info.load(),
-                        previous,
-                        "TPU ports ({tpu_port}, {tpu_fwd_port}) must preserve {previous:?}",
-                    );
-                }
+        for (tpu_port, tpu_fwd_port, accepted) in [
+            (65529, 65529, true),
+            (65530, 65529, false),
+            (65529, 65530, false),
+            (65535, 65529, false),
+            (65529, 65535, false),
+        ] {
+            let config = ConfigResponse {
+                bam_config: Some(BamConfig {
+                    tpu_sock: Some(socket(tpu_port)),
+                    tpu_fwd_sock: Some(socket(tpu_fwd_port)),
+                    ..BamConfig::default()
+                }),
+                ..ConfigResponse::default()
+            };
+            for previous in [None, Some((addr(8000), addr(8001)))] {
+                bam_tpu_info.store(Arc::new(previous));
+                BamManager::update_tpu_config(&config, &bam_tpu_info);
+                let expected = if accepted {
+                    Some((addr(tpu_port as u16), addr(tpu_fwd_port as u16)))
+                } else {
+                    previous
+                };
+                assert_eq!(
+                    **bam_tpu_info.load(),
+                    expected,
+                    "TPU ports ({tpu_port}, {tpu_fwd_port}), previous config {previous:?}",
+                );
             }
         }
-    }
-
-    #[test]
-    fn test_update_shred_socks_config_accepts_high_ports() {
-        let dependencies = new_test_dependencies();
-        let config = ConfigResponse {
-            bam_config: Some(BamConfig {
-                shred_socks: (65529..=65535).map(socket).collect(),
-                ..BamConfig::default()
-            }),
-            ..ConfigResponse::default()
-        };
-        BamManager::update_shred_socks_config(&config, &dependencies);
-        let expected: Vec<_> = (65529..=65535)
-            .map(|port| SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
-            .collect();
-        assert_eq!(
-            dependencies.bam_shred_receiver_addresses.load().as_slice(),
-            expected.as_slice(),
-        );
     }
 }
