@@ -122,6 +122,105 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=1.0.10
   # Agave Ok:  only a wasm32 dependency of rustls-platform-verifier; not built for Agave
   --ignore RUSTSEC-2026-0383
+
+  # Crate:     quinn-proto
+  # Version:   0.11.13
+  # Title:     Denial of service in Quinn endpoints
+  # Date:      2026-03-09
+  # ID:        RUSTSEC-2026-0037
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0037
+  # Solution:  Upgrade to >=0.11.14
+  --ignore RUSTSEC-2026-0037
+
+  # Crate:     quinn-proto
+  # Version:   0.11.14
+  # Title:     Remote memory exhaustion in quinn-proto from unbounded out-of-order stream reassembly
+  # Date:      2026-06-22
+  # ID:        RUSTSEC-2026-0185
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0185
+  # Severity:  7.5 (high)
+  # Solution:  Upgrade to >=0.11.15
+  --ignore RUSTSEC-2026-0185
+
+  # Crate:     ring
+  # Version:   0.16.20
+  # Title:     Some AES functions may panic when overflow checking is enabled.
+  # Date:      2025-03-06
+  # ID:        RUSTSEC-2025-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
+  # Solution:  Upgrade to >=0.17.12
+  --ignore RUSTSEC-2025-0009
+
+  # Crate:     rustls-webpki
+  # Version:   0.103.10
+  # Title:     Name constraints for URI names were incorrectly accepted
+  # Date:      2026-04-14
+  # ID:        RUSTSEC-2026-0098
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0098
+  # Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+  --ignore RUSTSEC-2026-0098
+
+  # Crate:     rustls-webpki
+  # Version:   0.103.10
+  # Title:     Name constraints were accepted for certificates asserting a wildcard name
+  # Date:      2026-04-14
+  # ID:        RUSTSEC-2026-0099
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0099
+  # Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
+  --ignore RUSTSEC-2026-0099
+
+  # Crate:     rustls-webpki
+  # Version:   0.103.10
+  # Title:     Reachable panic in certificate revocation list parsing
+  # Date:      2026-04-22
+  # ID:        RUSTSEC-2026-0104
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
+  # Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
+  --ignore RUSTSEC-2026-0104
+
+  # Crate:     h2
+  # Version:   0.4.13
+  # Title:     h2 unbounded empty DATA frames
+  # Date:      2026-08-17
+  # ID:        RUSTSEC-2026-0258
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0258
+  # Solution:  Upgrade to >=0.4.16
+  --ignore RUSTSEC-2026-0258
+
+  # Crate:     webpki-roots
+  # Version:   0.26.11
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
+  # patched 1.0.10; no fixed 0.26 exists.
+  --ignore RUSTSEC-2026-0381
+
+  # Crate:     crypto-bigint
+  # Version:   0.5.5
+  # Title:     Multiple timing variability issues in operations intended to be constant-time
+  # Date:      2026-10-23
+  # ID:        RUSTSEC-2026-0387
+  # URL:       https://github.com/RustCrypto/crypto-bigint/pull/1365
+  # Solution:  Upgrade to >=0.7.6
+  # Pulled in by k256 0.13 (secp256k1 precompile verify and secp256k1_recover
+  # syscall, public inputs only); no 0.5.x fix exists. Pending upstream Agave.
+  --ignore RUSTSEC-2026-0387
+
+
+  # Crates:    zstd 0.14.0, zstd-safe 8.0.0, zstd-sys 2.1.0+zstd.1.5.7
+  # Date:      2026-10-16
+  # IDs:       RUSTSEC-2026-0391, RUSTSEC-2026-0398, RUSTSEC-2026-0403,
+  #            RUSTSEC-2026-0410
+  # Solution:  Upgrade to zstd >=0.14.3, zstd-safe >=8.2.0, zstd-sys >=2.1.2
+  # Fixes exist. Ignored temporarily by decision (haoran, 2026-10-26)
+  # pending the upstream Agave bump; remove once Cargo.lock is bumped.
+  --ignore RUSTSEC-2026-0391
+  --ignore RUSTSEC-2026-0398
+  --ignore RUSTSEC-2026-0403
+  --ignore RUSTSEC-2026-0410
 )
 
 xtask_cargo_audit_extra_args=(
@@ -144,6 +243,9 @@ xtask_cargo_audit_extra_args=(
   # The webpki-roots and webpki-root-certs advisories documented above also affect xtask.
   --ignore RUSTSEC-2026-0381
   --ignore RUSTSEC-2026-0383
+
+  # The crypto-bigint advisory documented above also affects xtask.
+  --ignore RUSTSEC-2026-0387
 )
 
 lock_files="$(git ls-files ':**Cargo.lock')"
