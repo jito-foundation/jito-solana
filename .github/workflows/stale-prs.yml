@@ -1,0 +1,37 @@
+# Marks PRs stale after 7 idle days and closes them 7 days later.
+# Replaces manage-stale-issues.yml, which only runs on anza-xyz.
+
+name: stale-prs
+
+on:
+  schedule:
+    - cron: "0 15 * * 1-5"
+  pull_request:
+    paths:
+      - .github/workflows/stale-prs.yml
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - uses: actions/stale@v11
+        with:
+          days-before-issue-stale: -1
+          days-before-issue-close: -1
+          days-before-pr-stale: 7
+          days-before-pr-close: 7
+          # Dry run on PRs that edit this file.
+          debug-only: ${{ github.event_name == 'pull_request' }}
+          exempt-pr-labels: do-not-close
+          # Covers every open PR in one run, so no state carries over.
+          operations-per-run: 200
+          stale-pr-label: stale
+          stale-pr-message: >-
+            No activity for 7 days. This PR closes in 7 days unless it is
+            updated or labeled `do-not-close`.
+          close-pr-message: Closed after 14 days without activity.
