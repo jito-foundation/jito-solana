@@ -358,7 +358,6 @@ impl BamValidator {
 
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
-    skip_last_validator: bool,
     runtime: Runtime,
 }
 
@@ -519,7 +518,6 @@ impl BamLocalCluster {
 
         Ok(Self {
             validators,
-            skip_last_validator,
             runtime,
         })
     }
@@ -639,9 +637,8 @@ impl BamLocalCluster {
         let validators_ptr = self.validators.clone();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
 
-        let skip_last_validator = self.skip_last_validator;
         self.runtime.spawn(async move {
-            Self::monitor_validators(validators_ptr, skip_last_validator, tx).await;
+            Self::monitor_validators(validators_ptr, tx).await;
         });
 
         // Wait for Ctrl+C, SIGTERM, or validator death
@@ -666,25 +663,20 @@ impl BamLocalCluster {
 
     async fn monitor_validators(
         validators: std::sync::Arc<std::sync::Mutex<Vec<BamValidator>>>,
-        skip_last_validator: bool,
         exit_tx: tokio::sync::oneshot::Sender<()>,
     ) {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
             if let Ok(mut validators_guard) = validators.lock() {
-                let valid_idx_limit = validators_guard.len().saturating_sub(1);
                 for (i, validator) in validators_guard.iter_mut().enumerate() {
                     if !validator.is_running() {
                         error!(
                             "Validator process {} ({}) is not running - exiting cluster",
                             i, validator.node_name
                         );
-                        // Signal exit and return
-                        if !skip_last_validator || i < valid_idx_limit {
-                            let _ = exit_tx.send(());
-                            return;
-                        }
+                        let _ = exit_tx.send(());
+                        return;
                     } else {
                         debug!(
                             "Validator process {} ({}) is running",
