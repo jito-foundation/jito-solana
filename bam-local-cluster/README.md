@@ -14,7 +14,7 @@ The tool automatically handles:
 - Genesis configuration with SPL programs
 - Keypair generation and ledger setup
 - Bootstrap node coordination
-- Process health monitoring and graceful shutdown
+- Process health monitoring and shutdown
 
 ## Quick Start
 
@@ -53,13 +53,16 @@ Key configuration options:
 - `tip_payment_program_id` / `tip_distribution_program_id`: Tip manager programs
 - `faucet_address`: Faucet service for airdrops
 - `mint_sol`: Optional faucet genesis balance in SOL
-- `enable_tx_v1`: Optional transaction v1 genesis feature activation for BAM conformance tests
 - `ledger_base_directory`: Base directory for validator ledgers
 - `validator_build_path`: Build output directory (e.g., "target/debug" or "target/release") - required
 - `ledger_tool_build_path`: Ledger tool output directory, such as
   "dev-bins/target/debug" or "dev-bins/target/release" - required
+- `dynamic_port_range_start`: First port of the validators' dynamic port ranges, 1,000 per
+  validator - required
 - `bind_address`: Optional validator listen address override passed through as `--bind-address`
 - `gossip_host`: Optional validator gossip advertisement override passed through as `--gossip-host`
+- `limit_blockstore_size`: Optional data and coding shreds each validator keeps, passed through as
+  `--limit-blockstore-size` (at least 100M)
 - `validators`: Array of validator configurations (first is bootstrap node)
 
 ## Feature configuration
@@ -84,7 +87,7 @@ inactive. Override by feature public key:
   "FastLeaderHandover11111111111111111111111111" = 3
   ```
 
-BAM's `local-cluster/FEATURES.md` has launcher examples for these schedules.
+BAM's `local-cluster/FEATURES.md` has fast leader handover examples.
 Slot-time reductions take effect in the epoch *after* feature activation.
 
 The source baseline is saved as `features-baseline.toml` beside the ledger
@@ -97,8 +100,8 @@ later-epoch activation requires the real migration and does not guarantee it
 completes. The production migration starts 5,000 slots after the Alpenglow
 feature activates. On a short local run, activating the feature does not mean
 the cluster has switched consensus. Invalid or conflicting overrides and
-missing prerequisites are rejected. Do not combine with `enable_tx_v1 = true`
-or `slot_time_ms`. Without `--features-config`, existing behavior is unchanged.
+missing prerequisites are rejected. Without `--features-config`, genesis enables
+every feature in the build, with Alpenglow at genesis.
 
 ## How It Works
 
@@ -108,7 +111,7 @@ The tool spawns `agave-validator` processes as subprocesses, automatically handl
 2. Keypair generation and ledger setup
 3. Bootstrap node startup and coordination
 4. Validator process spawning and monitoring
-5. Graceful shutdown on Ctrl+C or process failure
+5. Shutdown on Ctrl+C or SIGTERM, which exits 0, or when a validator process exits, which exits 1
 
 ## Usage
 
