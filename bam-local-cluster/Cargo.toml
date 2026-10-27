@@ -21,9 +21,13 @@ axum = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+<<<<<<< HEAD
 serde_json = { workspace = true }
 solana-account  = { workspace = true }
 solana-clock = { workspace = true }
+=======
+solana-account = { workspace = true }
+>>>>>>> a8841a48d8 (fix(bam-local-cluster): Drop old options, fix validator exit code (#1746))
 solana-cluster-type = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-core = { workspace = true }
@@ -39,7 +43,6 @@ solana-native-token = { workspace = true }
 solana-program-binaries = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-rent = { workspace = true }
-solana-rpc = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-runtime = { workspace = true }
 solana-shred-version = { workspace = true }
@@ -49,3 +52,6 @@ solana-system-interface = { workspace = true }
 solana-vote-program = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 toml = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
