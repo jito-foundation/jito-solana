@@ -19,7 +19,10 @@ use {
     solana_program_binaries::spl_programs,
     solana_rent::Rent,
     solana_runtime::{
-        genesis_utils::{ValidatorVoteKeypairs, create_genesis_config_with_leader_ex},
+        genesis_utils::{
+            ValidatorVoteKeypairs, activate_alpenglow_at_genesis,
+            create_genesis_config_with_leader_ex,
+        },
         stake_utils::create_stake_account,
     },
     solana_shred_version::compute_shred_version,
@@ -564,6 +567,9 @@ impl BamLocalCluster {
         );
         if let Some(features) = features {
             features.apply(&mut genesis_config);
+        } else {
+            // This release's genesis helper skips Alpenglow, even when all features are enabled.
+            activate_alpenglow_at_genesis(&mut genesis_config);
         }
 
         let mut genesis_config_info = GenesisConfigInfo {
@@ -691,5 +697,57 @@ impl BamLocalCluster {
                 error!("Failed to kill validator {}: {}", validator.node_name, e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_genesis_starts_with_alpenglow() {
+        let genesis = BamLocalCluster::create_genesis_config_with_vote_accounts_and_cluster_type(
+            LAMPORTS_PER_SOL,
+            &[ValidatorVoteKeypairs::new_rand()],
+            vec![DEFAULT_NODE_STAKE],
+            ClusterType::Development,
+            None,
+        )
+        .unwrap()
+        .genesis_config;
+        for id in agave_feature_set::FEATURE_NAMES.keys() {
+            assert_eq!(
+                solana_feature_gate_interface::from_account(&genesis.accounts[id])
+                    .unwrap()
+                    .activated_at,
+                Some(0),
+                "feature {id} should be active at genesis"
+            );
+        }
+        assert_eq!(genesis.poh_config.hashes_per_tick, None);
+        let (bank, _bank_forks) =
+            solana_runtime::bank::Bank::new_with_bank_forks_for_tests(&genesis);
+        assert!(bank.is_alpenglow());
+        assert!(bank.get_alpenglow_genesis_certificate().is_some());
+    }
+
+    #[test]
+    fn run_reports_exit_of_last_managed_validator() {
+        let mut process = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        process.wait().unwrap();
+        let cluster = BamLocalCluster {
+            validators: Arc::new(Mutex::new(vec![BamValidator {
+                process,
+                node_name: "last-managed-validator".into(),
+            }])),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        };
+
+        let result = cluster.run();
+        cluster.shutdown();
+        assert_eq!(result.unwrap_err().to_string(), "a validator exited");
     }
 }

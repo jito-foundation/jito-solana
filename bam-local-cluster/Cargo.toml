@@ -21,13 +21,8 @@ axum = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-<<<<<<< HEAD
-serde_json = { workspace = true }
-solana-account  = { workspace = true }
-solana-clock = { workspace = true }
-=======
 solana-account = { workspace = true }
->>>>>>> a8841a48d8 (fix(bam-local-cluster): Drop old options, fix validator exit code (#1746))
+solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-core = { workspace = true }
