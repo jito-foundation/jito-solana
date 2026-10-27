@@ -13,7 +13,7 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender, unbounded},
     solana_clock::Slot,
     solana_hash::Hash,
-    solana_metrics::datapoint_info,
+    solana_metrics::datapoint_debug,
     solana_rpc_client_api::response::{SlotTransactionStats, SlotUpdate},
     solana_runtime::{
         bank::{Bank, BankId},
@@ -167,7 +167,7 @@ impl BankNotificationSender {
 
         match self.tx.send(notification.clone()) {
             Ok(()) => {
-                datapoint_info!(
+                datapoint_debug!(
                     "bank-notification-queue-depth",
                     "subscriber" => self.label,
                     ("depth", self.tx.len(), i64),
