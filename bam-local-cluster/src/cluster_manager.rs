@@ -17,6 +17,7 @@ use {
     solana_local_cluster::integration_tests::DEFAULT_NODE_STAKE,
     solana_native_token::LAMPORTS_PER_SOL,
     solana_program_binaries::spl_programs,
+    solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_runtime::{
         genesis_utils::{ValidatorVoteKeypairs, create_genesis_config_with_leader_ex},
@@ -28,15 +29,16 @@ use {
     solana_vote_program::vote_state,
     std::{
         borrow::Borrow,
-        net::SocketAddr,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
-        str::FromStr,
         sync::{Arc, Mutex},
         thread::sleep,
         time::Duration,
     },
-    tokio::{runtime::Runtime, signal},
+    tokio::{
+        runtime::Runtime,
+        signal::unix::{Signal, SignalKind, signal},
+    },
 };
 
 pub struct BamValidator {
@@ -61,12 +63,12 @@ impl BamValidator {
         expected_bank_hash: Option<String>,
         identity_path: &PathBuf,
         vote_path: &PathBuf,
-        merkle_root_upload_authority: &str,
+        merkle_root_upload_authority: &Pubkey,
         runtime: &Runtime,
         config: &CustomValidatorConfig,
         quiet: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let validator_binary = format!("{}/agave-validator", cluster_config.validator_build_path);
+        let validator_binary = cluster_config.validator_build_path.join("agave-validator");
 
         let mut cmd = Command::new(validator_binary);
 
@@ -100,7 +102,7 @@ impl BamValidator {
         .arg("--rpc-port")
         .arg(rpc_port.to_string())
         .arg("--rpc-faucet-address")
-        .arg(&cluster_config.faucet_address)
+        .arg(cluster_config.faucet_address.to_string())
         .arg("--rpc-pubsub-enable-block-subscription")
         .arg("--account-index")
         .arg("program-id")
@@ -117,11 +119,11 @@ impl BamValidator {
         .arg("--bam-url")
         .arg(&cluster_config.bam_url)
         .arg("--tip-distribution-program-pubkey")
-        .arg(&cluster_config.tip_distribution_program_id)
+        .arg(cluster_config.tip_distribution_program_id.to_string())
         .arg("--tip-payment-program-pubkey")
-        .arg(&cluster_config.tip_payment_program_id)
+        .arg(cluster_config.tip_payment_program_id.to_string())
         .arg("--merkle-root-upload-authority")
-        .arg(merkle_root_upload_authority)
+        .arg(merkle_root_upload_authority.to_string())
         .arg("--commission-bps")
         .arg("100");
 
@@ -134,7 +136,7 @@ impl BamValidator {
         }
 
         if let Some(bind_address) = &cluster_config.bind_address {
-            cmd.arg("--bind-address").arg(bind_address);
+            cmd.arg("--bind-address").arg(bind_address.to_string());
         }
 
         if let Some(gossip_host) = &cluster_config.gossip_host {
@@ -206,9 +208,9 @@ impl BamValidator {
 
     pub fn get_bank_hash(
         ledger_path: &Path,
-        ledger_tool_build_path: &str,
+        ledger_tool_build_path: &Path,
     ) -> Result<String, anyhow::Error> {
-        let ledger_tool_binary = format!("{ledger_tool_build_path}/agave-ledger-tool");
+        let ledger_tool_binary = ledger_tool_build_path.join("agave-ledger-tool");
 
         let mut cmd = std::process::Command::new(ledger_tool_binary);
 
@@ -328,9 +330,9 @@ impl BamValidator {
 
     fn create_snapshot(
         validator_ledger_path: &Path,
-        ledger_tool_build_path: &str,
+        ledger_tool_build_path: &Path,
     ) -> anyhow::Result<()> {
-        let ledger_tool_binary = format!("{ledger_tool_build_path}/agave-ledger-tool");
+        let ledger_tool_binary = ledger_tool_build_path.join("agave-ledger-tool");
 
         let mut cmd = Command::new(ledger_tool_binary);
 
@@ -356,9 +358,19 @@ impl BamValidator {
     }
 }
 
+// A child process outlives its handle, so kill the validator when its handle drops: this stops
+// the validators already started when startup fails; shutdown has killed them already.
+impl Drop for BamValidator {
+    fn drop(&mut self) {
+        let _ = self.kill();
+    }
+}
+
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
     runtime: Runtime,
+    sigint: Signal,
+    sigterm: Signal,
 }
 
 impl BamLocalCluster {
@@ -403,16 +415,24 @@ impl BamLocalCluster {
         )?;
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
+        // Listen before any validator starts, so a SIGINT or SIGTERM during startup ends the
+        // cluster once it runs instead of killing the launcher and orphaning the validators.
+        let (sigint, sigterm) = {
+            let _runtime = runtime.enter();
+            (
+                signal(SignalKind::interrupt())?,
+                signal(SignalKind::terminate())?,
+            )
+        };
 
         // Start faucet
-        let faucet_address = SocketAddr::from_str(&config.faucet_address)?;
         let faucet = Arc::new(Mutex::new(Faucet::new(
             genesis_config_info.mint_keypair.insecure_clone(),
             None,
             None,
             None,
         )));
-        runtime.spawn(run_faucet(faucet, faucet_address, None));
+        runtime.spawn(run_faucet(faucet, config.faucet_address, None));
 
         let mut validators = Vec::new();
         let mut expected_bank_hash = None;
@@ -437,23 +457,14 @@ impl BamLocalCluster {
                 .into());
             }
 
-            if !is_bootstrap {
-                create_new_ledger(
-                    &ledger_path,
-                    &genesis_config_info.genesis_config,
-                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
-                    LedgerColumnOptions::default(),
-                )?;
-            }
-            // Create ledger and snapshot if bootstrap; other validators need to have snapshot
-            // to download from the bootstrap validator to start
+            create_new_ledger(
+                &ledger_path,
+                &genesis_config_info.genesis_config,
+                MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
+                LedgerColumnOptions::default(),
+            )?;
+            // The other validators download the bootstrap validator's snapshot to start.
             if is_bootstrap {
-                create_new_ledger(
-                    &ledger_path,
-                    &genesis_config_info.genesis_config,
-                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
-                    LedgerColumnOptions::default(),
-                )?;
                 BamValidator::create_snapshot(&ledger_path, &config.ledger_tool_build_path)?;
 
                 info!("Getting bank hash for bootstrap validator");
@@ -519,6 +530,8 @@ impl BamLocalCluster {
         Ok(Self {
             validators,
             runtime,
+            sigint,
+            sigterm,
         })
     }
 
@@ -620,8 +633,6 @@ impl BamLocalCluster {
             ]);
         }
 
-        genesis_config_info.genesis_config.fee_rate_governor = FeeRateGovernor::default();
-
         // Add SPL programs
         for (pubkey, account) in spl_programs(&genesis_config_info.genesis_config.rent) {
             genesis_config_info
@@ -632,7 +643,8 @@ impl BamLocalCluster {
         Ok(genesis_config_info)
     }
 
-    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Runs until Ctrl+C, SIGTERM, or a validator exits, then stops the validators.
+    pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Start process monitoring
         let validators_ptr = self.validators.clone();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
@@ -642,11 +654,10 @@ impl BamLocalCluster {
         });
 
         // Wait for Ctrl+C, SIGTERM, or validator death
-        self.runtime.block_on(async {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let (sigint, sigterm) = (&mut self.sigint, &mut self.sigterm);
+        let result = self.runtime.block_on(async {
             tokio::select! {
-                _ = signal::ctrl_c() => {
+                Some(_) = sigint.recv() => {
                     info!("Received Ctrl+C, shutting down...");
                 }
                 Some(_) = sigterm.recv() => {
@@ -658,7 +669,9 @@ impl BamLocalCluster {
                 }
             }
             Ok::<(), Box<dyn std::error::Error>>(())
-        })
+        });
+        self.shutdown();
+        result
     }
 
     async fn monitor_validators(
@@ -688,7 +701,7 @@ impl BamLocalCluster {
         }
     }
 
-    pub fn shutdown(self) {
+    fn shutdown(self) {
         info!("Shutting down cluster...");
 
         // Terminate all validator processes
@@ -697,5 +710,22 @@ impl BamLocalCluster {
                 error!("Failed to kill validator {}: {}", validator.node_name, e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn dropping_a_validator_kills_its_process() {
+        let process = Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = process.id();
+        drop(BamValidator {
+            process,
+            node_name: "validator".into(),
+        });
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 }

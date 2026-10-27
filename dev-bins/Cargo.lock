@@ -1151,6 +1151,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "serde_with",
  "solana-account",
  "solana-cluster-type",
  "solana-commitment-config",
