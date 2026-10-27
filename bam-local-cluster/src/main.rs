@@ -46,11 +46,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = matches.value_of("config").unwrap();
     let config = LocalClusterConfig::from_file(config_path).expect("Failed to parse TOML");
     let features = if let Some(path) = matches.value_of("features-config") {
-        if config.enable_tx_v1 || config.slot_time_ms.is_some() {
-            return Err(
-                "--features-config cannot be combined with TXV1 or slot-time overrides".into(),
-            );
-        }
         let output = Path::new(&config.ledger_base_directory)
             .parent()
             .ok_or("missing output directory")?;
@@ -74,13 +69,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .inspect_err(|e| error!("Failed to start cluster: {e}"))?;
 
     // Run the cluster (this will block until shutdown is requested)
-    if let Err(e) = cluster.run() {
-        error!("Cluster error: {e}");
-        return Err(e);
-    }
+    let result = cluster.run();
 
-    // Graceful shutdown
+    // Stop the validators whether run() returned Ok or Err: a child process outlives its handle.
     cluster.shutdown();
 
-    Ok(())
+    result
 }
