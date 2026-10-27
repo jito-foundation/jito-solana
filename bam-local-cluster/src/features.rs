@@ -467,6 +467,42 @@ mod tests {
     }
 
     #[test]
+    fn cluster_genesis_respects_inactive_and_pending_alpenglow() {
+        use {
+            crate::BamLocalCluster,
+            solana_cluster_type::ClusterType,
+            solana_local_cluster::integration_tests::DEFAULT_NODE_STAKE,
+            solana_native_token::LAMPORTS_PER_SOL,
+            solana_runtime::{bank::Bank, genesis_utils::ValidatorVoteKeypairs},
+        };
+
+        let id = agave_feature_set::alpenglow::id();
+        for pending in [false, true] {
+            let mut config = config();
+            if pending {
+                config.activate_next_epoch.push(id.to_string());
+            } else {
+                config.disable.push(id.to_string());
+            }
+            let features = ResolvedFeatures::resolve(&baseline(), &config).unwrap();
+            let genesis =
+                BamLocalCluster::create_genesis_config_with_vote_accounts_and_cluster_type(
+                    LAMPORTS_PER_SOL,
+                    &[ValidatorVoteKeypairs::new_rand()],
+                    vec![DEFAULT_NODE_STAKE],
+                    ClusterType::Development,
+                    Some(&features),
+                )
+                .unwrap()
+                .genesis_config;
+            assert_eq!(genesis.accounts.contains_key(&id), pending);
+            let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis);
+            assert!(!bank.is_alpenglow());
+            assert!(bank.get_alpenglow_genesis_certificate().is_none());
+        }
+    }
+
+    #[test]
     fn scheduled_feature_activates_only_at_chosen_epoch() {
         use solana_runtime::{bank::Bank, genesis_utils::create_genesis_config};
         let id = agave_feature_set::alpenglow_fast_leader_handover::id();

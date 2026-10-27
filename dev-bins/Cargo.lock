@@ -1170,7 +1170,6 @@ dependencies = [
  "solana-program-binaries",
  "solana-pubkey 4.3.0",
  "solana-rent",
- "solana-rpc",
  "solana-rpc-client",
  "solana-runtime",
  "solana-shred-version",
