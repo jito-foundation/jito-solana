@@ -93,7 +93,9 @@ Slot-time reductions take effect in the epoch *after* feature activation.
 The source baseline is saved as `features-baseline.toml` beside the ledger
 directory. Copy it outside the output directory before rerunning; set
 `baseline` to that path (relative to the feature TOML) to reuse it. RPC
-reads span multiple finalized slots, recorded in the snapshot.
+reads span multiple finalized slots, recorded in the snapshot. A saved
+baseline's features that this build no longer has log a warning, and an active
+one still gets its feature account; an unknown override is an error.
 
 Alpenglow enabled at genesis uses a synthetic certificate and skips migration;
 later-epoch activation requires the real migration and does not guarantee it
@@ -115,8 +117,8 @@ The tool spawns `agave-validator` processes as subprocesses, automatically handl
 
 ## Usage
 
-The cluster runs until you press Ctrl+C or a validator process fails. All validator output is streamed to the console
-for debugging.
+The cluster runs until you press Ctrl+C, send SIGTERM, or a validator process exits; a signal during startup stops it once
+startup finishes. All validator output is streamed to the console for debugging.
 
 Use `--skip-last-validator` to omit starting the final validator (useful when running an alternate validator for testing
 purposes); the validator still receives stake/airdrop in genesis and remains in the leader schedule.

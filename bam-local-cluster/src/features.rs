@@ -162,13 +162,21 @@ impl ResolvedFeatures {
             );
             scheduled.insert(id, *epoch);
         }
-        for (id, state) in &baseline.features {
+        for (value, state) in &baseline.features {
+            let id =
+                Pubkey::from_str(value).with_context(|| format!("invalid feature ID: {value}"))?;
+            // A pinned baseline outlives features this build has since removed. They gate nothing
+            // here, but an active one keeps its account, as on mainnet, for a validator build
+            // that still gates it.
+            if !FEATURE_NAMES.contains_key(&id) {
+                log::warn!("Baseline feature unknown to this build: {id} ({state:?})");
+            }
             // Pending features stay inactive unless explicitly requested.
             let state = match state {
                 FeatureState::Active => FeatureState::Active,
                 _ => FeatureState::Inactive,
             };
-            states.entry(known_id(id)?).or_insert(state);
+            states.entry(id).or_insert(state);
         }
         // These are already required by the local-cluster vote/program fixtures.
         for id in [
@@ -189,7 +197,8 @@ impl ResolvedFeatures {
             genesis.accounts.remove(id);
         }
         for (id, state) in &self.states {
-            log::info!("Local feature {id}: {state:?} ({})", FEATURE_NAMES[id]);
+            let name = FEATURE_NAMES.get(id).unwrap_or(&"unknown to this build");
+            log::info!("Local feature {id}: {state:?} ({name})");
             match state {
                 FeatureState::Active => activate_feature(genesis, *id),
                 FeatureState::Pending => {
@@ -382,6 +391,38 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("prerequisite")
+        );
+    }
+
+    #[test]
+    fn keeps_active_baseline_features_unknown_to_this_build() {
+        let mut baseline = baseline();
+        let (removed_active, removed_pending) = (Pubkey::new_unique(), Pubkey::new_unique());
+        baseline
+            .features
+            .insert(removed_active.to_string(), FeatureState::Active);
+        baseline
+            .features
+            .insert(removed_pending.to_string(), FeatureState::Pending);
+        let resolved = ResolvedFeatures::resolve(&baseline, &config()).unwrap();
+        let mut genesis = GenesisConfig::default();
+        resolved.apply(&mut genesis);
+        assert_eq!(
+            feature::from_account(&genesis.accounts[&removed_active])
+                .unwrap()
+                .activated_at,
+            Some(0)
+        );
+        assert!(!genesis.accounts.contains_key(&removed_pending));
+
+        baseline
+            .features
+            .insert("not-a-pubkey".into(), FeatureState::Active);
+        assert!(
+            ResolvedFeatures::resolve(&baseline, &config())
+                .unwrap_err()
+                .to_string()
+                .contains("invalid feature ID")
         );
     }
 

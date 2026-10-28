@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
 solana-account = { workspace = true }
 solana-cluster-type = { workspace = true }
 solana-commitment-config = { workspace = true }
