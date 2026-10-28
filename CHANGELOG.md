@@ -13,6 +13,8 @@ and follows a [Backwards Compatibility Policy](https://docs.anza.xyz/backwards-c
 
 #### Breaking
 
+* Prebuilt Windows releases are no longer provided.
+
 #### Changes
 
 * `getTransaction` now accepts `minContextSlot`, and `getSignatureStatuses` now accepts `commitment`
