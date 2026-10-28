@@ -44,9 +44,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_quiet = matches.is_present("quiet");
     let skip_last_validator = matches.is_present("skip-last-validator");
     let config_path = matches.value_of("config").unwrap();
-    let config = LocalClusterConfig::from_file(config_path).expect("Failed to parse TOML");
+    let config = LocalClusterConfig::from_file(config_path)
+        .inspect_err(|e| error!("Failed to load {config_path}: {e}"))?;
     let features = if let Some(path) = matches.value_of("features-config") {
-        let output = Path::new(&config.ledger_base_directory)
+        let output = config
+            .ledger_base_directory
             .parent()
             .ok_or("missing output directory")?;
         Some(ResolvedFeatures::from_file(
@@ -65,14 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Skipping startup of the last validator process");
     }
 
-    let cluster = BamLocalCluster::new(config, is_quiet, skip_last_validator, features.as_ref())
-        .inspect_err(|e| error!("Failed to start cluster: {e}"))?;
-
-    // Run the cluster (this will block until shutdown is requested)
-    let result = cluster.run();
-
-    // Stop the validators whether run() returned Ok or Err: a child process outlives its handle.
-    cluster.shutdown();
-
-    result
+    BamLocalCluster::new(config, is_quiet, skip_last_validator, features.as_ref())
+        .inspect_err(|e| error!("Failed to start cluster: {e}"))?
+        .run()
 }
