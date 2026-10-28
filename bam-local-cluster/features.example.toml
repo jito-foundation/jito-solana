@@ -10,4 +10,9 @@ enable = [
     "Gx4XFcrVMt4HUvPzTpTSVkdDVgcDSjKhDN1RqRS6KDuZ",  # Vote state v4
 ]
 disable = []
-activate_next_epoch = ["FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH"]
+# A rent change takes effect only when its feature activates, so activate mainnet's latest one
+# next epoch too. Update it when mainnet activates a newer one.
+activate_next_epoch = [
+    "FLHoAWBDjNh6zwmJ5i1NKK4KyD8otAiv7XxvmnFnVnKH",
+    "61BtM7BkDEE8Yq5fskEVAQT9mYA8qCejJWoLe5apqg81",  # Set lamports per byte to 5080
+]
