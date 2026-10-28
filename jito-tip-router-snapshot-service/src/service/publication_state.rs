@@ -295,14 +295,21 @@ impl SnapshotPublicationTracker {
 
 #[cfg(test)]
 mod tests {
-    use {super::SnapshotPublicationTracker, crate::CandidateIdentity, solana_clock::BankId};
+    use {
+        super::SnapshotPublicationTracker, crate::CandidateIdentity, solana_clock::Slot,
+        solana_runtime::bank::BankId,
+    };
 
-    fn parent(slot: u64, bank_id: BankId) -> CandidateIdentity {
+    fn parent(slot: Slot, bank_id: u64) -> CandidateIdentity {
         CandidateIdentity {
             epoch: 3,
             slot,
-            bank_id,
+            bank_id: BankId::new(bank_id),
         }
+    }
+
+    fn bank(slot: Slot, bank_id: u64) -> (Slot, BankId) {
+        (slot, BankId::new(bank_id))
     }
 
     #[test]
@@ -311,21 +318,24 @@ mod tests {
         // Forks: 98 -> 100 and 98 -> 99 -> 104. Only child 104 survives.
         let ancestor = parent(98, 198);
         let winner = parent(99, 199);
-        tracker.record_spawned_candidate(ancestor, (100, 200));
-        tracker.record_spawned_candidate(winner, (104, 204));
+        tracker.record_spawned_candidate(ancestor, bank(100, 200));
+        tracker.record_spawned_candidate(winner, bank(104, 204));
         assert_eq!(tracker.record_candidate_written(ancestor), None);
         assert_eq!(tracker.record_candidate_written(winner), None);
 
-        assert_eq!(tracker.select_winner_for_publication(&[(98, 198)]), None);
+        assert_eq!(
+            tracker.select_winner_for_publication(&[bank(98, 198)]),
+            None
+        );
         assert!(tracker.can_spawn_candidate(parent(97, 197)));
         assert_eq!(
-            tracker.select_winner_for_publication(&[(99, 199), (98, 198)]),
+            tracker.select_winner_for_publication(&[bank(99, 199), bank(98, 198)]),
             None
         );
         assert!(tracker.can_spawn_candidate(parent(97, 197)));
 
         assert_eq!(
-            tracker.select_winner_for_publication(&[(104, 204), (99, 199), (98, 198)]),
+            tracker.select_winner_for_publication(&[bank(104, 204), bank(99, 199), bank(98, 198)]),
             Some(winner)
         );
     }
@@ -334,11 +344,11 @@ mod tests {
     fn descendant_root_selects_parent_through_boundary_child() {
         let mut tracker = SnapshotPublicationTracker::new();
         let winner = parent(99, 199);
-        tracker.record_spawned_candidate(winner, (104, 204));
+        tracker.record_spawned_candidate(winner, bank(104, 204));
         assert_eq!(tracker.record_candidate_written(winner), None);
 
         assert_eq!(
-            tracker.select_winner_for_publication(&[(110, 210), (104, 204), (99, 199)]),
+            tracker.select_winner_for_publication(&[bank(110, 210), bank(104, 204), bank(99, 199)]),
             Some(winner)
         );
     }
@@ -347,13 +357,16 @@ mod tests {
     fn completing_parent_worker_without_rooted_child_does_not_publish() {
         let mut tracker = SnapshotPublicationTracker::new();
         let candidate = parent(99, 199);
-        tracker.record_spawned_candidate(candidate, (104, 204));
+        tracker.record_spawned_candidate(candidate, bank(104, 204));
 
-        assert_eq!(tracker.select_winner_for_publication(&[(99, 199)]), None);
+        assert_eq!(
+            tracker.select_winner_for_publication(&[bank(99, 199)]),
+            None
+        );
         assert_eq!(tracker.record_candidate_written(candidate), None);
         assert!(tracker.can_spawn_candidate(parent(97, 197)));
         assert_eq!(
-            tracker.select_winner_for_publication(&[(104, 204), (99, 199)]),
+            tracker.select_winner_for_publication(&[bank(104, 204), bank(99, 199)]),
             Some(candidate)
         );
     }
@@ -361,8 +374,8 @@ mod tests {
     #[test]
     fn shared_parent_children_are_idempotent_and_preserve_written_artifact() {
         let candidate = parent(99, 199);
-        let first_child = (104, 204);
-        let second_child = (105, 205);
+        let first_child = bank(104, 204);
+        let second_child = bank(105, 205);
         let mut tracker = SnapshotPublicationTracker::new();
         tracker.record_spawned_candidate(candidate, first_child);
         assert!(tracker.record_boundary_child_for_existing_candidate(candidate, first_child));
@@ -392,13 +405,16 @@ mod tests {
     fn boundary_child_must_match_bank_id() {
         let mut tracker = SnapshotPublicationTracker::new();
         let candidate = parent(99, 199);
-        tracker.record_spawned_candidate(candidate, (104, 204));
+        tracker.record_spawned_candidate(candidate, bank(104, 204));
         assert_eq!(tracker.record_candidate_written(candidate), None);
 
-        assert_eq!(tracker.select_winner_for_publication(&[(104, 999)]), None);
+        assert_eq!(
+            tracker.select_winner_for_publication(&[bank(104, 999)]),
+            None
+        );
         assert!(tracker.can_spawn_candidate(parent(97, 197)));
         assert_eq!(
-            tracker.select_winner_for_publication(&[(104, 204)]),
+            tracker.select_winner_for_publication(&[bank(104, 204)]),
             Some(candidate)
         );
     }
@@ -408,12 +424,18 @@ mod tests {
         let mut tracker = SnapshotPublicationTracker::new();
         let loser = parent(98, 198);
         let winner = parent(99, 199);
-        tracker.record_spawned_candidate(loser, (100, 200));
-        tracker.record_spawned_candidate(winner, (104, 204));
+        tracker.record_spawned_candidate(loser, bank(100, 200));
+        tracker.record_spawned_candidate(winner, bank(104, 204));
 
-        assert_eq!(tracker.select_winner_for_publication(&[(104, 204)]), None);
+        assert_eq!(
+            tracker.select_winner_for_publication(&[bank(104, 204)]),
+            None
+        );
         assert!(!tracker.can_spawn_candidate(parent(97, 197)));
-        assert_eq!(tracker.select_winner_for_publication(&[(100, 200)]), None);
+        assert_eq!(
+            tracker.select_winner_for_publication(&[bank(100, 200)]),
+            None
+        );
         assert_eq!(tracker.record_candidate_written(loser), None);
         assert_eq!(tracker.record_candidate_written(winner), Some(winner));
     }
