@@ -9,7 +9,7 @@ use {
     },
 };
 
-const REMOTE: &str = "https://github.com/anza-xyz/agave.git";
+const REMOTE: &str = "https://github.com/jito-foundation/jito-solana.git";
 const RAW_BASE: &str = "https://raw.githubusercontent.com/anza-xyz/agave";
 
 fn ls_remote(flag: &str) -> Result<Vec<String>> {
@@ -97,7 +97,8 @@ pub async fn channel_pins(client: &reqwest::Client) -> Result<ChannelPins> {
 }
 
 pub async fn workspace_version(client: &reqwest::Client, bv: BranchVersion) -> Result<Version> {
-    let url = format!("{RAW_BASE}/{bv}/Cargo.toml");
+    let url =
+        format!("https://raw.githubusercontent.com/jito-foundation/jito-solana/{bv}/Cargo.toml");
     let resp = client
         .get(&url)
         .send()
