@@ -10,7 +10,7 @@ use {
         transaction_state_container::StateContainer,
     },
     crate::{
-        bam_dependencies::{BamOutboundMessage, TipProcessingDependencies},
+        bam_dependencies::{BamOutboundMessage, TipProcessingDependencies, TipProgramsError},
         banking_stage::{
             consumer::Consumer,
             decision_maker::BufferedPacketsDecision,
@@ -85,6 +85,7 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     shared_leader_state: SharedLeaderState,
     tip_processing: Option<(Consumer, TipProcessingDependencies)>,
     tip_retry_at: Option<(BankId, Instant)>,
+    tip_err: Option<(Slot, TipProgramsError)>,
 
     /// Prepared Bank whose cost tracker holds the current reservations.
     admission_bank: Option<(BankId, Slot)>,
@@ -195,6 +196,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             shared_leader_state,
             tip_processing,
             tip_retry_at: None,
+            tip_err: None,
             admission_bank: None,
             prepared_tip_config: None,
             inflight_reserved_cost: 0,
@@ -316,7 +318,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 return Ok(0);
             }
             if let Some((consumer, tips, builder)) = &tip_processing
-                && !tips.process_tip_programs(consumer, admission_bank, builder)
+                && !tips.process_tip_programs(consumer, admission_bank, builder, &mut self.tip_err)
             {
                 // The controller busy-polls; do not sign/execute a failing crank every poll.
                 self.tip_retry_at = Some((
