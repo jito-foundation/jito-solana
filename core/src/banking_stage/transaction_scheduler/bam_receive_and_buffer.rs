@@ -30,7 +30,7 @@ use {
     },
     ahash::HashSet,
     bytes::Bytes,
-    crossbeam_channel::{RecvTimeoutError, TryRecvError},
+    crossbeam_channel::{RecvTimeoutError, TryRecvError, TrySendError},
     histogram::Histogram,
     itertools::Itertools,
     jito_protos::proto::bam_types::{
@@ -112,7 +112,7 @@ impl BamReceiveAndBuffer {
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         let (parsed_batch_sender, parsed_batch_receiver) =
-            crossbeam_channel::unbounded::<ParsedBatch>();
+            crossbeam_channel::bounded::<ParsedBatch>(PARSED_BATCH_CHANNEL_CAPACITY);
         let (recv_stats_sender, recv_stats_receiver) =
             crossbeam_channel::unbounded::<ReceivingStats>();
         #[cfg(test)]
@@ -305,10 +305,17 @@ impl BamReceiveAndBuffer {
                     }
                 };
 
-                stats.num_buffered = stats
-                    .num_buffered
-                    .saturating_add(parsed_batch.txns_max_age.len());
-                let _ = parsed_batch_sender.try_send(parsed_batch);
+                let packet_count = parsed_batch.txns_max_age.len();
+                match parsed_batch_sender.try_send(parsed_batch) {
+                    Ok(()) => {
+                        stats.num_buffered = stats.num_buffered.saturating_add(packet_count);
+                    }
+                    Err(TrySendError::Full(batch)) => {
+                        stats.num_dropped_on_capacity += 1;
+                        Self::send_container_full_txn_batch_result(&response_sender, batch.seq_id);
+                    }
+                    Err(TrySendError::Disconnected(_)) => return,
+                }
             }
             debug_assert_eq!(verification_result_offset, verification_results.len());
             verification_results.clear();
@@ -353,21 +360,22 @@ impl BamReceiveAndBuffer {
             ));
     }
 
-    fn send_container_full_txn_batch_result(&self, seq_id: u32) {
-        let _ = self
-            .response_sender
-            .try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                jito_protos::proto::bam_types::AtomicTxnBatchResult {
-                    seq_id,
-                    result: Some(atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Reason::SchedulingError(
-                                SchedulingError::ContainerFull as i32,
-                            )),
-                        },
-                    )),
-                },
-            ));
+    fn send_container_full_txn_batch_result(
+        response_sender: &TokioSender<BamOutboundMessage>,
+        seq_id: u32,
+    ) {
+        let _ = response_sender.try_send(BamOutboundMessage::AtomicTxnBatchResult(
+            jito_protos::proto::bam_types::AtomicTxnBatchResult {
+                seq_id,
+                result: Some(atomic_txn_batch_result::Result::NotCommitted(
+                    jito_protos::proto::bam_types::NotCommitted {
+                        reason: Some(Reason::SchedulingError(
+                            SchedulingError::ContainerFull as i32,
+                        )),
+                    },
+                )),
+            },
+        ));
     }
 
     fn should_buffer_batches(&self) -> bool {
@@ -819,6 +827,8 @@ impl BamReceiveAndBuffer {
 
 // nomenclature taken from the agave versions of these constants
 const ATOMIC_TXN_BATCH_BURST: usize = 128;
+// Bound parsed work independently of the scheduler's transaction container.
+const PARSED_BATCH_CHANNEL_CAPACITY: usize = 1024;
 const TIMEOUT: Duration = Duration::from_millis(1);
 
 impl ReceiveAndBuffer for BamReceiveAndBuffer {
@@ -903,7 +913,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 .is_none()
             {
                 stats.num_dropped_on_capacity += 1;
-                self.send_container_full_txn_batch_result(batch.seq_id);
+                Self::send_container_full_txn_batch_result(&self.response_sender, batch.seq_id);
             } else {
                 self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
             }
@@ -1425,6 +1435,71 @@ pub(super) mod tests {
 
         metrics.sigverify_metrics.oversized_packets = 1;
         assert!(metrics.has_data());
+    }
+
+    #[test]
+    fn test_parsed_queue_overflow_and_shutdown() {
+        let (bank_forks, mint) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let (sender, raw_receiver) = unbounded();
+        let (_exit, receiver, _, mut responses) =
+            setup_bam_receive_and_buffer(raw_receiver, bank_forks, None, HashSet::new());
+        assert_eq!(
+            receiver.parsed_batch_receiver.capacity(),
+            Some(PARSED_BATCH_CHANNEL_CAPACITY)
+        );
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: (0..=PARSED_BATCH_CHANNEL_CAPACITY)
+                    .map(|seq_id| transfer_batch(&mint, &bank, seq_id as u32))
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let response = loop {
+            if let Ok(response) = responses.try_recv() {
+                break response;
+            }
+            assert!(Instant::now() < deadline, "queue overflow was not reported");
+            std::thread::sleep(TIMEOUT);
+        };
+        let BamOutboundMessage::AtomicTxnBatchResult(result) = response else {
+            panic!("expected batch result");
+        };
+        assert_eq!(result.seq_id, PARSED_BATCH_CHANNEL_CAPACITY as u32);
+        assert!(matches!(
+            result.result,
+            Some(atomic_txn_batch_result::Result::NotCommitted(
+                jito_protos::proto::bam_types::NotCommitted {
+                    reason: Some(Reason::SchedulingError(reason)),
+                }
+            )) if reason == SchedulingError::ContainerFull as i32
+        ));
+        assert_eq!(
+            receiver.parsed_batch_receiver.len(),
+            PARSED_BATCH_CHANNEL_CAPACITY
+        );
+
+        // Drop must finish even while the parsed queue is full and ingress is connected.
+        let parsed_batches = receiver.parsed_batch_receiver.clone();
+        let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(1);
+        let drop_thread = std::thread::spawn(move || {
+            drop(receiver);
+            shutdown_sender.send(()).unwrap();
+        });
+        shutdown_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("parser shutdown blocked on a full queue");
+        drop_thread.join().unwrap();
+        assert_eq!(
+            parsed_batches
+                .try_iter()
+                .map(|batch| batch.seq_id)
+                .collect::<Vec<_>>(),
+            (0..PARSED_BATCH_CHANNEL_CAPACITY as u32).collect::<Vec<_>>()
+        );
     }
 
     #[test]
