@@ -18,6 +18,7 @@ use {
         transaction_commit_result::{TransactionCommitResult, TransactionCommitResultExtensions},
         transaction_processing_result::TransactionProcessingResult,
     },
+    solana_transaction::sanitized::SanitizedTransaction,
     solana_transaction_error::TransactionError,
     std::{num::Saturating, sync::Arc},
 };
@@ -67,12 +68,23 @@ impl Committer {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         processed_counts: &ProcessedTransactionCounts,
     ) -> (u64, Vec<CommitTransactionDetails>) {
-        let (commit_results, commit_time_us) = measure_us!(bank.commit_transactions(
-            batch.sanitized_transactions(),
-            processing_results,
-            processed_counts,
-            &mut execute_and_commit_timings.execute_timings,
-        ));
+        let ((commit_results, status_transactions), commit_time_us) = measure_us!({
+            let status_transactions = self.transaction_status_sender.as_ref().map(|_| {
+                batch
+                    .sanitized_transactions()
+                    .iter()
+                    .map(|tx| tx.as_sanitized_transaction().into_owned())
+                    .collect_vec()
+            });
+            let commit_results = bank.commit_transactions_with_transaction_refs(
+                batch.sanitized_transactions(),
+                processing_results,
+                processed_counts,
+                &mut execute_and_commit_timings.execute_timings,
+                status_transactions.as_deref(),
+            );
+            (commit_results, status_transactions)
+        });
         execute_and_commit_timings.commit_us = commit_time_us;
 
         let commit_transaction_statuses = Self::transaction_details(&commit_results);
@@ -99,6 +111,7 @@ impl Committer {
                 batch,
                 balance_collector,
                 starting_transaction_index,
+                status_transactions,
             );
         });
         execute_and_commit_timings.find_and_send_votes_us = find_and_send_votes_us;
@@ -132,16 +145,13 @@ impl Committer {
         batch: &TransactionBatch<impl TransactionWithMeta>,
         balance_collector: Option<BalanceCollector>,
         starting_transaction_index: Option<usize>,
+        status_transactions: Option<Vec<SanitizedTransaction>>,
     ) {
         if let Some(transaction_status_sender) = &self.transaction_status_sender {
             let sanitized_transactions = batch.sanitized_transactions();
 
-            // Clone `SanitizedTransaction` out of `RuntimeTransaction`, this is
-            // done to send over the status sender.
-            let txs = sanitized_transactions
-                .iter()
-                .map(|tx| tx.as_sanitized_transaction().into_owned())
-                .collect_vec();
+            // Account notifications have finished borrowing these transactions.
+            let txs = status_transactions.expect("status transactions were prepared before commit");
             let mut transaction_index = Saturating(starting_transaction_index.unwrap_or_default());
             let (batch_transaction_indexes, tx_costs): (Vec<_>, Vec<_>) = commit_results
                 .iter()
