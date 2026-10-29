@@ -862,7 +862,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         }
 
         let deadline = (!buffering).then(|| Instant::now() + Duration::from_millis(100));
-        loop {
+        for _ in 0..ATOMIC_TXN_BATCH_BURST {
             let batch = if let Some(deadline) = deadline {
                 let (result, receive_time_us) =
                     measure_us!(self.parsed_batch_receiver.recv_deadline(deadline));
@@ -1327,7 +1327,10 @@ pub(super) mod tests {
         let mut prevalidated = Vec::new();
         let mut packet_data = Vec::new();
         let mut verification_results = Vec::new();
-        let mut batches = vec![MultipleAtomicTxnBatch { batches }];
+        let mut batches = vec![MultipleAtomicTxnBatch {
+            batches,
+            ..Default::default()
+        }];
         let stats = BamReceiveAndBuffer::batch_verify(
             &thread_pool,
             &mut batches,
@@ -1422,6 +1425,47 @@ pub(super) mod tests {
 
         metrics.sigverify_metrics.oversized_packets = 1;
         assert!(metrics.has_data());
+    }
+
+    #[test]
+    fn test_receive_pass_is_bounded_and_preserves_fifo() {
+        let (bank_forks, mint) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let (sender, raw_receiver) = unbounded();
+        let (_exit, mut receiver, _, _) =
+            setup_bam_receive_and_buffer(raw_receiver, bank_forks, None, HashSet::new());
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: (0..=ATOMIC_TXN_BATCH_BURST)
+                    .map(|seq_id| transfer_batch(&mint, &bank, seq_id as u32))
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+        receiver.wait_for_parsed_batches(ATOMIC_TXN_BATCH_BURST + 1);
+        let mut container =
+            TransactionStateContainer::with_capacity(2 * (ATOMIC_TXN_BATCH_BURST + 1));
+
+        let decision = BufferedPacketsDecision::Consume(bank);
+        receiver
+            .receive_and_buffer_packets(&mut container, &decision)
+            .unwrap();
+        assert_eq!(container.queue_size(), ATOMIC_TXN_BATCH_BURST);
+        assert_eq!(receiver.parsed_batch_receiver.len(), 1);
+
+        receiver
+            .receive_and_buffer_packets(&mut container, &decision)
+            .unwrap();
+        let seq_ids = (0..=ATOMIC_TXN_BATCH_BURST)
+            .map(|_| {
+                let id = container.pop().unwrap();
+                container.get_batch(id.id).unwrap().3
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            seq_ids,
+            (0..=ATOMIC_TXN_BATCH_BURST as u32).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1572,6 +1616,7 @@ pub(super) mod tests {
             sender
                 .send(MultipleAtomicTxnBatch {
                     batches: vec![transfer_batch(&mint, &bank, 1)],
+                    ..Default::default()
                 })
                 .unwrap();
             // Observe the actual parser holding raw ingress before publishing the new bank.
@@ -1611,6 +1656,7 @@ pub(super) mod tests {
         sender
             .send(MultipleAtomicTxnBatch {
                 batches: vec![transfer_batch(&mint, &root, 1)],
+                ..Default::default()
             })
             .unwrap();
         receiver.wait_for_parsed_batches(1);
@@ -1645,6 +1691,7 @@ pub(super) mod tests {
         sender
             .send(MultipleAtomicTxnBatch {
                 batches: vec![bundle],
+                ..Default::default()
             })
             .unwrap();
 
@@ -1716,6 +1763,7 @@ pub(super) mod tests {
                     }],
                     max_schedule_slot: Slot::MAX,
                 }],
+                ..Default::default()
             })
             .unwrap();
 
@@ -2019,6 +2067,7 @@ pub(super) mod tests {
                 packets: vec![Packet::default(), Packet::default()],
                 max_schedule_slot: Slot::MAX,
             }],
+            ..Default::default()
         }];
         let mut prevalidated = Vec::new();
         let (stats, packet_count) =

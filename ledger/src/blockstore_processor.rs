@@ -290,10 +290,19 @@ pub enum BlockstoreProcessorError {
     ChainedBlockIdFailure(Slot, Slot),
 
     #[error("block component processor error: {0}")]
-    BlockComponentProcessor(#[from] BlockComponentProcessorError),
+    BlockComponentProcessor(#[source] BlockComponentProcessorError),
 
     #[error("bank hash mismatch at slot {0}: expected {1}, got {2}")]
     BankHashMismatch(Slot, Hash, Hash),
+}
+
+impl From<BlockComponentProcessorError> for BlockstoreProcessorError {
+    fn from(err: BlockComponentProcessorError) -> Self {
+        match err {
+            BlockComponentProcessorError::TransactionExecution(err) => err.into(),
+            err => Self::BlockComponentProcessor(err),
+        }
+    }
 }
 
 impl BlockstoreProcessorError {
@@ -1004,10 +1013,19 @@ impl ConfirmationProgress {
     }
 }
 
-struct AsyncVerificationResult {
-    poh_verify_elapsed: u64,
-    transaction_verify_elapsed: u64,
-    error: Option<BlockstoreProcessorError>,
+// return entries and signatures to the replay thread for deallocation to avoid creating unnecessary
+// arena contention from the pool workers
+enum AsyncVerificationResult {
+    Poh {
+        entries: Arc<VerificationBatch<Vec<entry::EntryVerificationData>>>,
+        elapsed_us: u64,
+        error: Option<BlockstoreProcessorError>,
+    },
+    Signatures {
+        signatures: Arc<VerificationBatch<UnverifiedSignatures<Bytes>>>,
+        elapsed_us: u64,
+        error: Option<BlockstoreProcessorError>,
+    },
 }
 
 // Wrapper used to track wall clock time for work that is split into multiple jobs and executed in
@@ -1059,9 +1077,9 @@ impl PohVerificationJob {
             warn!("Ledger proof of history failed at slot: {slot}");
             BlockstoreProcessorError::InvalidBlock(BlockError::InvalidEntryHash)
         });
-        let _ = result_sender.send(AsyncVerificationResult {
-            poh_verify_elapsed: elapsed_us,
-            transaction_verify_elapsed: 0,
+        let _ = result_sender.send(AsyncVerificationResult::Poh {
+            entries,
+            elapsed_us,
             error,
         });
     }
@@ -1113,9 +1131,9 @@ impl SignaturesVerificationJob {
                 });
             }
         }
-        let _ = result_sender.send(AsyncVerificationResult {
-            poh_verify_elapsed: 0,
-            transaction_verify_elapsed: elapsed_us,
+        let _ = result_sender.send(AsyncVerificationResult::Signatures {
+            signatures,
+            elapsed_us,
             error,
         });
     }
@@ -1329,22 +1347,34 @@ impl AsyncVerificationProgress {
         Ok(())
     }
 
-    fn apply_result(
-        &mut self,
-        AsyncVerificationResult {
-            poh_verify_elapsed,
-            transaction_verify_elapsed,
-            error,
-        }: AsyncVerificationResult,
-    ) {
+    fn apply_result(&mut self, result: AsyncVerificationResult) {
         self.pending_jobs = self
             .pending_jobs
             .checked_sub(1)
             .expect("verification result without a pending job");
-        self.poh_verify_elapsed = self.poh_verify_elapsed.saturating_add(poh_verify_elapsed);
-        self.transaction_verify_elapsed = self
-            .transaction_verify_elapsed
-            .saturating_add(transaction_verify_elapsed);
+
+        let error = match result {
+            AsyncVerificationResult::Poh {
+                entries,
+                elapsed_us,
+                error,
+            } => {
+                self.poh_verify_elapsed = self.poh_verify_elapsed.saturating_add(elapsed_us);
+                drop(entries);
+                error
+            }
+            AsyncVerificationResult::Signatures {
+                signatures,
+                elapsed_us,
+                error,
+            } => {
+                self.transaction_verify_elapsed =
+                    self.transaction_verify_elapsed.saturating_add(elapsed_us);
+                drop(signatures);
+                error
+            }
+        };
+
         if self.first_error.is_none() {
             self.first_error = error;
         }
@@ -1462,32 +1492,26 @@ pub fn confirm_slot(
                 let block_footer = match &marker {
                     VersionedBlockMarker::V1(marker) => marker.as_block_footer().cloned(),
                 };
-                if block_footer.is_some() {
-                    // The footer path mutates vote accounts directly to pay rewards.
-                    // All prior transactions must finish first so vote account view is deterministic.
-                    if let Some((result, execute_time)) = bank.wait_for_completed_scheduler() {
-                        timing.batch_execute.totals.accumulate(&execute_time);
-                        result?;
-                    }
-                }
                 if let Some(parent_bank) = bank.parent() {
                     let allow_initial_update_parent =
                         replay_starts_at_update_parent && marker.is_update_parent();
                     processor
                         .on_marker(
-                            bank.clone_without_scheduler(),
+                            bank,
                             parent_bank,
                             shred_version,
                             marker,
                             allow_initial_update_parent,
                             finalization_cert_sender,
                             migration_status,
+                            &mut timing.batch_execute.totals,
                         )
                         .inspect_err(|err| {
                             if !matches!(
                                 err,
                                 BlockComponentProcessorError::AbandonedBank(_)
                                     | BlockComponentProcessorError::AlpenglowMigrationTransition
+                                    | BlockComponentProcessorError::TransactionExecution(_)
                             ) {
                                 warn!(
                                     "BlockComponentProcessor::on_marker() for slot {slot} failed \

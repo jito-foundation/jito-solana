@@ -354,7 +354,7 @@ impl BamManager {
     }
 
     fn apply_builder_config(config: &ConfigResponse, dependencies: &BamDependencies) -> bool {
-        Self::update_tpu_config(config, dependencies);
+        Self::update_tpu_config(config, &dependencies.bam_tpu_info);
         Self::update_shred_socks_config(config, dependencies);
         let block_builder_updated = Self::update_block_engine_key_and_commission(
             config,
@@ -364,7 +364,10 @@ impl BamManager {
         block_builder_updated
     }
 
-    fn update_tpu_config(config: &ConfigResponse, dependencies: &BamDependencies) {
+    fn update_tpu_config(
+        config: &ConfigResponse,
+        bam_tpu_info: &ArcSwap<Option<(SocketAddr, SocketAddr)>>,
+    ) {
         let Some(tpu_info) = config.bam_config.as_ref() else {
             return;
         };
@@ -375,10 +378,12 @@ impl BamManager {
         ) else {
             return;
         };
+        // BAM reports legacy TPU ports; leave room for the +6 QUIC offset.
+        if tpu.port() > u16::MAX - 6 || tpu_fwd.port() > u16::MAX - 6 {
+            return;
+        }
         info!("Setting TPU={tpu}, TPU Forward={tpu_fwd} from BAM config");
-        dependencies
-            .bam_tpu_info
-            .store(Arc::new(Some((tpu, tpu_fwd))));
+        bam_tpu_info.store(Arc::new(Some((tpu, tpu_fwd))));
     }
 
     fn set_bam_disconnected(dependencies: &BamDependencies) {
@@ -408,25 +413,30 @@ impl BamManager {
         };
 
         let mut shred_receiver_addresses = ShredReceiverAddresses::new();
+        let mut processed = 0;
+        let mut invalid = 0;
         for socket in &bam_config.shred_socks {
+            processed += 1;
             let Some(addr) = Self::get_sockaddr(socket) else {
-                warn!(
-                    "Dropping invalid BAM shred receiver socket {}:{}",
-                    socket.ip, socket.port
-                );
+                invalid += 1;
                 continue;
             };
-            if shred_receiver_addresses.contains(&addr) {
-                continue;
+            if !shred_receiver_addresses.contains(&addr) {
+                shred_receiver_addresses.push(addr);
+                if shred_receiver_addresses.len() == MAX_SHRED_RECEIVER_ADDRESSES {
+                    break;
+                }
             }
-            if shred_receiver_addresses.len() >= MAX_SHRED_RECEIVER_ADDRESSES {
-                warn!(
-                    "Dropping excess BAM shred receiver socket {}:{}; maximum is {}",
-                    socket.ip, socket.port, MAX_SHRED_RECEIVER_ADDRESSES
-                );
-                continue;
-            }
-            shred_receiver_addresses.push(addr);
+        }
+        let ignored = bam_config.shred_socks.len() - shred_receiver_addresses.len();
+        if ignored != 0 {
+            let duplicate = processed - invalid - shred_receiver_addresses.len();
+            let unprocessed = bam_config.shred_socks.len() - processed;
+            warn!(
+                "Ignoring {ignored} BAM shred receiver socket(s): {invalid} invalid, {duplicate} \
+                 duplicate, {unprocessed} unprocessed after \
+                 {MAX_SHRED_RECEIVER_ADDRESSES}-address limit"
+            );
         }
 
         info!(
@@ -455,14 +465,23 @@ impl BamManager {
             .ok()
             .filter(|pubkey| *pubkey != Pubkey::default())
         else {
+            let raw_pubkey = &builder_info.builder_pubkey;
+            let pubkey_sample =
+                &raw_pubkey[..raw_pubkey.floor_char_boundary(raw_pubkey.len().min(64))];
+            let safe_pubkey_sample = pubkey_sample
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric())
+                .then_some(pubkey_sample);
             error!(
-                "Invalid block builder pubkey: {}",
-                builder_info.builder_pubkey
+                "Invalid block builder pubkey: {pubkey_sample:?} ({} bytes)",
+                raw_pubkey.len()
             );
             datapoint_warn!(
                 "bam_manager-pubkey_error",
                 ("count", 1, i64),
-                ("pubkey", builder_info.builder_pubkey, String),
+                ("field", "builder_pubkey", String),
+                ("pubkey", safe_pubkey_sample, Option<String>),
+                ("pubkey_len", raw_pubkey.len(), i64),
             );
             return false;
         };
@@ -485,10 +504,19 @@ impl BamManager {
         let pubkey = match Pubkey::from_str(&bam_info.prio_fee_recipient_pubkey) {
             Ok(pubkey) => pubkey,
             Err(error) => {
+                let raw_pubkey = &bam_info.prio_fee_recipient_pubkey;
+                let pubkey_sample =
+                    &raw_pubkey[..raw_pubkey.floor_char_boundary(raw_pubkey.len().min(64))];
+                let safe_pubkey_sample = pubkey_sample
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric())
+                    .then_some(pubkey_sample);
                 datapoint_warn!(
                     "bam_manager-pubkey_error",
                     ("count", 1, i64),
-                    ("pubkey", bam_info.prio_fee_recipient_pubkey, String),
+                    ("field", "prio_fee_recipient_pubkey", String),
+                    ("pubkey", safe_pubkey_sample, Option<String>),
+                    ("pubkey_len", raw_pubkey.len(), i64),
                     ("error", error.to_string(), String),
                 );
                 return false;
@@ -555,5 +583,58 @@ impl BamManager {
 
     pub fn join(self) -> std::thread::Result<()> {
         self.thread.join()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {super::*, jito_protos::proto::bam_types::BamConfig};
+
+    #[test]
+    fn test_tpu_and_shred_port_bounds() {
+        let bam_tpu_info = ArcSwap::from_pointee(None);
+        let socket = |port| Socket {
+            ip: Ipv4Addr::LOCALHOST.to_string(),
+            port,
+        };
+        let addr = |port| SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+
+        // Shred sockets use the shared parser without a QUIC offset.
+        for port in [65529, 65530, 65535] {
+            assert_eq!(
+                BamManager::get_sockaddr(&socket(port)),
+                Some(addr(port as u16))
+            );
+        }
+        for (tpu_port, tpu_fwd_port, accepted) in [
+            (65529, 65529, true),
+            (65530, 65529, false),
+            (65529, 65530, false),
+            (65535, 65529, false),
+            (65529, 65535, false),
+        ] {
+            let config = ConfigResponse {
+                bam_config: Some(BamConfig {
+                    tpu_sock: Some(socket(tpu_port)),
+                    tpu_fwd_sock: Some(socket(tpu_fwd_port)),
+                    ..BamConfig::default()
+                }),
+                ..ConfigResponse::default()
+            };
+            for previous in [None, Some((addr(8000), addr(8001)))] {
+                bam_tpu_info.store(Arc::new(previous));
+                BamManager::update_tpu_config(&config, &bam_tpu_info);
+                let expected = if accepted {
+                    Some((addr(tpu_port as u16), addr(tpu_fwd_port as u16)))
+                } else {
+                    previous
+                };
+                assert_eq!(
+                    **bam_tpu_info.load(),
+                    expected,
+                    "TPU ports ({tpu_port}, {tpu_fwd_port}), previous config {previous:?}",
+                );
+            }
+        }
     }
 }

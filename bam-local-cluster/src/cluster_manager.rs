@@ -1,13 +1,11 @@
 use {
     crate::config::{CustomValidatorConfig, LocalClusterConfig},
-    agave_feature_set::{FEATURE_NAMES, FeatureSet},
+    agave_feature_set::FeatureSet,
     anyhow::{Context, Result},
     log::{debug, error, info},
     solana_account::Account,
     solana_cluster_type::ClusterType,
-    solana_commitment_config::CommitmentConfig,
     solana_faucet::faucet::{Faucet, run_faucet},
-    solana_feature_gate_interface as feature,
     solana_fee_calculator::FeeRateGovernor,
     solana_genesis_config::GenesisConfig,
     solana_genesis_utils::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
@@ -21,13 +19,11 @@ use {
     solana_program_binaries::spl_programs,
     solana_pubkey::Pubkey,
     solana_rent::Rent,
-    solana_rpc_client::rpc_client::RpcClient,
     solana_runtime::{
         genesis_utils::{
-            ValidatorVoteKeypairs, activate_feature, create_genesis_config_with_leader_ex,
-            deactivate_features,
+            ValidatorVoteKeypairs, activate_alpenglow_at_genesis,
+            create_genesis_config_with_leader_ex,
         },
-        slot_params::slot_time_feature_ids,
         stake_utils::create_stake_account,
     },
     solana_shred_version::compute_shred_version,
@@ -36,15 +32,16 @@ use {
     solana_vote_program::vote_state,
     std::{
         borrow::Borrow,
-        net::SocketAddr,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
-        str::FromStr,
         sync::{Arc, Mutex},
         thread::sleep,
         time::Duration,
     },
-    tokio::{runtime::Runtime, signal},
+    tokio::{
+        runtime::Runtime,
+        signal::unix::{Signal, SignalKind, signal},
+    },
 };
 
 pub struct BamValidator {
@@ -69,12 +66,12 @@ impl BamValidator {
         expected_bank_hash: Option<String>,
         identity_path: &PathBuf,
         vote_path: &PathBuf,
-        merkle_root_upload_authority: &str,
+        merkle_root_upload_authority: &Pubkey,
         runtime: &Runtime,
         config: &CustomValidatorConfig,
         quiet: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let validator_binary = format!("{}/agave-validator", cluster_config.validator_build_path);
+        let validator_binary = cluster_config.validator_build_path.join("agave-validator");
 
         let mut cmd = Command::new(validator_binary);
 
@@ -96,7 +93,7 @@ impl BamValidator {
         .arg(format!(
             "{dynamic_port_range_start}-{dynamic_port_range_end}"
         ))
-        .arg("--experimental-poh-pinned-cpu-core")
+        .arg("--poh-pinned-cpu-core")
         .arg(poh_pinned_cpu_core.to_string())
         .arg("--no-wait-for-vote-to-start-leader")
         .arg("--no-os-network-limits-test")
@@ -108,9 +105,8 @@ impl BamValidator {
         .arg("--rpc-port")
         .arg(rpc_port.to_string())
         .arg("--rpc-faucet-address")
-        .arg(&cluster_config.faucet_address)
+        .arg(cluster_config.faucet_address.to_string())
         .arg("--rpc-pubsub-enable-block-subscription")
-        .arg("--rpc-pubsub-enable-vote-subscription")
         .arg("--account-index")
         .arg("program-id")
         .arg("--allow-private-addr")
@@ -126,11 +122,11 @@ impl BamValidator {
         .arg("--bam-url")
         .arg(&cluster_config.bam_url)
         .arg("--tip-distribution-program-pubkey")
-        .arg(&cluster_config.tip_distribution_program_id)
+        .arg(cluster_config.tip_distribution_program_id.to_string())
         .arg("--tip-payment-program-pubkey")
-        .arg(&cluster_config.tip_payment_program_id)
+        .arg(cluster_config.tip_payment_program_id.to_string())
         .arg("--merkle-root-upload-authority")
-        .arg(merkle_root_upload_authority)
+        .arg(merkle_root_upload_authority.to_string())
         .arg("--commission-bps")
         .arg("100");
 
@@ -143,7 +139,7 @@ impl BamValidator {
         }
 
         if let Some(bind_address) = &cluster_config.bind_address {
-            cmd.arg("--bind-address").arg(bind_address);
+            cmd.arg("--bind-address").arg(bind_address.to_string());
         }
 
         if let Some(gossip_host) = &cluster_config.gossip_host {
@@ -158,9 +154,9 @@ impl BamValidator {
             cmd.arg("--geyser-plugin-config").arg(geyser_config);
         }
 
-        if let Some(limit_ledger_size) = cluster_config.limit_ledger_size {
-            cmd.arg("--limit-ledger-size")
-                .arg(limit_ledger_size.to_string());
+        if let Some(limit_blockstore_size) = cluster_config.limit_blockstore_size {
+            cmd.arg("--limit-blockstore-size")
+                .arg(limit_blockstore_size.to_string());
         }
 
         info!("Starting {node_name} node with command: {cmd:?}");
@@ -215,9 +211,9 @@ impl BamValidator {
 
     pub fn get_bank_hash(
         ledger_path: &Path,
-        ledger_tool_build_path: &str,
+        ledger_tool_build_path: &Path,
     ) -> Result<String, anyhow::Error> {
-        let ledger_tool_binary = format!("{ledger_tool_build_path}/agave-ledger-tool");
+        let ledger_tool_binary = ledger_tool_build_path.join("agave-ledger-tool");
 
         let mut cmd = std::process::Command::new(ledger_tool_binary);
 
@@ -337,9 +333,9 @@ impl BamValidator {
 
     fn create_snapshot(
         validator_ledger_path: &Path,
-        ledger_tool_build_path: &str,
+        ledger_tool_build_path: &Path,
     ) -> anyhow::Result<()> {
-        let ledger_tool_binary = format!("{ledger_tool_build_path}/agave-ledger-tool");
+        let ledger_tool_binary = ledger_tool_build_path.join("agave-ledger-tool");
 
         let mut cmd = Command::new(ledger_tool_binary);
 
@@ -365,56 +361,19 @@ impl BamValidator {
     }
 }
 
-fn slot_time_reduction_feature_id(slot_time_ms: u64) -> Result<Option<Pubkey>> {
-    match slot_time_ms {
-        400 => Ok(None),
-        350 => Ok(Some(agave_feature_set::reduce_slot_time_to_350ms::id())),
-        300 => Ok(Some(agave_feature_set::reduce_slot_time_to_300ms::id())),
-        250 => Ok(Some(agave_feature_set::reduce_slot_time_to_250ms::id())),
-        200 => Ok(Some(agave_feature_set::reduce_slot_time_to_200ms::id())),
-        _ => anyhow::bail!(
-            "unsupported slot_time_ms {slot_time_ms}; expected one of 400, 350, 300, 250, 200"
-        ),
-    }
-}
-
-fn activate_configured_slot_time_feature(
-    genesis_config: &mut GenesisConfig,
-    slot_time_ms: Option<u64>,
-) -> Result<()> {
-    let Some(slot_time_ms) = slot_time_ms else {
-        return Ok(());
-    };
-
-    let slot_time_features = slot_time_feature_ids().to_vec();
-    deactivate_features(genesis_config, &slot_time_features);
-
-    if let Some(feature_id) = slot_time_reduction_feature_id(slot_time_ms)? {
-        info!("Activating slot-time feature for {slot_time_ms}ms slots");
-        activate_feature(genesis_config, feature_id);
-    } else {
-        info!("Using default 400ms slot time");
-    }
-
-    Ok(())
-}
-
-fn activate_configured_tx_v1_feature(genesis_config: &mut GenesisConfig, enable_tx_v1: bool) {
-    let tx_v1_feature = vec![agave_feature_set::enable_tx_v1::id()];
-    deactivate_features(genesis_config, &tx_v1_feature);
-
-    if enable_tx_v1 {
-        info!("Activating transaction v1 feature");
-        activate_feature(genesis_config, agave_feature_set::enable_tx_v1::id());
-    } else {
-        info!("Deactivating transaction v1 feature");
+// A child process outlives its handle, so kill the validator when its handle drops: this stops
+// the validators already started when startup fails; shutdown has killed them already.
+impl Drop for BamValidator {
+    fn drop(&mut self) {
+        let _ = self.kill();
     }
 }
 
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
-    skip_last_validator: bool,
     runtime: Runtime,
+    sigint: Signal,
+    sigterm: Signal,
 }
 
 impl BamLocalCluster {
@@ -422,6 +381,7 @@ impl BamLocalCluster {
         config: LocalClusterConfig,
         quiet: bool,
         skip_last_validator: bool,
+        features: Option<&crate::features::ResolvedFeatures>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         const BOOTSTRAP_GOSSIP: &str = "127.0.0.1:8001";
         const BOOTSTRAP_GOSSIP_PORT: u16 = 8001;
@@ -454,22 +414,28 @@ impl BamLocalCluster {
             // has TVU IP of 127.0.0.1. See:
             // https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
             ClusterType::Development,
-            config.hashes_per_tick,
-            config.slot_time_ms,
-            config.enable_tx_v1,
+            features,
         )?;
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
+        // Listen before any validator starts, so a SIGINT or SIGTERM during startup ends the
+        // cluster once it runs instead of killing the launcher and orphaning the validators.
+        let (sigint, sigterm) = {
+            let _runtime = runtime.enter();
+            (
+                signal(SignalKind::interrupt())?,
+                signal(SignalKind::terminate())?,
+            )
+        };
 
         // Start faucet
-        let faucet_address = SocketAddr::from_str(&config.faucet_address)?;
         let faucet = Arc::new(Mutex::new(Faucet::new(
             genesis_config_info.mint_keypair.insecure_clone(),
             None,
             None,
             None,
         )));
-        runtime.spawn(run_faucet(faucet, faucet_address, None));
+        runtime.spawn(run_faucet(faucet, config.faucet_address, None));
 
         let mut validators = Vec::new();
         let mut expected_bank_hash = None;
@@ -494,23 +460,14 @@ impl BamLocalCluster {
                 .into());
             }
 
-            if !is_bootstrap {
-                create_new_ledger(
-                    &ledger_path,
-                    &genesis_config_info.genesis_config,
-                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
-                    LedgerColumnOptions::default(),
-                )?;
-            }
-            // Create ledger and snapshot if bootstrap; other validators need to have snapshot
-            // to download from the bootstrap validator to start
+            create_new_ledger(
+                &ledger_path,
+                &genesis_config_info.genesis_config,
+                MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
+                LedgerColumnOptions::default(),
+            )?;
+            // The other validators download the bootstrap validator's snapshot to start.
             if is_bootstrap {
-                create_new_ledger(
-                    &ledger_path,
-                    &genesis_config_info.genesis_config,
-                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
-                    LedgerColumnOptions::default(),
-                )?;
                 BamValidator::create_snapshot(&ledger_path, &config.ledger_tool_build_path)?;
 
                 info!("Getting bank hash for bootstrap validator");
@@ -575,22 +532,20 @@ impl BamLocalCluster {
 
         Ok(Self {
             validators,
-            skip_last_validator,
             runtime,
+            sigint,
+            sigterm,
         })
     }
 
     /// Similar to `create_genesis_config_with_vote_accounts_and_cluster_type` but with
     /// real rent and real fees.
-    #[allow(deprecated)]
     pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
         mint_lamports: u64,
         voting_keypairs: &[impl Borrow<ValidatorVoteKeypairs>],
         stakes: Vec<u64>,
         cluster_type: ClusterType,
-        hashes_per_tick: Option<u64>,
-        slot_time_ms: Option<u64>,
-        enable_tx_v1: bool,
+        features: Option<&crate::features::ResolvedFeatures>,
     ) -> Result<GenesisConfigInfo> {
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
@@ -623,42 +578,12 @@ impl BamLocalCluster {
             &FeatureSet::all_enabled(),
             vec![],
         );
-        if let Some(hashes_per_tick) = hashes_per_tick {
-            genesis_config.poh_config.hashes_per_tick = Some(hashes_per_tick);
+        if let Some(features) = features {
+            features.apply(&mut genesis_config);
+        } else {
+            // This release's genesis helper skips Alpenglow, even when all features are enabled.
+            activate_alpenglow_at_genesis(&mut genesis_config);
         }
-
-        // copy features from mainnet-beta
-        let rpc_client = RpcClient::new_with_commitment(
-            "https://api.mainnet-beta.solana.com",
-            CommitmentConfig::confirmed(),
-        );
-        let feature_set_keys = FEATURE_NAMES.keys().cloned().collect::<Vec<_>>();
-        let feature_set_keys_chunks = feature_set_keys.chunks(100);
-        for chunk in feature_set_keys_chunks {
-            info!("Getting features from mainnet-beta...");
-            let response = rpc_client
-                .get_multiple_accounts(chunk)
-                .expect("Failed to get features from mainnet-beta");
-            for (pubkey, account) in chunk.iter().zip(response) {
-                if let Some(account) = account
-                    && let Some(feature) = feature::from_account(&account)
-                    && feature.activated_at.is_some()
-                {
-                    info!("Activating feature: {:?}", FEATURE_NAMES.get(pubkey));
-                    activate_feature(&mut genesis_config, *pubkey);
-                }
-            }
-        }
-        // needed for afterburner program
-        info!("Activating remaining compute units syscall enabled");
-        activate_feature(
-            &mut genesis_config,
-            agave_feature_set::remaining_compute_units_syscall_enabled::id(),
-        );
-
-        activate_feature(&mut genesis_config, agave_feature_set::vote_state_v4::id());
-        activate_configured_slot_time_feature(&mut genesis_config, slot_time_ms)?;
-        activate_configured_tx_v1_feature(&mut genesis_config, enable_tx_v1);
 
         let mut genesis_config_info = GenesisConfigInfo {
             genesis_config,
@@ -708,8 +633,6 @@ impl BamLocalCluster {
             ]);
         }
 
-        genesis_config_info.genesis_config.fee_rate_governor = FeeRateGovernor::default();
-
         // Add SPL programs
         for (pubkey, account) in spl_programs(&genesis_config_info.genesis_config.rent) {
             genesis_config_info
@@ -720,22 +643,21 @@ impl BamLocalCluster {
         Ok(genesis_config_info)
     }
 
-    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Runs until Ctrl+C, SIGTERM, or a validator exits, then stops the validators.
+    pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Start process monitoring
         let validators_ptr = self.validators.clone();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
 
-        let skip_last_validator = self.skip_last_validator;
         self.runtime.spawn(async move {
-            Self::monitor_validators(validators_ptr, skip_last_validator, tx).await;
+            Self::monitor_validators(validators_ptr, tx).await;
         });
 
         // Wait for Ctrl+C, SIGTERM, or validator death
-        self.runtime.block_on(async {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let (sigint, sigterm) = (&mut self.sigint, &mut self.sigterm);
+        let result = self.runtime.block_on(async {
             tokio::select! {
-                _ = signal::ctrl_c() => {
+                Some(_) = sigint.recv() => {
                     info!("Received Ctrl+C, shutting down...");
                 }
                 Some(_) = sigterm.recv() => {
@@ -743,35 +665,31 @@ impl BamLocalCluster {
                 }
                 _ = &mut rx => {
                     error!("A validator died, shutting down cluster...");
+                    return Err("a validator exited".into());
                 }
             }
             Ok::<(), Box<dyn std::error::Error>>(())
-        })?;
-
-        Ok(())
+        });
+        self.shutdown();
+        result
     }
 
     async fn monitor_validators(
         validators: std::sync::Arc<std::sync::Mutex<Vec<BamValidator>>>,
-        skip_last_validator: bool,
         exit_tx: tokio::sync::oneshot::Sender<()>,
     ) {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
             if let Ok(mut validators_guard) = validators.lock() {
-                let valid_idx_limit = validators_guard.len().saturating_sub(1);
                 for (i, validator) in validators_guard.iter_mut().enumerate() {
                     if !validator.is_running() {
                         error!(
                             "Validator process {} ({}) is not running - exiting cluster",
                             i, validator.node_name
                         );
-                        // Signal exit and return
-                        if !skip_last_validator || i < valid_idx_limit {
-                            let _ = exit_tx.send(());
-                            return;
-                        }
+                        let _ = exit_tx.send(());
+                        return;
                     } else {
                         debug!(
                             "Validator process {} ({}) is running",
@@ -783,7 +701,7 @@ impl BamLocalCluster {
         }
     }
 
-    pub fn shutdown(self) {
+    fn shutdown(self) {
         info!("Shutting down cluster...");
 
         // Terminate all validator processes
@@ -800,117 +718,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slot_time_reduction_feature_id_maps_supported_durations() {
-        assert_eq!(slot_time_reduction_feature_id(400).unwrap(), None);
-        assert_eq!(
-            slot_time_reduction_feature_id(350).unwrap(),
-            Some(agave_feature_set::reduce_slot_time_to_350ms::id())
-        );
-        assert_eq!(
-            slot_time_reduction_feature_id(300).unwrap(),
-            Some(agave_feature_set::reduce_slot_time_to_300ms::id())
-        );
-        assert_eq!(
-            slot_time_reduction_feature_id(250).unwrap(),
-            Some(agave_feature_set::reduce_slot_time_to_250ms::id())
-        );
-        assert_eq!(
-            slot_time_reduction_feature_id(200).unwrap(),
-            Some(agave_feature_set::reduce_slot_time_to_200ms::id())
-        );
-    }
-
-    #[test]
-    fn slot_time_reduction_feature_id_rejects_unsupported_duration() {
-        let err = slot_time_reduction_feature_id(225).unwrap_err();
-        assert!(err.to_string().contains("unsupported slot_time_ms 225"));
-    }
-
-    #[test]
-    fn activate_configured_slot_time_feature_adds_feature_account_to_genesis() {
-        let mut genesis_config = GenesisConfig::default();
-
-        activate_configured_slot_time_feature(&mut genesis_config, Some(200)).unwrap();
-
-        assert!(
-            genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::reduce_slot_time_to_200ms::id())
-        );
-    }
-
-    #[test]
-    fn activate_configured_slot_time_feature_replaces_development_default_slot_time_features() {
-        let mut genesis_config = GenesisConfig::default();
-        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
-            activate_feature(&mut genesis_config, feature_id);
-        }
-
-        activate_configured_slot_time_feature(&mut genesis_config, Some(350)).unwrap();
-
-        assert!(
-            genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::reduce_slot_time_to_350ms::id())
-        );
-        assert!(
-            !genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::reduce_slot_time_to_300ms::id())
-        );
-        assert!(
-            !genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::reduce_slot_time_to_250ms::id())
-        );
-        assert!(
-            !genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::reduce_slot_time_to_200ms::id())
-        );
-    }
-
-    #[test]
-    fn activate_configured_slot_time_feature_can_restore_400ms_default() {
-        let mut genesis_config = GenesisConfig::default();
-        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
-            activate_feature(&mut genesis_config, feature_id);
-        }
-
-        activate_configured_slot_time_feature(&mut genesis_config, Some(400)).unwrap();
-
-        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
-            assert!(
-                !genesis_config.accounts.contains_key(&feature_id),
-                "explicit 400ms slot time should deactivate feature {feature_id}"
+    fn default_genesis_starts_with_alpenglow() {
+        let genesis = BamLocalCluster::create_genesis_config_with_vote_accounts_and_cluster_type(
+            LAMPORTS_PER_SOL,
+            &[ValidatorVoteKeypairs::new_rand()],
+            vec![DEFAULT_NODE_STAKE],
+            ClusterType::Development,
+            None,
+        )
+        .unwrap()
+        .genesis_config;
+        for id in agave_feature_set::FEATURE_NAMES.keys() {
+            assert_eq!(
+                solana_feature_gate_interface::from_account(&genesis.accounts[id])
+                    .unwrap()
+                    .activated_at,
+                Some(0),
+                "feature {id} should be active at genesis"
             );
         }
+        assert_eq!(genesis.poh_config.hashes_per_tick, None);
+        let (bank, _bank_forks) =
+            solana_runtime::bank::Bank::new_with_bank_forks_for_tests(&genesis);
+        assert!(bank.is_alpenglow());
+        assert!(bank.get_alpenglow_genesis_certificate().is_some());
     }
 
     #[test]
-    fn activate_configured_tx_v1_feature_adds_feature_account_to_genesis() {
-        let mut genesis_config = GenesisConfig::default();
+    fn run_reports_exit_of_last_managed_validator() {
+        let mut process = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        process.wait().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sigint, sigterm) = {
+            let _runtime = runtime.enter();
+            (
+                signal(SignalKind::interrupt()).unwrap(),
+                signal(SignalKind::terminate()).unwrap(),
+            )
+        };
+        let cluster = BamLocalCluster {
+            validators: Arc::new(Mutex::new(vec![BamValidator {
+                process,
+                node_name: "last-managed-validator".into(),
+            }])),
+            runtime,
+            sigint,
+            sigterm,
+        };
 
-        activate_configured_tx_v1_feature(&mut genesis_config, true);
-
-        assert!(
-            genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::enable_tx_v1::id())
-        );
+        let result = cluster.run();
+        assert_eq!(result.unwrap_err().to_string(), "a validator exited");
     }
 
     #[test]
-    fn activate_configured_tx_v1_feature_leaves_feature_inactive_when_disabled() {
-        let mut genesis_config = GenesisConfig::default();
-        activate_feature(&mut genesis_config, agave_feature_set::enable_tx_v1::id());
-
-        activate_configured_tx_v1_feature(&mut genesis_config, false);
-
-        assert!(
-            !genesis_config
-                .accounts
-                .contains_key(&agave_feature_set::enable_tx_v1::id())
-        );
+    #[cfg(target_os = "linux")]
+    fn dropping_a_validator_kills_its_process() {
+        let process = Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = process.id();
+        drop(BamValidator {
+            process,
+            node_name: "validator".into(),
+        });
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 }

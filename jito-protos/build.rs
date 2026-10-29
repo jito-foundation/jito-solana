@@ -37,6 +37,7 @@ fn main() -> Result<(), std::io::Error> {
     configure()
         .bytes(".packet.Packet.data")
         .bytes(".bam_types.Packet.data")
+        .bytes(".bam_types.MultipleAtomicTxnBatch.mss_padding")
         .build_client(true)
         .build_server(true)
         .server_mod_attribute(".", "#[allow(clippy::default_trait_access)]")

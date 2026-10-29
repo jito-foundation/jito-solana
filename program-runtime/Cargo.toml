@@ -26,6 +26,7 @@ dev-context-only-utils = [
     "dep:qualifier_attr",
     "dep:solana-message",
     "solana-epoch-schedule/wincode",
+    "solana-transaction-context/dev-context-only-utils",
 ]
 dummy-for-ci-check = ["metrics"]
 metrics = []
@@ -73,6 +74,7 @@ solana-system-interface = { workspace = true }
 solana-sysvar = { workspace = true, features = ["serde"] }
 solana-sysvar-id = { workspace = true }
 solana-transaction-context = { workspace = true }
+static_assertions = { workspace = true }
 thiserror = { workspace = true }
 wincode = { workspace = true }
 
@@ -92,7 +94,7 @@ solana-secp256k1-program = { workspace = true, features = ["bincode"] }
 solana-secp256r1-program = { workspace = true, features = ["openssl-vendored"] }
 solana-signer = { workspace = true }
 solana-transaction = { workspace = true, features = ["dev-context-only-utils"] }
-solana-transaction-context = { path = "../transaction-context", features = ["agave-unstable-api", "bincode", "dev-context-only-utils"] }
+solana-transaction-context = { path = "../transaction-context", features = ["agave-unstable-api", "dev-context-only-utils"] }
 test-case = { workspace = true }
 
 [lints]

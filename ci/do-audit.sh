@@ -47,6 +47,18 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=4.1.3
   --ignore RUSTSEC-2024-0344
 
+  # Crate:     crypto-bigint
+  # Version:   0.5.5
+  # Title:     Multiple timing variability issues in operations intended to be constant-time
+  # Date:      2026-10-23
+  # ID:        RUSTSEC-2026-0387
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0387
+  # Solution:  Upgrade to >=0.7.6
+  # Agave Ok:  only reached through k256 in solana-secp256k1-program and
+  # solana-secp256k1-recover, which verify and recover over public data.
+  # The fix needs those SDK crates to move to elliptic-curve 0.14.
+  --ignore RUSTSEC-2026-0387
+
   # Crate:     tonic
   # Version:   0.9.2
   # Title:     Remotely exploitable Denial of Service in Tonic
@@ -55,6 +67,125 @@ default_cargo_audit_extra_args=(
   # URL:       https://rustsec.org/advisories/RUSTSEC-2024-0376
   # Solution:  Upgrade to >=0.12.3
   --ignore RUSTSEC-2024-0376
+
+  # Crate:     ctutils
+  # Version:   0.4.0
+  # Title:     Non-constant-time mask generation and `u128` comparisons
+  # Date:      2026-10-23
+  # ID:        RUSTSEC-2026-0385
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0385
+  # Solution:  Upgrade to >=0.4.4
+  # Agave's transitive consumers only use byte/tag equality, which does not
+  # call the affected mask generation or `u128` comparison APIs.
+  --ignore RUSTSEC-2026-0385
+
+  # Crate:     rustls
+  # Version:   0.23.45
+  # Title:     `Debug` impls for client session values expose TLS secrets
+  # Date:      2026-10-14
+  # ID:        RUSTSEC-2026-0346
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0346
+  # Solution:  Upgrade to >=0.23.46
+  --ignore RUSTSEC-2026-0346
+
+  # Crate:     rustls
+  # Version:   0.23.45
+  # Title:     Buffered application data sent to outer server after ECH rejection
+  # Date:      2026-10-14
+  # ID:        RUSTSEC-2026-0347
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0347
+  # Solution:  Upgrade to >=0.23.46
+  --ignore RUSTSEC-2026-0347
+
+  # Crate:     rustls
+  # Version:   0.23.45
+  # Title:     Brotli certificate decompression can allocate up to 1 GiB before authentication
+  # Date:      2026-10-14
+  # ID:        RUSTSEC-2026-0348
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0348
+  # Solution:  Upgrade to >=0.23.46
+  --ignore RUSTSEC-2026-0348
+
+  # Crate:     rustls
+  # Version:   0.23.45
+  # Title:     Unauthenticated ServerHello can downgrade later connections to classical key exchange
+  # Date:      2026-10-14
+  # ID:        RUSTSEC-2026-0349
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0349
+  # Solution:  Upgrade to >=0.23.46
+  --ignore RUSTSEC-2026-0349
+
+  # Crate:     webpki-roots
+  # Version:   <1.0.10
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # Agave Ok:  roots are only used by rustls, whose rustls-webpki >=0.103.16 rejects these paths
+  --ignore RUSTSEC-2026-0381
+
+  # Crate:     webpki-root-certs
+  # Version:   <1.0.10
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0383
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0383
+  # Solution:  Upgrade to >=1.0.10
+  # Agave Ok:  only a wasm32 dependency of rustls-platform-verifier; not built for Agave
+  --ignore RUSTSEC-2026-0383
+
+  # Crate:     zstd
+  # Version:   0.14.0
+  # Title:     Data from an abandoned stream leaks into the next stream on a reused context
+  # Date:      2026-10-16
+  # ID:        RUSTSEC-2026-0391
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0391
+  # Solution:  Upgrade to >=0.14.3
+  # Agave Ok:  only the stream `with_context` constructors are affected; Agave never uses them.
+  --ignore RUSTSEC-2026-0391
+
+  # Crate:     zstd-safe
+  # Version:   8.0.0
+  # Title:     Uninitialized memory exposed when streaming decompression of a legacy frame fails
+  # Date:      2026-10-16
+  # ID:        RUSTSEC-2026-0403
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0403
+  # Solution:  Upgrade to >=8.2.0
+  # Agave Ok:  only reachable through zstd::stream::write::Decoder; Agave decompresses with
+  # read::Decoder and the bulk API, which the advisory lists as unaffected.
+  --ignore RUSTSEC-2026-0403
+
+  # Crate:     zstd-safe
+  # Version:   8.0.0
+  # Title:     `Seekable::decompress` sets a `Vec` length beyond its capacity for offsets
+  #            past the end
+  # Date:      2026-10-16
+  # ID:        RUSTSEC-2026-0398
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0398
+  # Solution:  Upgrade to >=8.2.0
+  # Agave Ok:  the zstd-safe `seekable` feature is not enabled.
+  --ignore RUSTSEC-2026-0398
+
+  # Crate:     zstd-sys
+  # Version:   2.1.0+zstd.1.5.7
+  # Title:     WebAssembly allocator shim corrupts memory on allocation failure
+  # Date:      2026-10-16
+  # ID:        RUSTSEC-2026-0410
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0410
+  # Solution:  Upgrade to >=2.1.2
+  # Agave Ok:  wasm32 only; Agave does not build for wasm32.
+  --ignore RUSTSEC-2026-0410
+
+  # Crate:     pulldown-cmark
+  # Version:   0.13.1
+  # Title:     Exponential event growth with `ENABLE_WIKILINKS`
+  # Date:      2026-10-18
+  # ID:        RUSTSEC-2026-0414
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0414
+  # Solution:  Upgrade to >=0.13.5
+  # Agave Ok:  build-time only; prost-build parses comments in Agave's own .proto files.
+  --ignore RUSTSEC-2026-0414
 
   # Crate:     quinn-proto
   # Version:   0.11.13
@@ -120,9 +251,26 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=0.4.16
   --ignore RUSTSEC-2026-0258
 
+  # Crate:     webpki-roots
+  # Version:   0.26.11
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
+  # patched 1.0.10; no fixed 0.26 exists.
+  --ignore RUSTSEC-2026-0381
+
 )
 
 xtask_cargo_audit_extra_args=(
+  # The rustls advisories documented above also affect xtask.
+  --ignore RUSTSEC-2026-0346
+  --ignore RUSTSEC-2026-0347
+  --ignore RUSTSEC-2026-0348
+  --ignore RUSTSEC-2026-0349
+
   # Crate:     rsa
   # Version:   0.9.10
   # Title:     Marvin Attack: potential key recovery through timing sidechannels
@@ -132,6 +280,14 @@ xtask_cargo_audit_extra_args=(
   # Severity:  5.9 (medium)
   # Solution:  No fixed upgrade is available!
   --ignore RUSTSEC-2023-0071
+
+  # The webpki-roots and webpki-root-certs advisories documented above also affect xtask.
+  --ignore RUSTSEC-2026-0381
+  --ignore RUSTSEC-2026-0383
+
+  # The crypto-bigint advisory documented above also affects xtask, via octocrab's
+  # jsonwebtoken. xtask authenticates with a personal token and never signs JWTs.
+  --ignore RUSTSEC-2026-0387
 )
 
 lock_files="$(git ls-files ':**Cargo.lock')"

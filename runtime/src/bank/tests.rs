@@ -5540,6 +5540,9 @@ fn test_bank_hash_consistency(deprecate_rent_exemption_threshold: bool) {
 
 /// Tests determinism of a bank hash across snapshot restores and epoch
 /// boundaries.
+///
+/// The genesis config includes all feature accounts, so adding or rekeying a
+/// feature requires updating the expected hash.
 #[test]
 fn test_bank_hash_deterministic_with_stakes_cache() {
     const NUM_VALIDATORS: usize = 128;
@@ -5829,7 +5832,7 @@ fn test_bank_hash_deterministic_with_stakes_cache() {
 
     assert_eq!(
         bank2.hash().to_string(),
-        "F1RGWPgPj4ACW2q9FhmN36YGcMZ4ReSBp1kjHGGXwNAP",
+        "CF265L3DFX4ubtPr1ck5bb2ZVRcZv4FwiBbi6k8R7EqW",
     );
 }
 
@@ -12645,10 +12648,7 @@ fn test_failed_simulation_compute_units() {
         (bank.get_account(&program_id).unwrap().data().len() + TRANSACTION_ACCOUNT_BASE_SIZE * 2)
             as u32;
     declare_process_instruction!(MockBuiltin, MOCK_BUILTIN_UNITS, |invoke_context| {
-        invoke_context
-            .compute_meter
-            .consume_checked(TEST_UNITS)
-            .unwrap();
+        invoke_context.consume_checked(TEST_UNITS).unwrap();
         Err(InstructionError::InvalidInstructionData)
     });
 

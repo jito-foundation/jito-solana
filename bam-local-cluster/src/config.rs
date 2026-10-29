@@ -1,49 +1,45 @@
 use {
-    serde::{Deserialize, Serialize},
-    std::path::PathBuf,
+    serde::Deserialize,
+    serde_with::{DisplayFromStr, serde_as},
+    solana_pubkey::Pubkey,
+    std::{
+        net::{IpAddr, SocketAddr},
+        path::PathBuf,
+    },
 };
 
+#[serde_as]
 #[derive(Debug, Deserialize, Clone)]
 pub struct LocalClusterConfig {
+    /// Passed through as `--bam-url`, which also takes a bare host or a BAM Registry node list.
     pub bam_url: String,
-    pub tip_payment_program_id: String,
-    pub tip_distribution_program_id: String,
-    pub faucet_address: String,
-    pub ledger_base_directory: String,
-    pub validator_build_path: String,
-    pub ledger_tool_build_path: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub tip_payment_program_id: Pubkey,
+    #[serde_as(as = "DisplayFromStr")]
+    pub tip_distribution_program_id: Pubkey,
+    pub faucet_address: SocketAddr,
+    pub ledger_base_directory: PathBuf,
+    pub validator_build_path: PathBuf,
+    pub ledger_tool_build_path: PathBuf,
     pub validators: Vec<CustomValidatorConfig>,
     pub dynamic_port_range_start: u16,
-    pub hashes_per_tick: Option<u64>,
-    /// Slot duration in milliseconds to activate in genesis via SIMD-0525
-    /// slot-time features. None keeps the validator default.
-    #[serde(default)]
-    pub slot_time_ms: Option<u64>,
     /// Faucet mint balance in SOL.
-    #[serde(default)]
     pub mint_sol: Option<u64>,
-    /// Activate the transaction v1 feature in genesis for BAM conformance tests.
-    #[serde(default)]
-    pub enable_tx_v1: bool,
-    pub bind_address: Option<String>,
+    pub bind_address: Option<IpAddr>,
+    /// A host name or IP address, passed through as `--gossip-host`.
     pub gossip_host: Option<String>,
-    pub limit_ledger_size: Option<u64>,
+    pub limit_blockstore_size: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde_as]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CustomValidatorConfig {
     pub geyser_config: Option<PathBuf>,
     pub node_keypair: PathBuf,
-    pub node_pubkey: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub node_pubkey: Pubkey,
     pub vote_keypair: PathBuf,
-    pub vote_pubkey: String,
     pub ledger_path: PathBuf,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct ClusterInfo {
-    pub rpc_endpoint: String,
-    pub bootstrap_gossip: String,
 }
 
 impl LocalClusterConfig {
@@ -52,56 +48,21 @@ impl LocalClusterConfig {
         let config: LocalClusterConfig = toml::from_str(&config_str)?;
         Ok(config)
     }
-
-    pub fn get_bootstrap_node(&self) -> Option<&CustomValidatorConfig> {
-        self.validators.first()
-    }
-
-    pub fn get_validator_nodes(&self) -> Vec<&CustomValidatorConfig> {
-        self.validators.iter().skip(1).collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn config_toml(extra: &str) -> String {
-        format!(
-            r#"
-bam_url = "http://127.0.0.1:50055"
-tip_payment_program_id = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
-tip_distribution_program_id = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
-faucet_address = "127.0.0.1:12345"
-ledger_base_directory = "/tmp/ledger"
-validator_build_path = "/tmp/jito-solana/target/release"
-ledger_tool_build_path = "/tmp/jito-solana/dev-bins/target/release"
-dynamic_port_range_start = 20000
-hashes_per_tick = 62500
-{extra}
-
-[[validators]]
-node_keypair = "/tmp/ledger/validator-1/node-keypair.json"
-node_pubkey = "11111111111111111111111111111111"
-vote_keypair = "/tmp/ledger/validator-1/vote-keypair.json"
-vote_pubkey = "11111111111111111111111111111111"
-ledger_path = "/tmp/ledger/validator-1"
-"#
-        )
-    }
-
     #[test]
-    fn enable_tx_v1_defaults_to_false() {
-        let config: LocalClusterConfig = toml::from_str(&config_toml("")).unwrap();
-
-        assert!(!config.enable_tx_v1);
-    }
-
-    #[test]
-    fn enable_tx_v1_can_be_enabled_from_config() {
-        let config: LocalClusterConfig =
-            toml::from_str(&config_toml("enable_tx_v1 = true")).unwrap();
-
-        assert!(config.enable_tx_v1);
+    fn example_config_parses() {
+        let example = include_str!("../examples/example_config.toml");
+        toml::from_str::<LocalClusterConfig>(example).unwrap();
+        // '0' is not base58.
+        let bad_pubkey = example.replace(
+            "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
+            "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r0",
+        );
+        assert!(toml::from_str::<LocalClusterConfig>(&bad_pubkey).is_err());
     }
 }

@@ -20,7 +20,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+serde_with = { workspace = true }
 solana-account = { workspace = true }
 solana-cluster-type = { workspace = true }
 solana-commitment-config = { workspace = true }
@@ -36,7 +36,6 @@ solana-native-token = { workspace = true }
 solana-program-binaries = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-rent = { workspace = true }
-solana-rpc = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-runtime = { workspace = true }
 solana-shred-version = { workspace = true }
@@ -45,3 +44,6 @@ solana-system-interface = { workspace = true }
 solana-vote-program = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 toml = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

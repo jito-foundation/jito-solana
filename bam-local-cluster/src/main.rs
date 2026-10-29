@@ -1,7 +1,8 @@
 use {
-    bam_local_cluster::{BamLocalCluster, LocalClusterConfig},
+    bam_local_cluster::{BamLocalCluster, LocalClusterConfig, features::ResolvedFeatures},
     clap::{App, Arg},
     log::{error, info},
+    std::path::Path,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,12 +32,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .takes_value(false)
                 .required(false),
         )
+        .arg(
+            Arg::with_name("features-config")
+                .long("features-config")
+                .value_name("FILE")
+                .help("Feature baseline and overrides TOML")
+                .takes_value(true),
+        )
         .get_matches();
 
     let is_quiet = matches.is_present("quiet");
     let skip_last_validator = matches.is_present("skip-last-validator");
     let config_path = matches.value_of("config").unwrap();
-    let config = LocalClusterConfig::from_file(config_path).expect("Failed to parse TOML");
+    let config = LocalClusterConfig::from_file(config_path)
+        .inspect_err(|e| error!("Failed to load {config_path}: {e}"))?;
+    let features = if let Some(path) = matches.value_of("features-config") {
+        let output = config
+            .ledger_base_directory
+            .parent()
+            .ok_or("missing output directory")?;
+        Some(ResolvedFeatures::from_file(
+            Path::new(path),
+            &output.join("features-baseline.toml"),
+        )?)
+    } else {
+        None
+    };
     info!("Starting cluster with config: {config:?}");
     if skip_last_validator && config.validators.len() <= 1 {
         error!("Cannot skip the last validator when only one validator is configured");
@@ -46,22 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Skipping startup of the last validator process");
     }
 
-    let cluster = match BamLocalCluster::new(config.clone(), is_quiet, skip_last_validator) {
-        Ok(cluster) => cluster,
-        Err(e) => {
-            error!("Failed to start cluster: {e}");
-            return Err(e);
-        }
-    };
-
-    // Run the cluster (this will block until shutdown is requested)
-    if let Err(e) = cluster.run() {
-        error!("Cluster error: {e}");
-        return Err(e);
-    }
-
-    // Graceful shutdown
-    cluster.shutdown();
-
-    Ok(())
+    BamLocalCluster::new(config, is_quiet, skip_last_validator, features.as_ref())
+        .inspect_err(|e| error!("Failed to start cluster: {e}"))?
+        .run()
 }

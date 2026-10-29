@@ -12,7 +12,7 @@ use {
             consume_worker::ConsumeWorker,
             transaction_scheduler::{
                 bam_receive_and_buffer::BamReceiveAndBuffer,
-                bam_scheduler::BamScheduler,
+                bam_scheduler::{BamScheduler, NUM_BAM_WORKERS},
                 scheduler_controller::{
                     DEFAULT_SCHEDULER_PACING_FILL_TIME_MILLIS, SchedulerConfig, SchedulerController,
                 },
@@ -69,6 +69,7 @@ pub mod leader_slot_metrics;
 pub mod qos_service;
 pub mod vote_storage;
 
+mod alpenglow_timing;
 pub(crate) mod consume_worker;
 mod vote_worker;
 
@@ -574,7 +575,12 @@ impl BankingStage {
             bounded(num_workers.saturating_mul(CHANNEL_CAPACITY));
 
         // Spawn the worker threads
-        let decision_maker = DecisionMaker::from(self.poh_recorder.read().unwrap().deref());
+        let migration_status = self.bank_forks.read().unwrap().migration_status();
+        let decision_maker = DecisionMaker::new(
+            self.poh_recorder.read().unwrap().shared_leader_state(),
+            migration_status,
+            self.alpenglow_slot_clock.clone(),
+        );
         let mut worker_metrics = Vec::with_capacity(num_workers);
         for (index, work_receiver) in work_receivers.into_iter().enumerate() {
             let id = index as u32;
@@ -673,7 +679,6 @@ impl BankingStage {
         if let Some(bam_dependencies) = bam_dependencies {
             // Spawn BAM workers
             // Create channels for communication between scheduler and workers
-            const NUM_BAM_WORKERS: usize = 8;
             let num_workers = NUM_BAM_WORKERS;
             let (work_sender, work_receiver) = unbounded();
             let (finished_work_sender, finished_work_receiver) = unbounded();
@@ -775,7 +780,12 @@ impl BankingStage {
             self.transaction_recorder.clone(),
             self.log_messages_bytes_limit,
         );
-        let decision_maker = DecisionMaker::from(self.poh_recorder.read().unwrap().deref());
+        let migration_status = self.bank_forks.read().unwrap().migration_status();
+        let decision_maker = DecisionMaker::new(
+            self.poh_recorder.read().unwrap().shared_leader_state(),
+            migration_status,
+            self.alpenglow_slot_clock.clone(),
+        );
 
         let worker_exit_signal = self.worker_exit_signal.clone();
         let shutdown_signal = self.banking_shutdown_signal.clone();

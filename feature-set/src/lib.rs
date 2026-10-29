@@ -1442,7 +1442,7 @@ pub mod limit_instruction_accounts {
 }
 
 pub mod block_revenue_sharing {
-    solana_pubkey::declare_id!("7MYx95UBiJufqnumyN7HfskJ9vKdcGMmhreVguqrE97K");
+    solana_pubkey::declare_id!("Crbnc267wkJvFhYakqwWWX57sx5bkrftJLekzy6yWKLT");
 }
 
 pub mod vote_account_initialize_v2 {
@@ -1528,7 +1528,7 @@ pub mod relax_fee_payer_constraint {
 }
 
 pub mod double_disinflation_rate {
-    solana_pubkey::declare_id!("55oikhjJ2LUi1xdgJ17ueRyHFURZEw32asT3iAKfh7gg");
+    solana_pubkey::declare_id!("ddibiks7RHZR69QXYMCmk4EZNt6WckspTqEEWv6cS38");
     /// Taper (yearly disinflation rate) applied from activation onward.
     pub const TAPER: f64 = 0.30;
 }

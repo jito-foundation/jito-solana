@@ -307,7 +307,7 @@ where
                         block_limit,
                         shared_block_cost,
                         detection_time: now,
-                        fill_time,
+                        fill_time: self.config.scheduler_pacing.fill_time(),
                     }
                 });
             }
@@ -673,6 +673,7 @@ mod tests {
         agave_banking_stage_ingress_types::{
             BankingPacketBatch, BankingPacketReceiver, to_banking_packet_batch,
         },
+        agave_votor::slot_clock::SharedAlpenglowSlotClock,
         ahash::HashSet,
         crossbeam_channel::{Receiver, Sender, bounded, unbounded},
         itertools::Itertools,
@@ -785,7 +786,11 @@ mod tests {
 
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 
-        let decision_maker = DecisionMaker::new(shared_leader_state.clone());
+        let decision_maker = DecisionMaker::new(
+            shared_leader_state.clone(),
+            bank_forks.read().unwrap().migration_status(),
+            SharedAlpenglowSlotClock::default(),
+        );
 
         let (banking_packet_sender, banking_packet_receiver) = unbounded();
         let receive_and_buffer = create_receive_and_buffer(
@@ -1431,7 +1436,11 @@ mod tests {
         let (bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         let mut shared_leader_state = SharedLeaderState::new(0, None, None);
-        let decision_maker = DecisionMaker::new(shared_leader_state.clone());
+        let decision_maker = DecisionMaker::new(
+            shared_leader_state.clone(),
+            bank_forks.read().unwrap().migration_status(),
+            SharedAlpenglowSlotClock::default(),
+        );
 
         let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Connected as u8));
         let exit = Arc::new(AtomicBool::new(false));
@@ -1495,6 +1504,7 @@ mod tests {
             bundle_sender
                 .send(jito_protos::proto::bam_types::MultipleAtomicTxnBatch {
                     batches: vec![transfer_batch(&mint_keypair, &bank, seq_id as u32)],
+                    mss_padding: vec![0; 3072].into(),
                 })
                 .unwrap();
             controller.receive_and_buffer.wait_for_parsed_batches(1);
