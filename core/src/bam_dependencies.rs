@@ -6,7 +6,7 @@ use {
         banking_stage::{committer::CommitTransactionDetails, consumer::Consumer},
         bundle_stage::bundle_account_locker::BundleAccountLocker,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::TipManager,
+        tip_manager::{TipManager, TipManagerError},
     },
     arc_swap::ArcSwap,
     jito_protos::proto::{
@@ -14,11 +14,14 @@ use {
         bam_types,
     },
     smallvec::SmallVec,
+    solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
+    solana_transaction_error::TransactionError,
     solana_turbine::ShredReceiverAddresses,
     std::sync::RwLock,
+    thiserror::Error,
     tokio::sync::mpsc,
 };
 
@@ -67,6 +70,15 @@ pub struct BamDependencies {
     pub bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }
 
+/// Why tip programs could not be prepared on a Bank.
+#[derive(Clone, Debug, Error, PartialEq)]
+pub(crate) enum TipProgramsError {
+    #[error("tip bundle construction failed: {0}")]
+    Construction(#[from] TipManagerError),
+    #[error("tip bundle commit failed: {0}")]
+    Commit(#[from] TransactionError),
+}
+
 #[derive(Clone)]
 pub struct TipProcessingDependencies {
     pub tip_manager: TipManager,
@@ -77,11 +89,13 @@ pub struct TipProcessingDependencies {
 
 impl TipProcessingDependencies {
     /// Prepare this Bank on the scheduler thread using the metadata snapshot it caches.
+    /// Reports each distinct failure once per slot, remembering the last in `last_error`.
     pub(crate) fn process_tip_programs(
         &self,
         consumer: &Consumer,
         bank: &Arc<Bank>,
         builder: &BlockBuilderFeeInfo,
+        last_error: &mut Option<(Slot, TipProgramsError)>,
     ) -> bool {
         let bank_key = (bank.slot(), bank.bank_id());
         // Match BundleStage's local-cluster policy: free-rent PDAs are discarded by AccountsDb.
@@ -92,10 +106,27 @@ impl TipProcessingDependencies {
             return false;
         }
         let keypair = self.cluster_info.keypair();
-        let process = |bundle: crate::tip_manager::Result<SmallVec<[_; 2]>>| {
-            let Ok(bundle) = bundle else {
-                debug!("tip bundle construction failed for bank {bank_key:?}: {bundle:?}");
+        let mut fail = |error: TipProgramsError| {
+            if last_error
+                .as_ref()
+                .is_some_and(|(slot, last)| *slot == bank.slot() && *last == error)
+            {
                 return false;
+            }
+            let balance = bank.get_balance(&self.cluster_info.id());
+            datapoint_error!(
+                "bam_scheduler-tip_programs_error",
+                ("slot", bank.slot(), i64),
+                ("error", error.to_string(), String),
+                ("identity_balance", balance, i64),
+            );
+            *last_error = Some((bank.slot(), error));
+            false
+        };
+        let mut process = |bundle: crate::tip_manager::Result<SmallVec<[_; 2]>>| {
+            let bundle = match bundle {
+                Ok(bundle) => bundle,
+                Err(error) => return fail(error.into()),
             };
             if bundle.is_empty() {
                 return true;
@@ -110,14 +141,22 @@ impl TipProcessingDependencies {
                 .execute_and_commit_transactions_output
                 .commit_transactions_result;
             debug!("tip bundle result for bank {bank_key:?}: {results:?}");
-            results.is_ok_and(|results| {
-                results.iter().all(|result| {
-                    matches!(
-                        result,
-                        CommitTransactionDetails::Committed { result: Ok(()), .. }
-                    )
+            // Recording opens after this Bank is published and closes before it ends; retry.
+            let Ok(results) = results else {
+                return false;
+            };
+            // A reverted bundle marks its other transactions CommitCancelled; report the cause.
+            let Some(error) = results
+                .into_iter()
+                .filter_map(|result| match result {
+                    CommitTransactionDetails::Committed { result, .. } => result.err(),
+                    CommitTransactionDetails::NotCommitted(error) => Some(error),
                 })
-            })
+                .min_by_key(|error| *error == TransactionError::CommitCancelled)
+            else {
+                return true;
+            };
+            fail(error.into())
         };
         // Crank construction reads the accounts created by initialization; keep it lazy.
         process(

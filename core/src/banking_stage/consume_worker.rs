@@ -2395,7 +2395,7 @@ mod tests {
     use {
         super::*,
         crate::{
-            bam_dependencies::TipProcessingDependencies,
+            bam_dependencies::{TipProcessingDependencies, TipProgramsError},
             banking_stage::{
                 committer::Committer,
                 decision_maker::BufferedPacketsDecision,
@@ -2411,8 +2411,8 @@ mod tests {
             bundle_stage::bundle_account_locker::BundleAccountLocker,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
             tip_manager::{
-                TipDistributionAccountConfig, TipManager, TipManagerConfig,
-                tip_payment::JitoTipPaymentConfig,
+                TipDistributionAccountConfig, TipManager, TipManagerConfig, TipManagerError,
+                tip_payment::{JitoTipPaymentConfig, TipPaymentError},
             },
         },
         arc_swap::ArcSwap,
@@ -2422,6 +2422,7 @@ mod tests {
         solana_cost_model::cost_tracker::CostTrackerLimits,
         solana_genesis_config::GenesisConfig,
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
+        solana_instruction_error::InstructionError,
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::GenesisConfigInfo,
@@ -3183,7 +3184,8 @@ mod tests {
         assert!(tips.process_tip_programs(
             &worker.consumer,
             &frame.bank,
-            &tips.block_builder_fee_info.load()
+            &tips.block_builder_fee_info.load(),
+            &mut None,
         ));
         frame.record_receiver.drain().for_each(drop);
         let parent = frame.bank.clone();
@@ -3512,7 +3514,7 @@ mod tests {
                 block_builder_commission: changed.1,
             });
             tips.block_builder_fee_info.store(other_builder.clone());
-            assert!(tips.process_tip_programs(&worker.consumer, &bank, &other_builder));
+            assert!(tips.process_tip_programs(&worker.consumer, &bank, &other_builder, &mut None));
             assert_eq!(config(), changed);
             assert_eq!(frame.record_receiver.drain().count(), 1);
         }
@@ -3632,29 +3634,43 @@ mod tests {
         }
     }
 
-    #[test_case("builder")]
-    #[test_case("construction")]
-    #[test_case("recording")]
-    #[test_case("cost")]
-    #[test_case("account_lock")]
-    #[test_case("execution")]
-    fn test_tip_preparation_failure_is_retryable(failure: &str) {
+    fn custom(index: u8, code: u32) -> Option<TipProgramsError> {
+        Some(TransactionError::InstructionError(index, InstructionError::Custom(code)).into())
+    }
+
+    #[test_case("builder", None)]
+    #[test_case(
+        "construction",
+        Some(TipManagerError::TipPaymentError(TipPaymentError::InvalidDiscriminator).into())
+    )]
+    #[test_case("recording", None)]
+    #[test_case("cost", Some(TransactionError::WouldExceedMaxBlockCostLimit.into()))]
+    #[test_case("account_lock", Some(TransactionError::AccountInUse.into()))]
+    #[test_case("execution", custom(1, 0x1771))]
+    #[test_case("underfunded", custom(0, 0x1))]
+    #[test_case("rotated", custom(0, 0x177e))]
+    fn test_tip_preparation_failure_is_retryable(failure: &str, error: Option<TipProgramsError>) {
         let (mut frame, worker) = setup_test_frame(true);
         frame.activate_bank();
         let tips = frame.tip_processing_dependencies.take().unwrap();
+        // A funded identity creating this epoch's tip distribution account is not a failure.
+        let mut last_error = None;
         assert!(tips.process_tip_programs(
             &worker.consumer,
             &frame.bank,
-            &tips.block_builder_fee_info.load()
+            &tips.block_builder_fee_info.load(),
+            &mut last_error,
         ));
+        assert_eq!(last_error, None);
         frame.record_receiver.drain().for_each(drop);
         // Earlier success must not mask metadata or account changes on this same Bank.
         let bank = &frame.bank;
         let config_key = tips.tip_manager.tip_payment_config_pubkey();
         let original = bank.get_account(&config_key).unwrap();
+        let keypair = tips.cluster_info.keypair();
+        let funded = bank.get_account(&keypair.pubkey()).unwrap();
         let cost = block_costs(bank).0;
         let transaction_count = bank.transaction_count();
-        let payer_balance = bank.get_balance(&tips.cluster_info.id());
         tips.block_builder_fee_info
             .store(Arc::new(BlockBuilderFeeInfo {
                 block_builder: if failure == "builder" {
@@ -3678,13 +3694,32 @@ mod tests {
                 .write_cost_tracker()
                 .unwrap()
                 .set_limits(CostTrackerLimits::new(u64::MAX, cost, u64::MAX)),
+            "underfunded" | "rotated" => {
+                // A new blockhash lets this epoch's tip distribution account be created again.
+                let tda = tips.tip_manager.get_my_tip_distribution_pda(bank.epoch());
+                bank.store_account(&tda, &AccountSharedData::default());
+                bank.register_unique_recent_blockhash_for_test();
+                if failure == "rotated" {
+                    let rotated = Arc::new(Keypair::new());
+                    bank.store_account(&rotated.pubkey(), &funded);
+                    tips.cluster_info.set_keypair(rotated);
+                } else {
+                    let lamports = bank.get_minimum_balance_for_rent_exemption(0);
+                    let system = solana_system_interface::program::id();
+                    let underfunded = AccountSharedData::new(lamports, 0, &system);
+                    bank.store_account(&keypair.pubkey(), &underfunded);
+                }
+            }
             _ => {}
         }
+        let payer_balance = bank.get_balance(&tips.cluster_info.id());
         assert!(!tips.process_tip_programs(
             &worker.consumer,
             bank,
-            &tips.block_builder_fee_info.load()
+            &tips.block_builder_fee_info.load(),
+            &mut last_error,
         ));
+        assert_eq!(last_error, error.map(|error| (bank.slot(), error)));
         if failure != "construction" {
             assert_eq!(bank.get_account(&config_key).unwrap(), original);
         }
@@ -3698,6 +3733,8 @@ mod tests {
                 .unlock_accounts([std::iter::once((&config_key, true))]);
         }
         bank.store_account(&config_key, &original);
+        bank.store_account(&keypair.pubkey(), &funded);
+        tips.cluster_info.set_keypair(keypair);
         frame.record_receiver.restart(bank.bank_id());
         bank.write_cost_tracker()
             .unwrap()
@@ -3710,13 +3747,15 @@ mod tests {
         assert!(tips.process_tip_programs(
             &worker.consumer,
             bank,
-            &tips.block_builder_fee_info.load()
+            &tips.block_builder_fee_info.load(),
+            &mut last_error,
         ));
         assert_eq!(frame.record_receiver.drain().count(), 1);
         assert!(tips.process_tip_programs(
             &worker.consumer,
             bank,
-            &tips.block_builder_fee_info.load()
+            &tips.block_builder_fee_info.load(),
+            &mut last_error,
         ));
         assert!(frame.record_receiver.try_recv().is_err());
     }
@@ -3730,7 +3769,8 @@ mod tests {
         assert!(tips.process_tip_programs(
             &worker.consumer,
             &bank,
-            &tips.block_builder_fee_info.load()
+            &tips.block_builder_fee_info.load(),
+            &mut None,
         ));
         assert_eq!(block_costs(&bank), (0, 0));
         assert!(frame.record_receiver.try_recv().is_err());
