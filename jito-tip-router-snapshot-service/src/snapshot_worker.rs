@@ -103,8 +103,8 @@ fn generate_and_write_snapshot(
     candidate: CandidateIdentity,
     parent_bank: Arc<Bank>,
 ) -> SnapshotWorkerResult {
-    // StakeMetaCapture pins the AccountsDB state needed by direct indexed reads before the worker
-    // releases its Arc<Bank>.
+    // The account state needed for stake metadata is captured immediately, so the worker can drop
+    // its Arc<Bank> before building the collection.
     let stake_meta_capture = StakeMetaCapture::new(parent_bank)?;
 
     let stake_meta = stake_meta::collect_stake_meta(config, stake_meta_capture)?;

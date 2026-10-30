@@ -198,6 +198,8 @@ impl SnapshotPublicationTracker {
     ) -> Option<CandidateIdentity> {
         // Match both slot and bank ID: a rooted chain contains one bank per slot, and the
         // additional identity prevents a competing fork at the same slot from winning.
+        // `find` is safe: a rooted chain crosses out of an epoch once, so at most one
+        // tracked candidate can have a boundary child in it.
         let (winner, tracked) = self
             .tracked_candidates()?
             .iter()

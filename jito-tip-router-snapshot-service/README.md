@@ -151,8 +151,9 @@ selects parent 99, including when 104 is an ancestor of a later root.
 Selection matches the child's slot **and bank ID**. If multiple children share
 one parent, any associated child can validate that parent's snapshot. Repeated
 notifications for the same child do not create another worker or reset artifact
-readiness. The implementation retains a highest-parent-slot selection among
-qualifying candidates, but qualification requires a rooted boundary child.
+readiness. Selection takes the first qualifying candidate: a rooted chain
+crosses out of an epoch only once, so at most one tracked candidate can have a
+boundary child in it.
 
 ## Main state machine
 
@@ -176,6 +177,17 @@ Additional guards reject candidates older than the epoch currently being
 tracked, candidates at or before the latest published epoch, and new candidates
 while publication is pending. Selecting a winner discards the other candidates from tracking, but
 their workers may still complete.
+
+Worker failures are handled as follows:
+
+- A failed, panicked, or result-less worker for an unrooted candidate drops that
+  candidate and its boundary children from tracking; the service keeps running.
+- The same failure for the selected winner stops the service with
+  `RootedCandidateFailed`.
+- An artifact-store `DirectoryUnavailable` error from any worker stops the
+  service with `ArtifactStoreUnavailable`.
+- On shutdown, the service waits up to 30 s for in-flight workers. If any are
+  still running, it sets `exit` and returns `ArtifactWorkersShutdownTimeout`.
 
 The lifecycle in its compact form is:
 
