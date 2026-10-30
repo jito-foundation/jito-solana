@@ -293,3 +293,69 @@ impl TipRouterSnapshotServiceContext {
         first_error.map_or(Ok(()), Err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::TipRouterSnapshotServiceContext,
+        crate::{artifact_store::ArtifactStore, config::TipRouterSnapshotConfig},
+        crossbeam_channel::{RecvTimeoutError, unbounded},
+        solana_epoch_schedule::EpochSchedule,
+        solana_pubkey::Pubkey,
+        solana_rpc::optimistically_confirmed_bank_tracker::BankNotification,
+        solana_runtime::{
+            bank::{Bank, SlotLeader},
+            genesis_utils::create_genesis_config,
+        },
+        std::{sync::Arc, time::Duration},
+    };
+
+    #[test]
+    fn sibling_boundary_child_does_not_spawn_second_worker() {
+        let output_dir = tempfile::tempdir().unwrap();
+        let config = TipRouterSnapshotConfig {
+            output_dir: output_dir.path().to_path_buf(),
+            tip_distribution_program_id: Pubkey::new_from_array([1; 32]),
+            priority_fee_distribution_program_id: Pubkey::new_from_array([2; 32]),
+            tip_payment_program_id: Pubkey::new_from_array([3; 32]),
+        };
+        let artifact_store = ArtifactStore::new(config.output_dir.clone()).unwrap();
+        let (completion_sender, completion_receiver) = unbounded();
+        let mut context = TipRouterSnapshotServiceContext::new(completion_sender);
+
+        let mut genesis_config = create_genesis_config(1_000_000).genesis_config;
+        genesis_config.epoch_schedule = EpochSchedule::custom(32, 32, false);
+        let (genesis_bank, _bank_forks) =
+            Bank::new_for_tests(&genesis_config).wrap_with_bank_forks_for_tests();
+        let parent_bank = Arc::new(Bank::new_from_parent(
+            genesis_bank,
+            SlotLeader::default(),
+            31,
+        ));
+        for child_slot in [32, 33] {
+            let child_bank = Arc::new(Bank::new_from_parent(
+                parent_bank.clone(),
+                SlotLeader::default(),
+                child_slot,
+            ));
+            context
+                .handle_bank_notification(
+                    &config,
+                    &artifact_store,
+                    (BankNotification::Frozen(child_bank), None),
+                )
+                .unwrap();
+        }
+
+        let completion = completion_receiver
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap();
+        context
+            .handle_worker_completion(&artifact_store, completion)
+            .unwrap();
+        assert!(matches!(
+            completion_receiver.recv_timeout(Duration::from_secs(2)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+    }
+}
