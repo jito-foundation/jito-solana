@@ -61,6 +61,7 @@ impl BamValidator {
         genesis_config: &GenesisConfig,
         bootstrap_gossip: Option<&str>,
         expected_bank_hash: Option<String>,
+        wait_for_supermajority: bool,
         identity_path: &PathBuf,
         vote_path: &PathBuf,
         merkle_root_upload_authority: &Pubkey,
@@ -97,8 +98,6 @@ impl BamValidator {
         // Local clusters do not always provision AF_XDP resources.  Keep the validator
         // invocation explicit now that XDP is enabled by default upstream.
         .arg("--no-xdp")
-        .arg("--wait-for-supermajority")
-        .arg("0")
         .arg("--rpc-port")
         .arg(rpc_port.to_string())
         .arg("--rpc-faucet-address")
@@ -127,6 +126,13 @@ impl BamValidator {
         .arg("--commission-bps")
         .arg("100");
 
+        // A skipped validator keeps its genesis stake, so on the default
+        // four-validator cluster only 75% is online and agave's 80%
+        // supermajority wait never lifts: the skipped validator can only join
+        // once the cluster is producing snapshots. Start without the wait then.
+        if wait_for_supermajority {
+            cmd.arg("--wait-for-supermajority").arg("0");
+        }
         if let Some(expected_bank_hash) = expected_bank_hash {
             cmd.arg("--expected-bank-hash").arg(expected_bank_hash);
         }
@@ -510,6 +516,7 @@ impl BamLocalCluster {
                     None
                 },
                 expected_bank_hash.clone(),
+                !skip_last_validator,
                 &validator_config.node_keypair,
                 &validator_config.vote_keypair,
                 &validator_config.node_pubkey,
