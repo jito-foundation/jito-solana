@@ -298,20 +298,21 @@ impl SnapshotPublicationTracker {
 #[cfg(test)]
 mod tests {
     use {
-        super::SnapshotPublicationTracker, crate::CandidateIdentity, solana_clock::Slot,
-        solana_runtime::bank::BankId,
+        super::SnapshotPublicationTracker,
+        crate::CandidateIdentity,
+        solana_clock::{BankId, Slot},
     };
 
-    fn parent(slot: Slot, bank_id: u64) -> CandidateIdentity {
+    fn parent(slot: Slot, bank_id: BankId) -> CandidateIdentity {
         CandidateIdentity {
             epoch: 3,
             slot,
-            bank_id: BankId::new(bank_id),
+            bank_id,
         }
     }
 
-    fn bank(slot: Slot, bank_id: u64) -> (Slot, BankId) {
-        (slot, BankId::new(bank_id))
+    fn bank(slot: Slot, bank_id: BankId) -> (Slot, BankId) {
+        (slot, bank_id)
     }
 
     #[test]
