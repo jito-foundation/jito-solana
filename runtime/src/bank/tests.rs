@@ -2030,6 +2030,123 @@ fn test_load_and_execute_commit_transactions_failure() {
     );
 }
 
+#[test_case(false, false; "without_notifier_or_prepared_transactions")]
+#[test_case(false, true; "prepared_transactions_without_notifier")]
+#[test_case(true, false; "notifier_fallback")]
+#[test_case(true, true; "notifier_borrows_prepared_transactions")]
+fn test_commit_transactions_with_transaction_refs(
+    notify_accounts: bool,
+    prepare_transactions: bool,
+) {
+    use {
+        agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
+        solana_accounts_db::accounts_update_notifier_interface::{
+            AccountForGeyser, AccountsUpdateNotifierInterface,
+        },
+        solana_svm_transaction::svm_transaction::SVMStaticTransaction,
+    };
+
+    #[derive(Debug, Default)]
+    struct Notifier(Mutex<Vec<(Signature, usize)>>);
+
+    impl AccountsUpdateNotifierInterface for Notifier {
+        fn snapshot_notifications_enabled(&self) -> bool {
+            false
+        }
+
+        fn notify_account_update(
+            &self,
+            _slot: Slot,
+            _bank_id: BankId,
+            _account: &AccountSharedData,
+            txn: &Option<&SanitizedTransaction>,
+            _pubkey: &Pubkey,
+            _write_version: u64,
+        ) {
+            if let Some(tx) = txn {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((*tx.signature(), std::ptr::from_ref(*tx) as usize));
+            }
+        }
+
+        fn notify_account_restore_from_snapshot(
+            &self,
+            _slot: Slot,
+            _write_version: u64,
+            _account: &AccountForGeyser<'_>,
+        ) {
+        }
+
+        fn notify_end_of_restore_from_snapshot(&self) {}
+    }
+
+    let (genesis_config, mint) = create_genesis_config(100 * LAMPORTS_PER_SOL);
+    let notifier = Arc::new(Notifier::default());
+    let bank = Bank::new_from_genesis(
+        &genesis_config,
+        Arc::default(),
+        vec![],
+        None,
+        ACCOUNTS_DB_CONFIG_FOR_TESTING,
+        notify_accounts.then(|| notifier.clone() as AccountsUpdateNotifier),
+        None,
+        Arc::default(),
+        None,
+        None,
+    );
+    let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
+    let recipient = Pubkey::new_unique();
+    let amount = bank.get_minimum_balance_for_rent_exemption(0);
+    let transactions: Vec<RuntimeTransaction<ResolvedTransactionView<Bytes>>> = vec![
+        system_transaction::transfer(
+            &Keypair::new(),
+            &Pubkey::new_unique(),
+            amount,
+            bank.last_blockhash(),
+        )
+        .into(),
+        system_transaction::transfer(&mint, &recipient, amount, bank.last_blockhash()).into(),
+    ];
+    let prepared = prepare_transactions.then(|| {
+        transactions
+            .iter()
+            .map(|tx| tx.as_sanitized_transaction().into_owned())
+            .collect::<Vec<_>>()
+    });
+    let batch = bank.prepare_sanitized_batch(&transactions);
+    let output = bank.load_and_execute_transactions(
+        &batch,
+        bank.max_processing_age(),
+        &mut ExecuteTimings::default(),
+        &mut TransactionErrorMetrics::default(),
+        TransactionProcessingConfig {
+            drop_noop_transactions: true,
+            ..Default::default()
+        },
+    );
+    let results = bank.commit_transactions_with_transaction_refs(
+        &transactions,
+        output.processing_results,
+        &output.processed_counts,
+        &mut ExecuteTimings::default(),
+        prepared.as_deref(),
+    );
+    assert!(results[0].is_err());
+    assert_eq!(results[1].as_ref().unwrap().status, Ok(()));
+    assert_eq!(bank.get_balance(&recipient), amount);
+
+    let notifications = notifier.0.lock().unwrap();
+    assert_eq!(notifications.is_empty(), !notify_accounts);
+    for (signature, address) in notifications.iter() {
+        assert_eq!(signature, transactions[1].signature());
+        if let Some(prepared) = &prepared {
+            assert_eq!(*address, std::ptr::from_ref(&prepared[1]) as usize);
+        }
+    }
+}
+
 #[test]
 fn test_load_and_execute_commit_transactions_success() {
     let GenesisConfigInfo {
