@@ -6,6 +6,8 @@ mod storage;
 pub mod tip_router;
 #[cfg(target_os = "linux")]
 mod xdp;
+#[cfg(target_os = "linux")]
+mod xdp_zero_copy;
 
 pub use {args::add_args, execute::execute};
 

@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 use {
+    crate::commands::run::xdp_zero_copy,
     agave_cpu_utils::cpu_affinity,
     agave_xdp::transmitter::{QueueCpuBinding, XdpConfig},
     clap::ArgMatches,
@@ -24,7 +25,6 @@ pub(crate) fn new_config(
         );
     }
     let xdp_interface = matches.value_of("xdp_interface");
-    let xdp_zero_copy = matches.is_present("xdp_zero_copy");
     let xdp_cpu_cores = matches.value_of("xdp_cpu_cores");
     let cpus = if let Some(cpu_str) = xdp_cpu_cores {
         let parsed =
@@ -69,6 +69,13 @@ pub(crate) fn new_config(
             }
         }
     };
+    let zero_copy = if matches.is_present("xdp_zero_copy") {
+        true
+    } else if matches.is_present("no_xdp_zero_copy") {
+        false
+    } else {
+        xdp_zero_copy::auto_detect(xdp_interface)
+    };
     Ok(cpus.map(|cpus| {
         info!("XDP enabled on CPU cores: {cpus:?}");
         // Map the CPU list onto hardware queues sequentially (queue i -> cpus[i]).
@@ -80,7 +87,7 @@ pub(crate) fn new_config(
                 cpu,
             })
             .collect();
-        XdpConfig::new(xdp_interface, queues, xdp_zero_copy)
+        XdpConfig::new(xdp_interface, queues, zero_copy)
     }))
 }
 
@@ -115,13 +122,16 @@ pub(crate) fn args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
             .takes_value(false)
             .conflicts_with("no_xdp")
             .conflicts_with("no_xdp_zero_copy")
-            .help("Enable XDP zero copy mode. Requires hardware and driver support"),
+            .help(
+                "Enable XDP zero copy mode. Requires hardware and driver support. By default, \
+                 zero copy is enabled only on drivers and kernels known to support it",
+            ),
         Arg::with_name("no_xdp_zero_copy")
             .long("no-xdp-zero-copy")
             .takes_value(false)
             .conflicts_with("xdp_zero_copy")
             .conflicts_with("no_xdp")
-            .help("Use XDP copy mode"),
+            .help("Use XDP copy mode, even where zero copy is supported"),
     ]
 }
 
@@ -162,6 +172,8 @@ mod tests {
 
     #[test]
     fn test_xdp_copy_mode_selection() {
+        // Without a flag, zero copy is auto-detected, which picks copy mode on `lo` since it has
+        // no driver.
         for (flag, zero_copy) in [
             (None, false),
             (Some("--xdp-zero-copy"), true),
@@ -169,7 +181,13 @@ mod tests {
         ] {
             let default_args = DefaultArgs::default();
             let app = add_args(clap::App::new("agave-validator"), &default_args);
-            let mut args = vec!["agave-validator", "--xdp-cpu-cores", "1"];
+            let mut args = vec![
+                "agave-validator",
+                "--xdp-cpu-cores",
+                "1",
+                "--xdp-interface",
+                "lo",
+            ];
             args.extend(flag);
             let matches = app
                 .get_matches_from_safe(args)
