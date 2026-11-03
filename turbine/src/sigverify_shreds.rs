@@ -12,7 +12,7 @@ use {
             self,
             layout::{is_retransmitter_signed_variant, set_retransmitter_signature},
         },
-        sigverify_shreds::{LruCache, SlotPubkeys, par_verify_shreds},
+        sigverify_shreds::{LruCache, SlotPubkeys, verify_shred_cpu},
     },
     solana_perf::{
         self,
@@ -157,26 +157,13 @@ fn run_shred_sigverify<const K: usize>(
     // after the shred payload, but have to exclude them here from the deduper.
     // The retransmitter signature is hop-specific, so it is also excluded from
     // the deduper.
-    stats.num_duplicates += thread_pool.install(|| {
-        shred_buffer
-            .par_iter_mut()
-            .flatten()
-            .filter(|packet| {
-                !packet.meta().discard()
-                    && shred::wire::get_shred_without_retransmitter_signature(packet)
-                        .map(|shred| deduper.dedup(shred))
-                        .unwrap_or(true)
-                    && !packet.meta().repair()
-            })
-            .map(|packet| packet.meta_mut().set_discard(true))
-            .count()
-    });
     let working_bank = bank_forks.read().unwrap().working_bank();
-    thread_pool.install(|| {
-        par_verify_packets(
+    stats.num_duplicates += thread_pool.install(|| {
+        dedup_and_verify_packets(
             &keypair.pubkey(),
             &working_bank,
             leader_schedule_cache,
+            deduper,
             shred_buffer,
             cache,
         )
@@ -267,19 +254,42 @@ fn maybe_clear_retransmitter_signature(shred: &mut [u8]) -> Result<(), shred::Er
     Ok(())
 }
 
-fn par_verify_packets(
+/// Discards duplicate packets and packets that fail sigverify, and returns the
+/// number of duplicates. Each rayon task handles `VERIFY_CHUNK_SIZE` packets,
+/// so light traffic wakes only a few threads, while a backlog still spreads
+/// across the whole pool.
+fn dedup_and_verify_packets<const K: usize>(
     self_pubkey: &Pubkey,
     working_bank: &Bank,
     leader_schedule_cache: &LeaderScheduleCache,
+    deduper: &Deduper<K, [u8]>,
     packets: &mut [PacketBatch],
     cache: &RwLock<LruCache>,
-) {
+) -> usize {
+    const VERIFY_CHUNK_SIZE: usize = 16;
     let leader_slots: SlotPubkeys =
         get_slot_leaders(self_pubkey, packets, leader_schedule_cache, working_bank)
             .filter_map(|(slot, pubkey)| Some((slot, pubkey?)))
             .chain(std::iter::once((Slot::MAX, Pubkey::default())))
             .collect();
-    par_verify_shreds(packets, &leader_slots, cache);
+    packets
+        .par_iter_mut()
+        .flat_map(|batch| batch.par_chunks_mut(VERIFY_CHUNK_SIZE))
+        .map(|packets| {
+            let mut num_duplicates = 0;
+            for packet in packets.iter_mut().filter(|p| !p.meta().discard()) {
+                let is_duplicate = shred::wire::get_shred_without_retransmitter_signature(packet)
+                    .map(|shred| deduper.dedup(shred))
+                    .unwrap_or(true)
+                    && !packet.meta().repair();
+                num_duplicates += usize::from(is_duplicate);
+                if is_duplicate || !verify_shred_cpu(packet, &leader_slots, cache) {
+                    packet.meta_mut().set_discard(true);
+                }
+            }
+            num_duplicates
+        })
+        .sum()
 }
 
 // Returns pubkey of leaders for shred slots referenced in the packets.
@@ -497,21 +507,24 @@ mod tests {
         let batches = vec![batch];
 
         let cache = RwLock::new(LruCache::new(/*capacity:*/ 128));
+        let deduper = Deduper::<2, [u8]>::new(&mut rand::rng(), /*num_bits:*/ 1024);
         let thread_pool = ThreadPoolBuilder::new().num_threads(3).build().unwrap();
         let working_bank = bank_forks.read().unwrap().working_bank();
         let mut batches = batches
             .into_iter()
             .map(PacketBatch::from)
             .collect::<Vec<_>>();
-        thread_pool.install(|| {
-            par_verify_packets(
+        let num_duplicates = thread_pool.install(|| {
+            dedup_and_verify_packets(
                 &Pubkey::new_unique(), // self_pubkey
                 &working_bank,
                 &leader_schedule_cache,
+                &deduper,
                 &mut batches,
                 &cache,
             )
         });
+        assert_eq!(num_duplicates, 0);
         assert!(!batches[0].first().unwrap().meta().discard());
         assert!(batches[0].get(1).unwrap().meta().discard());
     }
