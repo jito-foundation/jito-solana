@@ -86,6 +86,7 @@ use {
     solana_instruction_error::InstructionError,
     solana_keypair::{Keypair, keypair_from_seed},
     solana_lattice_hash::lt_hash::LtHash,
+    solana_loader_v3_interface::{get_program_data_address, state::UpgradeableLoaderState},
     solana_message::{
         Message, MessageHeader, SanitizedMessage, VersionedMessage,
         compiled_instruction::CompiledInstruction, v0, v1,
@@ -13146,4 +13147,542 @@ fn test_load_and_execute_transactions_populates_global_program_cache() {
         assert_eq!(slot_versions.len(), 1);
         assert_matches!(slot_versions[0].program, ProgramCacheEntryType::Loaded(_));
     }
+}
+
+/// Signers and addresses shared by the ProgramData floor tests. Sharing them lets independent banks
+/// run the same transactions in different orders and be compared by bank hash. Two banks in one slot
+/// can't be used because they'd share AccountsDb.
+struct ProgramDataFloorFixture {
+    genesis_config: GenesisConfig,
+    /// Forces the feature state. If unset, it comes from genesis and feature accounts alone.
+    forced_floor: Option<bool>,
+    funder: Keypair,
+    reader: Keypair,
+    authority: Keypair,
+    program: Pubkey,
+    programdata: Pubkey,
+    recipient: Pubkey,
+    /// If set, the reader references the program only through this address lookup table.
+    lookup_table: Option<Pubkey>,
+}
+
+impl ProgramDataFloorFixture {
+    fn new(floor_active: bool, via_lookup_table: bool) -> Self {
+        let program = Pubkey::new_unique();
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config_with_leader(
+            LAMPORTS_PER_SOL,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        genesis_config.rent = Rent::default();
+        genesis_config.fee_rate_governor = FeeRateGovernor::new(5000, 0);
+        Self {
+            genesis_config,
+            forced_floor: Some(floor_active),
+            funder: Keypair::new(),
+            reader: Keypair::new(),
+            authority: Keypair::new(),
+            program,
+            programdata: get_program_data_address(&program),
+            recipient: Pubkey::new_unique(),
+            lookup_table: via_lookup_table.then(Pubkey::new_unique),
+        }
+    }
+
+    /// Returns a bank in which the program is deployed and its ProgramData account exists.
+    fn new_bank_with_live_program(&self) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+        let mut bank = Bank::new_for_tests(&self.genesis_config);
+        let floor_feature = feature_set::loaderv3_programdata_size_floor::id();
+        match self.forced_floor {
+            Some(true) => bank.activate_feature(&floor_feature),
+            Some(false) => bank.deactivate_feature(&floor_feature),
+            None => {}
+        }
+
+        let system_account = AccountSharedData::new(LAMPORTS_PER_SOL, 0, &system_program::id());
+        for signer in [&self.funder, &self.reader, &self.authority] {
+            bank.store_account(&signer.pubkey(), &system_account);
+        }
+        let mut program_account = AccountSharedData::new_data(
+            LAMPORTS_PER_SOL,
+            &UpgradeableLoaderState::Program {
+                programdata_address: self.programdata,
+            },
+            &bpf_loader_upgradeable::id(),
+        )
+        .unwrap();
+        program_account.set_executable(true);
+        bank.store_account(&self.program, &program_account);
+        bank.store_account(
+            &self.programdata,
+            &AccountSharedData::new_data_with_space(
+                LAMPORTS_PER_SOL,
+                &UpgradeableLoaderState::ProgramData {
+                    slot: 0,
+                    upgrade_authority_address: Some(self.authority.pubkey()),
+                },
+                UpgradeableLoaderState::size_of_programdata(1),
+                &bpf_loader_upgradeable::id(),
+            )
+            .unwrap(),
+        );
+        if let Some(lookup_table) = self.lookup_table {
+            use solana_address_lookup_table_interface::state::{
+                AddressLookupTable, LookupTableMeta,
+            };
+            let data = AddressLookupTable {
+                meta: LookupTableMeta::default(),
+                addresses: std::borrow::Cow::Owned(vec![self.program]),
+            }
+            .serialize_for_tests()
+            .unwrap();
+            let mut account = AccountSharedData::new(
+                LAMPORTS_PER_SOL,
+                data.len(),
+                &solana_address_lookup_table_interface::program::id(),
+            );
+            account.set_data_from_slice(&data);
+            bank.store_account(&lookup_table, &account);
+        }
+
+        bank.wrap_with_bank_forks_for_tests()
+    }
+
+    /// Returns a bank in which the program was closed by the loader in an earlier slot.
+    fn new_bank(&self) -> (Arc<Bank>, Arc<RwLock<BankForks>>) {
+        let (bank, bank_forks) = self.new_bank_with_live_program();
+        let leader = *bank.leader();
+        let bank = Bank::new_from_parent_with_bank_forks(bank_forks.as_ref(), bank, leader, 1);
+        let close = solana_loader_v3_interface::instruction::close_any(
+            &self.programdata,
+            &self.authority.pubkey(),
+            Some(&self.authority.pubkey()),
+            Some(&self.program),
+        );
+        bank.process_transaction(&Transaction::new_signed_with_payer(
+            &[close],
+            Some(&self.authority.pubkey()),
+            &[&self.authority],
+            bank.last_blockhash(),
+        ))
+        .unwrap();
+        assert_eq!(bank.get_account(&self.programdata), None);
+        assert_eq!(
+            wincode::deserialize::<UpgradeableLoaderState>(
+                bank.get_account(&self.program).unwrap().data()
+            )
+            .unwrap(),
+            UpgradeableLoaderState::Program {
+                programdata_address: self.programdata,
+            },
+        );
+
+        let bank = Bank::new_from_parent_with_bank_forks(bank_forks.as_ref(), bank, leader, 2);
+        (bank, bank_forks)
+    }
+
+    /// Transfers the rent-exempt minimum to the ProgramData address.
+    fn fund_programdata_tx(&self, bank: &Bank) -> Transaction {
+        system_transaction::transfer(
+            &self.funder,
+            &self.programdata,
+            bank.get_minimum_balance_for_rent_exemption(0),
+            bank.last_blockhash(),
+        )
+    }
+
+    /// References the program without invoking it, and writes state on success so that the outcome
+    /// is visible in the bank hash.
+    fn reader_tx(&self, bank: &Bank, loaded_accounts_data_size_limit: u32) -> VersionedTransaction {
+        let payer = self.reader.pubkey();
+        let mut transfer = system_instruction::transfer(
+            &payer,
+            &self.recipient,
+            bank.get_minimum_balance_for_rent_exemption(0),
+        );
+        transfer
+            .accounts
+            .push(AccountMeta::new_readonly(self.program, false));
+        let instructions = [
+            ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(
+                loaded_accounts_data_size_limit,
+            ),
+            transfer,
+        ];
+        let message = match self.lookup_table {
+            Some(key) => VersionedMessage::V0(
+                v0::Message::try_compile(
+                    &payer,
+                    &instructions,
+                    &[solana_message::AddressLookupTableAccount {
+                        key,
+                        addresses: vec![self.program],
+                    }],
+                    bank.last_blockhash(),
+                )
+                .unwrap(),
+            ),
+            None => VersionedMessage::Legacy(Message::new_with_blockhash(
+                &instructions,
+                Some(&payer),
+                &bank.last_blockhash(),
+            )),
+        };
+        assert_eq!(
+            message.static_account_keys().contains(&self.program),
+            self.lookup_table.is_none(),
+        );
+        VersionedTransaction::try_new(message, &[&self.reader]).unwrap()
+    }
+
+    /// Sanitizes the way replay does.
+    fn sanitize(
+        bank: &Bank,
+        transaction: impl Into<VersionedTransaction>,
+    ) -> RuntimeTransaction<ResolvedTransactionView<Bytes>> {
+        bank.verify_transaction(
+            transaction_view_from_versioned_transaction(transaction).unwrap(),
+            TransactionVerificationMode::HashOnly,
+        )
+        .unwrap()
+    }
+
+    /// Returns how many bytes the reader is charged for loading its accounts in `bank`.
+    fn loaded_size_in(&self, bank: &Bank) -> u32 {
+        let reader = RuntimeTransaction::try_create(
+            self.reader_tx(bank, u32::MAX),
+            MessageHash::Compute,
+            None,
+            bank,
+            bank.get_reserved_account_keys(),
+        )
+        .unwrap();
+        let simulation = bank.simulate_transaction_unchecked(&reader, false);
+        assert_eq!(simulation.result, Ok(()));
+        simulation.loaded_accounts_data_size
+    }
+
+    /// Returns how many bytes the reader is charged in a fresh bank.
+    fn loaded_size(&self, programdata_funded: bool) -> u32 {
+        let (bank, _bank_forks) = self.new_bank();
+        if programdata_funded {
+            bank.process_transaction(&self.fund_programdata_tx(&bank))
+                .unwrap();
+        }
+        self.loaded_size_in(&bank)
+    }
+
+    /// Runs both transactions in the given order. Returns the reader's result and the bank hash.
+    fn run(&self, fund_first: bool, limit: u32) -> (Result<()>, Hash) {
+        let (bank, _bank_forks) = self.new_bank();
+        let fund = self.fund_programdata_tx(&bank);
+        let reader = self.reader_tx(&bank, limit);
+        if fund_first {
+            bank.process_transaction(&fund).unwrap();
+        }
+        let reader_result = bank
+            .process_entry_transactions(vec![reader.clone()])
+            .remove(0);
+        if !fund_first {
+            bank.process_transaction(&fund).unwrap();
+        }
+        // A failure to load is still committed with its fee, in either order.
+        assert_eq!(
+            bank.get_signature_status(&reader.signatures[0]),
+            Some(reader_result.clone())
+        );
+        assert!(bank.get_balance(&self.reader.pubkey()) < LAMPORTS_PER_SOL);
+        assert_eq!(
+            bank.get_balance(&self.recipient),
+            if reader_result.is_ok() {
+                bank.get_minimum_balance_for_rent_exemption(0)
+            } else {
+                0
+            },
+        );
+        bank.freeze();
+        (reader_result, bank.hash())
+    }
+}
+
+// Until `loaderv3_programdata_size_floor` is active, implicit read locks keep the two transactions
+// in entry order. Once it's active, the charge is the same in either order and the locks are dropped.
+#[test_case(false, false; "feature_inactive_locks_keep_entry_order")]
+#[test_case(false, true; "feature_inactive_locks_cover_lookup_table_programs")]
+#[test_case(true, false; "feature_active_charge_is_order_independent")]
+#[test_case(true, true; "feature_active_charge_covers_lookup_table_programs")]
+fn test_programdata_floor_charge_and_locks(floor_active: bool, via_lookup_table: bool) {
+    use solana_unified_scheduler_logic::{Capability, SchedulingStateMachine, UsageQueue};
+
+    let fixture = ProgramDataFloorFixture::new(floor_active, via_lookup_table);
+    let unfunded_size = fixture.loaded_size(false);
+    let funded_size = fixture.loaded_size(true);
+    let (read_first, read_first_hash) = fixture.run(false, unfunded_size);
+    let (fund_first, fund_first_hash) = fixture.run(true, unfunded_size);
+    // Control: differing bank hashes below can only come from the order of the transactions.
+    assert_eq!(fixture.run(false, unfunded_size).1, read_first_hash);
+
+    assert_eq!(read_first, Ok(()));
+    if floor_active {
+        assert_eq!(funded_size, unfunded_size);
+        assert_eq!(
+            unfunded_size,
+            ProgramDataFloorFixture::new(false, via_lookup_table)
+                .loaded_size(false)
+                .saturating_add(64)
+                .saturating_add(UpgradeableLoaderState::size_of_programdata_metadata() as u32),
+        );
+        assert_eq!(fund_first, Ok(()));
+        assert_eq!(fund_first_hash, read_first_hash);
+
+        // One byte below the charge fails in both orders, with the same bank hash.
+        let (read_first, read_first_hash) = fixture.run(false, unfunded_size - 1);
+        let (fund_first, fund_first_hash) = fixture.run(true, unfunded_size - 1);
+        let exceeded = Err(TransactionError::MaxLoadedAccountsDataSizeExceeded);
+        assert_eq!(read_first, exceeded);
+        assert_eq!(fund_first, exceeded);
+        assert_eq!(fund_first_hash, read_first_hash);
+    } else {
+        assert_eq!(funded_size, unfunded_size + 64);
+        assert_eq!(
+            fund_first,
+            Err(TransactionError::MaxLoadedAccountsDataSizeExceeded),
+        );
+        assert_ne!(fund_first_hash, read_first_hash);
+
+        // Control: with room for the funded account both orders agree.
+        let (read_first, read_first_hash) = fixture.run(false, funded_size);
+        let (fund_first, fund_first_hash) = fixture.run(true, funded_size);
+        assert_eq!(read_first, Ok(()));
+        assert_eq!(fund_first, Ok(()));
+        assert_eq!(fund_first_hash, read_first_hash);
+    }
+
+    // Replay takes no bank locks. Its scheduler orders tasks by the locks on what
+    // `verify_transaction` returns.
+    let (bank, _bank_forks) = fixture.new_bank();
+    // On its own thread because a thread can only initialize a state machine once.
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut state_machine = unsafe {
+                SchedulingStateMachine::exclusively_initialize_current_thread_for_scheduling(
+                    None, None,
+                )
+            };
+            let mut usage_queues = HashMap::new();
+            let mut usage_queue_loader = |address: Pubkey| {
+                usage_queues
+                    .entry(address)
+                    .or_insert_with(|| UsageQueue::new(&Capability::FifoQueueing))
+                    .clone()
+            };
+            for fund_first in [true, false] {
+                let fund = SchedulingStateMachine::create_task(
+                    ProgramDataFloorFixture::sanitize(&bank, fixture.fund_programdata_tx(&bank)),
+                    u128::from(!fund_first),
+                    &mut usage_queue_loader,
+                );
+                let reader = SchedulingStateMachine::create_task(
+                    ProgramDataFloorFixture::sanitize(
+                        &bank,
+                        fixture.reader_tx(&bank, unfunded_size),
+                    ),
+                    u128::from(fund_first),
+                    &mut usage_queue_loader,
+                );
+                let (first, second) = if fund_first {
+                    (fund, reader)
+                } else {
+                    (reader, fund)
+                };
+                assert!(
+                    state_machine
+                        .schedule_or_buffer_task(first.clone(), false)
+                        .is_some()
+                );
+                assert_eq!(
+                    state_machine
+                        .schedule_or_buffer_task(second.clone(), false)
+                        .is_some(),
+                    floor_active,
+                );
+                state_machine.deschedule_task(&first);
+                if !floor_active {
+                    assert_eq!(
+                        state_machine
+                            .schedule_next_unblocked_task()
+                            .map(|task| task.task_id()),
+                        Some(second.task_id()),
+                    );
+                }
+                state_machine.deschedule_task(&second);
+                assert!(state_machine.has_no_active_task());
+            }
+        });
+    });
+
+    // Leader paths hold the same locks through the bank instead.
+    let fund = [ProgramDataFloorFixture::sanitize(
+        &bank,
+        fixture.fund_programdata_tx(&bank),
+    )];
+    let reader = [ProgramDataFloorFixture::sanitize(
+        &bank,
+        fixture.reader_tx(&bank, unfunded_size),
+    )];
+    let second_lock = if floor_active {
+        Ok(())
+    } else {
+        Err(TransactionError::AccountInUse)
+    };
+    // Separate batches, as on separate threads: locks only conflict with those of other batches.
+    for (first, second) in [(&fund, &reader), (&reader, &fund)] {
+        let first_batch = bank.prepare_sanitized_batch(first);
+        let second_batch = bank.prepare_sanitized_batch(second);
+        assert_eq!(first_batch.lock_results()[0], Ok(()));
+        assert_eq!(second_batch.lock_results()[0], second_lock);
+    }
+}
+
+// A live ProgramData account's charge follows its size, so every loader instruction that resizes
+// it must write-lock the program too.
+#[test]
+fn test_programdata_resize_requires_writable_program() {
+    use solana_loader_v3_interface::instruction as loader_v3;
+
+    let mut fixture = ProgramDataFloorFixture::new(true, false);
+    // ExtendProgram stays reachable until this feature activates.
+    fixture
+        .genesis_config
+        .accounts
+        .remove(&feature_set::loader_v3_remove_extend_program::id());
+    let (bank, _bank_forks) = fixture.new_bank_with_live_program();
+    let authority = fixture.authority.pubkey();
+    for (mut instruction, program_index, expected_log) in [
+        (
+            loader_v3::close_any(
+                &fixture.programdata,
+                &authority,
+                Some(&authority),
+                Some(&fixture.program),
+            ),
+            3,
+            "Program account is not writable",
+        ),
+        (
+            loader_v3::extend_program(&fixture.program, Some(&authority), 1024),
+            1,
+            "Program account is not writable",
+        ),
+        (
+            loader_v3::upgrade(
+                &fixture.program,
+                &Pubkey::new_unique(),
+                &authority,
+                &authority,
+            ),
+            1,
+            "Program account not writeable",
+        ),
+    ] {
+        assert_eq!(instruction.accounts[program_index].pubkey, fixture.program);
+        instruction.accounts[program_index].is_writable = false;
+        let transaction = Transaction::new_signed_with_payer(
+            &[instruction],
+            Some(&authority),
+            &[&fixture.authority],
+            bank.last_blockhash(),
+        );
+        let simulation = bank.simulate_transaction_unchecked(
+            &RuntimeTransaction::from_transaction_for_tests(transaction),
+            false,
+        );
+        assert_eq!(
+            simulation.result,
+            Err(TransactionError::InstructionError(
+                0,
+                InstructionError::InvalidArgument,
+            )),
+        );
+        assert!(
+            simulation
+                .logs
+                .iter()
+                .any(|log| log.ends_with(expected_log)),
+            "{:?}",
+            simulation.logs,
+        );
+    }
+}
+
+// The cases above force the feature state on a bank. This takes the path mainnet will: a pending
+// feature account applied at the epoch boundary, with a transaction sanitized before it.
+#[test]
+fn test_programdata_floor_activates_at_epoch_boundary() {
+    use solana_runtime_transaction::transaction_meta::TransactionMeta;
+
+    let floor_feature = feature_set::loaderv3_programdata_size_floor::id();
+    let mut fixture = ProgramDataFloorFixture::new(false, false);
+    fixture.genesis_config.accounts.remove(&floor_feature);
+    fixture.forced_floor = None;
+    let (bank, bank_forks) = fixture.new_bank();
+    let unfloored_size = fixture.loaded_size_in(&bank);
+    let sanitized_before =
+        ProgramDataFloorFixture::sanitize(&bank, fixture.reader_tx(&bank, u32::MAX));
+    assert!(
+        sanitized_before
+            .implicit_read_locks()
+            .contains(&fixture.programdata)
+    );
+    bank.store_account(
+        &floor_feature,
+        &feature::create_account(&Feature::default(), 42),
+    );
+
+    let leader = *bank.leader();
+    let first_slot = bank
+        .epoch_schedule()
+        .get_first_slot_in_epoch(bank.epoch() + 1);
+    let bank = Bank::new_from_parent_with_bank_forks(bank_forks.as_ref(), bank, leader, first_slot);
+    assert_eq!(
+        feature::from_account(&bank.get_account(&floor_feature).unwrap())
+            .unwrap()
+            .activated_at,
+        Some(first_slot),
+    );
+
+    // The charge is floored and replay stops deriving locks in the first bank of the epoch.
+    let floored_size = unfloored_size
+        .saturating_add(64)
+        .saturating_add(UpgradeableLoaderState::size_of_programdata_metadata() as u32);
+    assert_eq!(fixture.loaded_size_in(&bank), floored_size);
+    assert_eq!(
+        ProgramDataFloorFixture::sanitize(&bank, fixture.reader_tx(&bank, u32::MAX))
+            .implicit_read_locks(),
+        &[] as &[Pubkey],
+    );
+
+    // A transaction sanitized before the boundary still holds and releases its cached lock.
+    let fund = [ProgramDataFloorFixture::sanitize(
+        &bank,
+        fixture.fund_programdata_tx(&bank),
+    )];
+    let held = bank.prepare_sanitized_batch(std::slice::from_ref(&sanitized_before));
+    assert_eq!(held.lock_results()[0], Ok(()));
+    assert_eq!(
+        bank.prepare_sanitized_batch(&fund).lock_results()[0],
+        Err(TransactionError::AccountInUse),
+    );
+    drop(held);
+    assert_eq!(
+        bank.prepare_sanitized_batch(&fund).lock_results()[0],
+        Ok(()),
+    );
+
+    // Funding the account no longer changes the charge.
+    bank.process_transaction(&fixture.fund_programdata_tx(&bank))
+        .unwrap();
+    assert_eq!(fixture.loaded_size_in(&bank), floored_size);
 }

@@ -511,3 +511,106 @@ impl TipManager {
         Ok(transactions)
     }
 }
+
+#[cfg(test)]
+mod programdata_lock_tests {
+    use {
+        super::*, crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
+        solana_ledger::genesis_utils::create_genesis_config,
+        solana_runtime_transaction::transaction_meta::TransactionMeta,
+        solana_transaction_error::TransactionError,
+    };
+
+    #[test_case::test_case(false; "tip_transactions_protect_programdata")]
+    #[test_case::test_case(true; "tip_transactions_drop_locks_after_activation")]
+    fn test_all_tip_builders_programdata_bank_and_bundle_locks(feature_active: bool) {
+        let genesis = create_genesis_config(u64::MAX);
+        let mut bank = Bank::new_for_tests(&genesis.genesis_config);
+        let feature = agave_feature_set::loaderv3_programdata_size_floor::id();
+        if feature_active {
+            bank.activate_feature(&feature);
+        } else {
+            bank.deactivate_feature(&feature);
+        }
+        let manager = TipManager::new(TipManagerConfig::default());
+        let payer = &genesis.mint_keypair;
+        let transactions = [
+            manager
+                .initialize_tip_payment_program_tx(&bank, payer)
+                .unwrap(),
+            manager
+                .initialize_tip_distribution_config_tx(&bank, payer)
+                .unwrap(),
+            manager
+                .initialize_tip_distribution_account_tx(&bank, payer)
+                .unwrap(),
+            manager
+                .build_change_tip_receiver_and_block_builder_tx(
+                    &Pubkey::new_unique(),
+                    &Pubkey::new_unique(),
+                    &bank,
+                    payer,
+                    &Pubkey::new_unique(),
+                    &Pubkey::new_unique(),
+                    0,
+                )
+                .unwrap(),
+        ];
+        let payment = manager.tip_payment_program_info.program_id;
+        let distribution = manager.tip_distribution_program_info.program_id;
+        for (transaction, program) in
+            transactions
+                .iter()
+                .zip([payment, distribution, distribution, payment])
+        {
+            let programdata = Pubkey::find_program_address(
+                &[program.as_ref()],
+                &solana_sdk_ids::bpf_loader_upgradeable::id(),
+            )
+            .0;
+            assert_eq!(
+                transaction.implicit_read_locks().contains(&programdata),
+                !feature_active,
+            );
+            let bundle_locker = BundleAccountLocker::default();
+            bundle_locker
+                .lock_bundle(std::slice::from_ref(transaction), &bank)
+                .unwrap();
+            assert_eq!(
+                bundle_locker
+                    .account_locks()
+                    .read_locks()
+                    .contains_key(&programdata),
+                !feature_active,
+            );
+            bundle_locker
+                .unlock_bundle(std::slice::from_ref(transaction), &bank)
+                .unwrap();
+            assert!(bundle_locker.account_locks().read_locks().is_empty());
+
+            let writer = RuntimeTransaction::from_transaction_for_tests(
+                solana_system_transaction::transfer(
+                    &Keypair::new(),
+                    &programdata,
+                    1,
+                    bank.last_blockhash(),
+                ),
+            );
+            let tip_batch = bank.prepare_sanitized_batch(std::slice::from_ref(transaction));
+            assert!(tip_batch.lock_results()[0].is_ok());
+            let writer_batch = bank.prepare_sanitized_batch(std::slice::from_ref(&writer));
+            assert_eq!(
+                writer_batch.lock_results()[0],
+                if feature_active {
+                    Ok(())
+                } else {
+                    Err(TransactionError::AccountInUse)
+                },
+            );
+            drop(writer_batch);
+            drop(tip_batch);
+            let writer_batch = bank.prepare_sanitized_batch(std::slice::from_ref(&writer));
+            assert!(writer_batch.lock_results()[0].is_ok());
+        }
+    }
+}
