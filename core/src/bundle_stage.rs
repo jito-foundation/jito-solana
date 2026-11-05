@@ -973,12 +973,13 @@ mod tests {
     use {
         super::*,
         crate::tip_manager::{
-            TipDistributionAccountConfig, TipManagerConfig,
+            TipDistributionAccountConfig, TipManagerConfig, TipManagerError,
             tip_distribution::{JitoTipDistributionConfig, TipDistributionAccount},
             tip_payment::JitoTipPaymentConfig,
         },
         agave_feature_set::FeatureSet,
         crossbeam_channel::{bounded, unbounded},
+        solana_account::ReadableAccount,
         solana_cluster_type::ClusterType,
         solana_entry::recorder_message::RecorderMessage,
         solana_fee_calculator::{DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, FeeRateGovernor},
@@ -1003,13 +1004,15 @@ mod tests {
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_svm::{
-            transaction_commit_result::TransactionCommitResultExtensions,
+            transaction_commit_result::{
+                TransactionCommitResult, TransactionCommitResultExtensions,
+            },
             transaction_processor::ExecutionRecordingConfig,
         },
         solana_svm_timings::ExecuteTimings,
         solana_system_transaction::transfer,
         solana_time_utils::timestamp,
-        solana_transaction::sanitized::SanitizedTransaction,
+        solana_transaction::{InstructionError, sanitized::SanitizedTransaction},
         solana_vote_interface::state::vote_state_v4::VoteStateV4,
     };
 
@@ -1084,6 +1087,7 @@ mod tests {
                 vote_account,
                 commission_bps: 10,
             },
+            tip_distribution_account_signer: None,
         });
 
         let init_txs = tip_manager
@@ -1335,6 +1339,156 @@ mod tests {
         );
     }
 
+    fn commit_transactions(
+        bank: &Bank,
+        txs: &[RuntimeTransaction<SanitizedTransaction>],
+    ) -> Vec<TransactionCommitResult> {
+        assert!(!txs.is_empty());
+        let batch = bank.prepare_sanitized_batch(txs);
+        let (results, _) = bank.load_execute_and_commit_transactions(
+            &batch,
+            ExecutionRecordingConfig::new_single_setting(true),
+            &mut ExecuteTimings::default(),
+            None,
+        );
+        results
+    }
+
+    fn all_executed_successfully(results: &[TransactionCommitResult]) -> bool {
+        results.iter().all(|r| r.was_executed_successfully())
+    }
+
+    #[test]
+    fn test_tip_distribution_account_signer_during_identity_rotation() {
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair: new_identity,
+        } = create_genesis_config_with_rent(2, Rent::default(), FeeRateGovernor::new(0, 0));
+        let (bank, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+        let bank = bank_forks.read().unwrap().working_bank();
+
+        let old_identity = Keypair::new();
+        bank.transfer(
+            LAMPORTS_PER_SOL,
+            &genesis_config_info.mint_keypair,
+            &old_identity.pubkey(),
+        )
+        .unwrap();
+
+        let vote_account = genesis_config_info.voting_keypair.pubkey();
+        let block_builder_fee_info = BlockBuilderFeeInfo {
+            block_builder: old_identity.pubkey(),
+            block_builder_commission: 0,
+        };
+        let tip_manager = |tip_distribution_account_signer| {
+            TipManager::new(TipManagerConfig {
+                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: old_identity.pubkey(),
+                    vote_account,
+                    commission_bps: 10,
+                },
+                tip_distribution_account_signer,
+            })
+        };
+
+        let init_txs = tip_manager(None)
+            .get_initialize_tip_programs_bundle(&bank, &old_identity)
+            .unwrap();
+        assert!(all_executed_successfully(&commit_transactions(
+            &bank, &init_txs
+        )));
+
+        assert_matches!(
+            tip_manager(None).get_tip_programs_crank_bundle(
+                &bank,
+                &old_identity,
+                &block_builder_fee_info
+            ),
+            Err(TipManagerError::TipDistributionAccountSignerNotConfigured {
+                vote_account_node_pubkey,
+                identity,
+            }) if vote_account_node_pubkey == new_identity.pubkey()
+                && identity == old_identity.pubkey()
+        );
+        let wrong_signer = Keypair::new();
+        assert_matches!(
+            tip_manager(Some(Arc::new(wrong_signer.insecure_clone()))).get_tip_programs_crank_bundle(
+                &bank,
+                &old_identity,
+                &block_builder_fee_info
+            ),
+            Err(TipManagerError::TipDistributionAccountSignerMismatch {
+                vote_account_node_pubkey,
+                identity,
+                configured_signer,
+            }) if vote_account_node_pubkey == new_identity.pubkey()
+                && identity == old_identity.pubkey()
+                && configured_signer == wrong_signer.pubkey()
+        );
+
+        let steady_state_crank = tip_manager(Some(Arc::new(wrong_signer.insecure_clone())))
+            .get_tip_programs_crank_bundle(&bank, &new_identity, &block_builder_fee_info)
+            .unwrap();
+        assert_eq!(steady_state_crank.len(), 2);
+        assert_eq!(steady_state_crank[0].signatures().len(), 1);
+
+        let no_vote_account_crank = TipManager::new(TipManagerConfig {
+            tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+            tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: old_identity.pubkey(),
+                vote_account: Pubkey::new_unique(),
+                commission_bps: 10,
+            },
+            tip_distribution_account_signer: Some(Arc::new(new_identity.insecure_clone())),
+        })
+        .get_tip_programs_crank_bundle(&bank, &old_identity, &block_builder_fee_info)
+        .unwrap();
+        assert_eq!(no_vote_account_crank.len(), 2);
+        assert_eq!(no_vote_account_crank[0].signatures().len(), 1);
+
+        let old_init_tx = tip_manager(None)
+            .initialize_tip_distribution_account_tx(&bank, &old_identity, &old_identity)
+            .unwrap();
+        let results = commit_transactions(&bank, &[old_init_tx]);
+        assert_matches!(
+            results.as_slice(),
+            [Ok(committed)] if committed.status
+                == Err(TransactionError::InstructionError(0, InstructionError::Custom(6014)))
+        );
+
+        let tip_manager = tip_manager(Some(Arc::new(new_identity.insecure_clone())));
+        assert!(tip_manager.should_init_tip_distribution_account(&bank));
+        let crank = tip_manager
+            .get_tip_programs_crank_bundle(&bank, &old_identity, &block_builder_fee_info)
+            .unwrap();
+        assert_eq!(crank.len(), 2);
+        assert_eq!(crank[0].signatures().len(), 2);
+        assert!(all_executed_successfully(&commit_transactions(
+            &bank, &crank
+        )));
+
+        assert!(!tip_manager.should_init_tip_distribution_account(&bank));
+        let tip_distribution_account = bank
+            .get_account(&tip_manager.get_my_tip_distribution_pda(bank.epoch()))
+            .unwrap();
+        assert_eq!(
+            tip_distribution_account.owner(),
+            &tip_manager.tip_distribution_program_id()
+        );
+        assert!(
+            tip_manager
+                .get_tip_programs_crank_bundle(&bank, &old_identity, &block_builder_fee_info)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn test_tip_programs_initialized_with_no_bundles() {
         agave_logger::setup();
@@ -1393,6 +1547,7 @@ mod tests {
                     vote_account: genesis_config_info.voting_keypair.pubkey(),
                     commission_bps: 10,
                 },
+                tip_distribution_account_signer: None,
             }),
             BundleAccountLocker::default(),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
@@ -1533,6 +1688,7 @@ mod tests {
                     vote_account: genesis_config_info.voting_keypair.pubkey(),
                     commission_bps: 10,
                 },
+                tip_distribution_account_signer: None,
             }),
             BundleAccountLocker::default(),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
@@ -1625,6 +1781,7 @@ mod tests {
                     vote_account: genesis_config_info.voting_keypair.pubkey(),
                     commission_bps: 10,
                 },
+                tip_distribution_account_signer: None,
             }),
             BundleAccountLocker::default(),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
@@ -1743,6 +1900,7 @@ mod tests {
                     vote_account: genesis_config_info.voting_keypair.pubkey(),
                     commission_bps: 10,
                 },
+                tip_distribution_account_signer: None,
             }),
             BundleAccountLocker::default(),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
@@ -1860,6 +2018,7 @@ mod tests {
                     vote_account: genesis_config_info.voting_keypair.pubkey(),
                     commission_bps: 10,
                 },
+                tip_distribution_account_signer: None,
             }),
             BundleAccountLocker::default(),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
