@@ -866,6 +866,14 @@ fn tip_manager_config_from_matches(
         })
     };
     let commission_bps = value_t!(matches, "commission_bps", u16);
+    let tip_distribution_account_signer = matches
+        .is_present("tip_distribution_account_signer")
+        .then(|| {
+            Arc::new(
+                keypair_of(matches, "tip_distribution_account_signer")
+                    .expect("--tip-distribution-account-signer keypair could not be loaded"),
+            )
+        });
     TipManagerConfig {
         tip_payment_program_id: pubkey("tip_payment_program_pubkey"),
         tip_distribution_program_id: pubkey("tip_distribution_program_pubkey"),
@@ -878,5 +886,53 @@ fn tip_manager_config_from_matches(
                 commission_bps.expect("--commission-bps argument required when validator is voting")
             },
         },
+        tip_distribution_account_signer,
+    }
+}
+
+#[cfg(test)]
+mod tip_manager_config_tests {
+    use {
+        super::*,
+        crate::{cli::DefaultArgs, commands::run::args::add_args},
+    };
+
+    #[test]
+    fn test_tip_distribution_account_signer_flag() {
+        let default_args = DefaultArgs::default();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file = tmp_dir.path().join("tda-signer.json");
+        let keypair = solana_keypair::Keypair::new();
+        solana_keypair::write_keypair_file(&keypair, &file).unwrap();
+
+        let app = add_args(clap::App::new("agave-validator"), &default_args);
+        let matches = app.get_matches_from(vec!["agave-validator"]);
+        assert!(
+            tip_manager_config_from_matches(&matches, true)
+                .tip_distribution_account_signer
+                .is_none()
+        );
+
+        let app = add_args(clap::App::new("agave-validator"), &default_args);
+        let matches = app.get_matches_from(vec![
+            "agave-validator",
+            "--tip-distribution-account-signer",
+            file.to_str().unwrap(),
+        ]);
+        let config = tip_manager_config_from_matches(&matches, true);
+        assert_eq!(
+            config.tip_distribution_account_signer.unwrap().pubkey(),
+            keypair.pubkey()
+        );
+
+        let app = add_args(clap::App::new("agave-validator"), &default_args);
+        assert!(
+            app.get_matches_from_safe(vec![
+                "agave-validator",
+                "--tip-distribution-account-signer",
+                tmp_dir.path().join("missing.json").to_str().unwrap(),
+            ])
+            .is_err()
+        );
     }
 }
