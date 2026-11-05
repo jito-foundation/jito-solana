@@ -207,6 +207,7 @@ impl LocalCluster {
                 vote_account: *vote_account,
                 commission_bps: 10,
             },
+            tip_distribution_account_signer: None,
         };
     }
 
