@@ -1,8 +1,7 @@
 use {
     crate::{send_transaction_service_stats::SendTransactionServiceStats, tpu_info::TpuInfo},
     log::warn,
-    solana_client::connection_cache::Protocol,
-    solana_gossip::cluster_info::ClusterInfo,
+    solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol},
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
     solana_tls_utils::NotifyKeyUpdate,

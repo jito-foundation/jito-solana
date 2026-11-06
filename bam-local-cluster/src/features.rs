@@ -145,7 +145,6 @@ impl ResolvedFeatures {
             let id = known_id(value)?;
             ensure!(
                 [
-                    agave_feature_set::alpenglow::id(),
                     agave_feature_set::alpenglow_fast_leader_handover::id(),
                     agave_feature_set::reduce_slot_time_to_200ms::id(),
                 ]
@@ -178,8 +177,11 @@ impl ResolvedFeatures {
             };
             states.entry(id).or_insert(state);
         }
-        // These are already required by the local-cluster vote/program fixtures.
+        // These are already required by the local-cluster vote/program fixtures. Validators no
+        // longer start leaders before the Alpenglow migration, so without Alpenglow at genesis the
+        // cluster stays at slot 0.
         for id in [
+            agave_feature_set::alpenglow::id(),
             agave_feature_set::vote_state_v4::id(),
             agave_feature_set::remaining_compute_units_syscall_enabled::id(),
         ] {
@@ -226,9 +228,7 @@ impl ResolvedFeatures {
                 }
             }
         }
-        if self.states.get(&agave_feature_set::alpenglow::id()) == Some(&FeatureState::Active) {
-            activate_alpenglow_at_genesis(genesis);
-        }
+        activate_alpenglow_at_genesis(genesis);
     }
 }
 
@@ -243,16 +243,7 @@ mod tests {
             last_observed_slot: 43,
             features: FEATURE_NAMES
                 .keys()
-                .map(|id| {
-                    (
-                        id.to_string(),
-                        if *id == agave_feature_set::alpenglow::id() {
-                            FeatureState::Inactive
-                        } else {
-                            FeatureState::Active
-                        },
-                    )
-                })
+                .map(|id| (id.to_string(), FeatureState::Active))
                 .collect(),
         }
     }
@@ -265,6 +256,12 @@ mod tests {
             activate_next_epoch: vec![],
             activate_at_epoch: BTreeMap::new(),
         }
+    }
+
+    fn resolve_error(baseline: &FeatureSnapshot, config: &FeatureConfig) -> String {
+        ResolvedFeatures::resolve(baseline, config)
+            .unwrap_err()
+            .to_string()
     }
 
     #[test]
@@ -368,30 +365,15 @@ mod tests {
     fn rejects_unknown_conflicting_and_missing_prerequisite_features() {
         let mut config = config();
         config.enable.push(Pubkey::default().to_string());
-        assert!(
-            ResolvedFeatures::resolve(&baseline(), &config)
-                .unwrap_err()
-                .to_string()
-                .contains("unknown feature")
-        );
+        assert!(resolve_error(&baseline(), &config).contains("unknown feature"));
         config.enable = vec![agave_feature_set::alpenglow::id().to_string()];
         config.activate_next_epoch = config.enable.clone();
-        assert!(
-            ResolvedFeatures::resolve(&baseline(), &config)
-                .unwrap_err()
-                .to_string()
-                .contains("conflicting")
-        );
+        assert!(resolve_error(&baseline(), &config).contains("conflicting"));
         config.activate_next_epoch.clear();
         config
             .disable
             .push(agave_feature_set::vote_state_v4::id().to_string());
-        assert!(
-            ResolvedFeatures::resolve(&baseline(), &config)
-                .unwrap_err()
-                .to_string()
-                .contains("prerequisite")
-        );
+        assert!(resolve_error(&baseline(), &config).contains("prerequisite"));
     }
 
     #[test]
@@ -418,18 +400,13 @@ mod tests {
         baseline
             .features
             .insert("not-a-pubkey".into(), FeatureState::Active);
-        assert!(
-            ResolvedFeatures::resolve(&baseline, &config())
-                .unwrap_err()
-                .to_string()
-                .contains("invalid feature ID")
-        );
+        assert!(resolve_error(&baseline, &config()).contains("invalid feature ID"));
     }
 
     #[test]
     fn snapshot_round_trip_preserves_source_and_pending_state() {
         let mut baseline = baseline();
-        let id = agave_feature_set::alpenglow::id();
+        let id = agave_feature_set::alpenglow_fast_leader_handover::id();
         baseline
             .features
             .insert(id.to_string(), FeatureState::Pending);
@@ -458,46 +435,45 @@ mod tests {
     }
 
     #[test]
-    fn alpenglow_genesis_uses_initializer_but_pending_does_not() {
-        let id = agave_feature_set::alpenglow::id();
+    fn rejects_config_without_alpenglow_at_genesis() {
+        let id = agave_feature_set::alpenglow::id().to_string();
+        let mut inactive = baseline();
+        inactive.features.insert(id.clone(), FeatureState::Inactive);
         let mut config = config();
-        config.enable.push(id.to_string());
+        assert!(resolve_error(&inactive, &config).contains("prerequisite"));
+        config.disable.push(id.clone());
+        assert!(resolve_error(&baseline(), &config).contains("prerequisite"));
+        config.disable.clear();
+        config.activate_next_epoch.push(id.clone());
+        assert!(resolve_error(&baseline(), &config).contains("prerequisite"));
+        config.activate_next_epoch.clear();
+        config.activate_at_epoch.insert(id.clone(), 2);
+        assert!(resolve_error(&baseline(), &config).contains("not supported"));
+        config.activate_at_epoch.clear();
+        config.enable.push(id);
+        assert!(ResolvedFeatures::resolve(&inactive, &config).is_ok());
+    }
+
+    #[test]
+    fn alpenglow_genesis_uses_initializer() {
         let mut genesis = GenesisConfig::default();
-        ResolvedFeatures::resolve(&baseline(), &config)
+        ResolvedFeatures::resolve(&baseline(), &config())
             .unwrap()
             .apply(&mut genesis);
-        let mut expected = GenesisConfig::default();
-        ResolvedFeatures::resolve(&baseline(), &self::config())
-            .unwrap()
-            .apply(&mut expected);
+        // The initializer adds the genesis certificate, so rerunning it must change nothing.
+        let mut expected = genesis.clone();
         activate_alpenglow_at_genesis(&mut expected);
         assert_eq!(genesis.accounts, expected.accounts);
-        assert_eq!(genesis.poh_config.hashes_per_tick, None);
-
-        config.enable.clear();
-        config.activate_next_epoch.push(id.to_string());
-        let mut pending = GenesisConfig::default();
-        ResolvedFeatures::resolve(&baseline(), &config)
-            .unwrap()
-            .apply(&mut pending);
-        assert_eq!(
-            feature::from_account(&pending.accounts[&id])
-                .unwrap()
-                .activated_at,
-            None
-        );
-        assert!(pending.accounts.len() < genesis.accounts.len());
     }
 
     #[test]
     fn pending_feature_activates_at_epoch_boundary() {
-        use solana_runtime::{bank::Bank, genesis_utils::create_genesis_config_with_tower_leader};
+        use solana_runtime::{bank::Bank, genesis_utils::create_genesis_config_with_leader};
         let id = agave_feature_set::alpenglow_fast_leader_handover::id();
         let mut config = config();
         config.activate_next_epoch.push(id.to_string());
-        // The baseline leaves Alpenglow inactive, so start from a TowerBFT genesis.
         let mut genesis =
-            create_genesis_config_with_tower_leader(1_000_000_000, &Pubkey::new_unique(), 0)
+            create_genesis_config_with_leader(1_000_000_000, &Pubkey::new_unique(), 0)
                 .genesis_config;
         ResolvedFeatures::resolve(&baseline(), &config)
             .unwrap()
@@ -512,13 +488,15 @@ mod tests {
 
     #[test]
     fn scheduled_feature_activates_only_at_chosen_epoch() {
-        use solana_runtime::{bank::Bank, genesis_utils::create_genesis_config_with_tower_leader};
+        use solana_runtime::{bank::Bank, genesis_utils::create_genesis_config_with_leader};
         let id = agave_feature_set::alpenglow_fast_leader_handover::id();
-        let mut config = config();
-        config.activate_at_epoch.insert(id.to_string(), 3);
-        // The baseline leaves Alpenglow inactive, so start from a TowerBFT genesis.
+        let config = toml::from_str::<FeatureFile>(&format!(
+            "[features]\nbaseline = \"fixture.toml\"\n[features.activate_at_epoch]\n\"{id}\" = 3\n"
+        ))
+        .unwrap()
+        .features;
         let mut genesis =
-            create_genesis_config_with_tower_leader(1_000_000_000, &Pubkey::new_unique(), 0)
+            create_genesis_config_with_leader(1_000_000_000, &Pubkey::new_unique(), 0)
                 .genesis_config;
         ResolvedFeatures::resolve(&baseline(), &config)
             .unwrap()
@@ -546,11 +524,6 @@ mod tests {
             agave_feature_set::remaining_compute_units_syscall_enabled::id().to_string(),
             2,
         );
-        assert!(
-            ResolvedFeatures::resolve(&baseline(), &config)
-                .unwrap_err()
-                .to_string()
-                .contains("not supported")
-        );
+        assert!(resolve_error(&baseline(), &config).contains("not supported"));
     }
 }

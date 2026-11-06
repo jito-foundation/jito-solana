@@ -67,11 +67,10 @@ pub fn shred_receiver_address<'a>() -> Arg<'a, 'a> {
         .number_of_values(1)
         .help(
             "Validator will mirror this validator's own broadcast shreds to these addresses in \
-             addition to normal turbine operation. This covers the direct leader path and \
-             replay-triggered rebroadcasts of this validator's slots. Pass this option multiple \
-             times or use comma-separated ip:port or host:port entries. Hostnames resolve to IPv4 \
-             addresses only. Up to 32 unique addresses are allowed. Set to empty string to \
-             configure an empty explicit receiver list.",
+             addition to normal turbine operation. Pass this option multiple times or use \
+             comma-separated ip:port or host:port entries. Hostnames resolve to IPv4 addresses \
+             only. Up to 32 unique addresses are allowed. Set to empty string to configure an \
+             empty explicit receiver list.",
         )
 }
 

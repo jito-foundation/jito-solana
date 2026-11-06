@@ -3,19 +3,6 @@
 A tool for spinning up local Solana clusters with BAM (Block Assembly Marketplace) support for testing purposes. This
 tool uses subprocess-based execution to spawn `agave-validator` instances.
 
-## Overview
-
-BAM Local Cluster is a development tool for spinning up local Solana clusters with BAM (Block Assembly Marketplace)
-support. It's designed for testing BAM-related functionality in a controlled local environment.
-
-The tool automatically handles:
-
-- Validator process management and monitoring
-- Genesis configuration with SPL programs
-- Keypair generation and ledger setup
-- Bootstrap node coordination
-- Process health monitoring and shutdown
-
 ## Quick Start
 
 The cluster tool belongs to the `dev-bins` workspace so its development
@@ -77,10 +64,10 @@ inactive. Override by feature public key:
 - `disable`: leave inactive.
 - `activate_next_epoch`: request runtime activation at the first epoch
   boundary.
-- `activate_at_epoch`: map Alpenglow, fast leader handover, or the 200 ms slot
-  feature to a target epoch (1 or later). Other gates are rejected because some
-  have extra activation hooks. The feature becomes active at that epoch's first
-  slot. For example:
+- `activate_at_epoch`: map fast leader handover or the 200 ms slot feature to a
+  target epoch (1 or later). Other gates are rejected because some have extra
+  activation hooks. The feature becomes active at that epoch's first slot. For
+  example:
 
   ```toml
   [features.activate_at_epoch]
@@ -97,12 +84,11 @@ reads span multiple finalized slots, recorded in the snapshot. A saved
 baseline's features that this build no longer has log a warning, and an active
 one still gets its feature account; an unknown override is an error.
 
-Alpenglow enabled at genesis uses a synthetic certificate and skips migration;
-later-epoch activation requires the real migration and does not guarantee it
-completes. The production migration starts 5,000 slots after the Alpenglow
-feature activates. On a short local run, activating the feature does not mean
-the cluster has switched consensus. Invalid or conflicting overrides and
-missing prerequisites are rejected. Without `--features-config`, genesis enables
+Alpenglow must be active at genesis, where it uses a synthetic certificate and
+skips migration. Validators no longer start leaders before the migration, so a
+config that leaves Alpenglow inactive or schedules it for later is rejected
+instead of staying at slot 0. Invalid or conflicting overrides and missing
+prerequisites are also rejected. Without `--features-config`, genesis enables
 every feature in the build, with Alpenglow at genesis.
 
 ## How It Works
@@ -148,17 +134,3 @@ Common issues:
 - **Binary not found**: Check `validator_build_path` and
   `ledger_tool_build_path` against the separate build output directories
 - **Permission errors**: Make sure the ledger base directory is writable
-
-Validator output is streamed to the console for debugging.
-
-## Development
-
-To modify the cluster behavior:
-
-1. Update `src/cluster_manager.rs` for process spawning logic
-2. Modify `src/config.rs` for configuration structure
-3. Update `src/main.rs` for command-line interface
-
-## License
-
-This project is part of the Jito Solana JDS repository and follows the same license terms.

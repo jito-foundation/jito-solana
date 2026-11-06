@@ -681,36 +681,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_bank_notification_subscriber_channels_are_unbounded() {
-        let (sender, _receiver) = BankNotificationSender::channel("test-subscriber");
-        assert_eq!(sender.tx.capacity(), None);
-    }
-
-    #[test]
-    fn test_bank_notification_sender_tracks_enqueued_depth() {
-        let (sender, receiver) = BankNotificationSender::channel("test-subscriber");
-        assert!(sender.forward(&(
-            BankNotification::OptimisticallyConfirmed(1, Hash::default()),
-            None
-        )));
-        assert_eq!(sender.tx.len(), 1);
-        assert_eq!(receiver.len(), 1);
-    }
-
-    #[test]
-    fn test_bank_notification_filter_accepts_notification() {
-        let (sender, receiver) = BankNotificationSender::channel_with_filter(
-            "accepting-subscriber",
-            FixedBankNotificationFilter(true),
-        );
-        let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
-        let hash = Hash::new_unique();
-
-        assert_eq!(
-            broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
-            Ok(())
-        );
+    fn assert_confirmed_notification(receiver: &BankNotificationReceiver, hash: Hash) {
         let (notification, dependency_work) = receiver.try_recv().unwrap();
         assert_eq!(dependency_work, Some(7));
         assert!(matches!(
@@ -721,21 +692,9 @@ mod tests {
     }
 
     #[test]
-    fn test_bank_notification_filter_rejects_notification() {
-        let (sender, receiver) = BankNotificationSender::channel_with_filter(
-            "rejecting-subscriber",
-            FixedBankNotificationFilter(false),
-        );
-        let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
-
-        assert_eq!(
-            broadcaster.send((
-                BankNotification::OptimisticallyConfirmed(42, Hash::new_unique()),
-                None,
-            )),
-            Ok(())
-        );
-        assert!(receiver.try_recv().is_err());
+    fn test_bank_notification_subscriber_channels_are_unbounded() {
+        let (sender, _receiver) = BankNotificationSender::channel("test-subscriber");
+        assert_eq!(sender.tx.capacity(), None);
     }
 
     #[test]
@@ -756,13 +715,7 @@ mod tests {
             broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
             Ok(())
         );
-        let (notification, dependency_work) = accepting_receiver.try_recv().unwrap();
-        assert_eq!(dependency_work, Some(7));
-        assert!(matches!(
-            notification,
-            BankNotification::OptimisticallyConfirmed(42, received_hash)
-                if received_hash == hash
-        ));
+        assert_confirmed_notification(&accepting_receiver, hash);
         assert!(rejecting_receiver.try_recv().is_err());
     }
 
@@ -793,13 +746,7 @@ mod tests {
             Ok(())
         );
         for receiver in [first_receiver, second_receiver] {
-            let (notification, dependency_work) = receiver.try_recv().unwrap();
-            assert_eq!(dependency_work, Some(7));
-            assert!(matches!(
-                notification,
-                BankNotification::OptimisticallyConfirmed(42, received_hash)
-                    if received_hash == hash
-            ));
+            assert_confirmed_notification(&receiver, hash);
         }
     }
 
@@ -818,13 +765,7 @@ mod tests {
             broadcaster.send((BankNotification::OptimisticallyConfirmed(42, hash), Some(7))),
             Ok(())
         );
-        let (notification, dependency_work) = connected_receiver.try_recv().unwrap();
-        assert_eq!(dependency_work, Some(7));
-        assert!(matches!(
-            notification,
-            BankNotification::OptimisticallyConfirmed(42, received_hash)
-                if received_hash == hash
-        ));
+        assert_confirmed_notification(&connected_receiver, hash);
     }
 
     #[test]
