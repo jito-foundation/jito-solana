@@ -3,6 +3,7 @@ pub mod args;
 mod capabilities;
 pub mod execute;
 mod storage;
+pub mod tip_router;
 #[cfg(target_os = "linux")]
 mod xdp;
 

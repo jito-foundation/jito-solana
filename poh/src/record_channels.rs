@@ -392,6 +392,7 @@ mod tests {
             bank_id,
             transactions: vec![VersionedTransaction::default(); num_transactions],
             mixin: Hash::default(),
+            reschedule_on_sad_handover: true,
         }
     }
 

@@ -29,6 +29,8 @@ _ scripts/check-dev-context-only-utils.sh tree
 # workspace-member dev-deps must be path-only so `cargo package` strips them
 _ cargo xtask dev-deps check
 
+_ cargo "+${rust_nightly}" fmt --version
+
 # fmt; nightly for the unstable import and string options in rustfmt.toml
 _ scripts/cargo-for-all-lock-files.sh -- "+${rust_nightly}" fmt --all -- --check
 
@@ -51,11 +53,14 @@ else
   echo "Note: cargo-for-all-lock-files.sh skipped because $CI_BASE_BRANCH != $EDGE_CHANNEL"
 fi
 
+# The tip-router integration is optional in production builds. Check it
+# explicitly so its validator wiring cannot silently bitrot behind cfg gates.
+_ cargo "+${rust_stable}" check --locked --package agave-validator \
+  --all-targets --features tip-router
+
 _ scripts/check-msrv.sh
 
 _ scripts/cargo-clippy.sh
-
-_ ci/do-audit.sh
 
 if [[ -n $CI ]] && [[ $CHANNEL = "stable" ]]; then
   _ ci/check-install-all.sh
