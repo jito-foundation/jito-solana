@@ -2,7 +2,7 @@ use {
     crate::config::{CustomValidatorConfig, LocalClusterConfig},
     agave_feature_set::FeatureSet,
     anyhow::{Context, Result},
-    log::{debug, error, info},
+    log::{error, info},
     solana_account::Account,
     solana_cluster_type::ClusterType,
     solana_faucet::faucet::{Faucet, run_faucet},
@@ -52,7 +52,6 @@ impl BamValidator {
         ledger_path: &PathBuf,
         log_file_path: &PathBuf,
         node_name: &str,
-        poh_pinned_cpu_core: usize,
         gossip_port: Option<u16>,
         rpc_port: u16,
         dynamic_port_range_start: u16,
@@ -90,9 +89,6 @@ impl BamValidator {
         .arg(format!(
             "{dynamic_port_range_start}-{dynamic_port_range_end}"
         ))
-        .arg("--poh-pinned-cpu-core")
-        .arg(poh_pinned_cpu_core.to_string())
-        .arg("--no-wait-for-vote-to-start-leader")
         .arg("--no-os-network-limits-test")
         // Local clusters do not always provision AF_XDP resources.  Keep the validator
         // invocation explicit now that XDP is enabled by default upstream.
@@ -156,15 +152,7 @@ impl BamValidator {
                 .arg(limit_blockstore_size.to_string());
         }
 
-        info!("Starting {node_name} node with command: {cmd:?}");
-
-        // Print the command as it would appear on the CLI
-        let cmd_str = std::iter::once(cmd.get_program())
-            .chain(cmd.get_args())
-            .map(|s| s.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(" ");
-        println!("CLI Command: {cmd_str}");
+        println!("Starting {node_name} node with command: {cmd:?}");
 
         let mut child = cmd
             .stdout(Stdio::piped())
@@ -181,14 +169,16 @@ impl BamValidator {
         if let Some(stdout) = child_stdout {
             let node_name = node_name.clone();
             runtime.spawn(async move {
-                Self::stream_output_stdout(stdout, &node_name).await;
+                let stdout = tokio::process::ChildStdout::from_std(stdout).unwrap();
+                Self::stream_output(stdout, &node_name, "stdout").await;
             });
         }
 
         if let Some(stderr) = child_stderr {
             let node_name = node_name.clone();
             runtime.spawn(async move {
-                Self::stream_output_stderr(stderr, &node_name).await;
+                let stderr = tokio::process::ChildStderr::from_std(stderr).unwrap();
+                Self::stream_output(stderr, &node_name, "stderr").await;
             });
         }
 
@@ -245,23 +235,16 @@ impl BamValidator {
         ))
     }
 
-    async fn stream_output_stdout(stdout: std::process::ChildStdout, node_name: &str) {
+    async fn stream_output(
+        output: impl tokio::io::AsyncRead + Unpin,
+        node_name: &str,
+        stream_name: &str,
+    ) {
         use tokio::io::{AsyncBufReadExt, BufReader};
-        let reader = BufReader::new(tokio::process::ChildStdout::from_std(stdout).unwrap());
-        let mut lines = reader.lines();
+        let mut lines = BufReader::new(output).lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            println!("[\x1b[35m{node_name}\x1b[0m] stdout: {line}");
-        }
-    }
-
-    async fn stream_output_stderr(stderr: std::process::ChildStderr, node_name: &str) {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let reader = BufReader::new(tokio::process::ChildStderr::from_std(stderr).unwrap());
-        let mut lines = reader.lines();
-
-        while let Ok(Some(line)) = lines.next_line().await {
-            println!("[\x1b[35m{node_name}\x1b[0m] stderr: {line}");
+            println!("[\x1b[35m{node_name}\x1b[0m] {stream_name}: {line}");
         }
     }
 
@@ -480,20 +463,11 @@ impl BamLocalCluster {
                 .dynamic_port_range_start
                 .saturating_add(i.saturating_mul(1000) as u16);
             let dynamic_port_range_end = dynamic_port_range_start.saturating_add(1000);
-            // Assign PoH cores from max down to 0, then wrap back to max.
-            let poh_core = match std::thread::available_parallelism() {
-                Ok(c) => {
-                    let core_count = c.get();
-                    core_count.saturating_sub(i.strict_rem(core_count).saturating_add(1))
-                }
-                Err(_) => 0,
-            };
 
             let validator = BamValidator::start_process(
                 &ledger_path,
                 &log_file_path,
                 &format!("validator-{}", i.saturating_add(1)),
-                poh_core,
                 is_bootstrap.then_some(BOOTSTRAP_GOSSIP_PORT),
                 if is_bootstrap {
                     BOOTSTRAP_RPC_PORT
@@ -504,11 +478,7 @@ impl BamLocalCluster {
                 dynamic_port_range_end,
                 &config,
                 &genesis_config_info.genesis_config,
-                if !is_bootstrap {
-                    Some(BOOTSTRAP_GOSSIP)
-                } else {
-                    None
-                },
+                (!is_bootstrap).then_some(BOOTSTRAP_GOSSIP),
                 expected_bank_hash.clone(),
                 &validator_config.node_keypair,
                 &validator_config.vote_keypair,
@@ -525,10 +495,8 @@ impl BamLocalCluster {
             }
         }
 
-        let validators = std::sync::Arc::new(std::sync::Mutex::new(validators));
-
         Ok(Self {
-            validators,
+            validators: Arc::new(Mutex::new(validators)),
             runtime,
             sigint,
             sigterm,
@@ -560,12 +528,6 @@ impl BamLocalCluster {
                 .public
                 .to_bytes_compressed(),
         );
-        let mut feature_set = FeatureSet::all_enabled();
-        if features.is_some() {
-            // `ResolvedFeatures::apply` decides whether Alpenglow starts at genesis, so don't
-            // pre-configure Alpenglow genesis state it would otherwise leave behind.
-            feature_set.deactivate(&agave_feature_set::alpenglow::id());
-        }
         let mut genesis_config = create_genesis_config_with_leader_ex(
             mint_lamports,
             &mint_keypair.pubkey(),
@@ -578,7 +540,7 @@ impl BamLocalCluster {
             FeeRateGovernor::default(),
             Rent::default(),
             cluster_type,
-            &feature_set,
+            &FeatureSet::all_enabled(),
             vec![],
         );
         if let Some(features) = features {
@@ -690,11 +652,6 @@ impl BamLocalCluster {
                         );
                         let _ = exit_tx.send(());
                         return;
-                    } else {
-                        debug!(
-                            "Validator process {} ({}) is running",
-                            i, validator.node_name
-                        );
                     }
                 }
             }
