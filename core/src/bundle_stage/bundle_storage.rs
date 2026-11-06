@@ -328,6 +328,102 @@ mod tests {
         solana_system_transaction::transfer(&keypair1, &pubkey1, 42, Hash::default())
     }
 
+    #[test_case::test_case(false, false, true; "root_inactive_keeps_locks")]
+    #[test_case::test_case(false, true, true; "working_active_root_inactive_keeps_locks")]
+    #[test_case::test_case(true, true, false; "root_active_drops_locks")]
+    fn test_bundle_implicit_programdata_locks_follow_root_gate(
+        root_active: bool,
+        working_active: bool,
+        expect_locks: bool,
+    ) {
+        use {
+            crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
+            solana_runtime_transaction::{
+                runtime_transaction::RuntimeTransaction, transaction_meta::TransactionMeta,
+            },
+            solana_transaction_error::TransactionError,
+        };
+        let feature_id = agave_feature_set::loaderv3_programdata_size_floor::id();
+        let mut root_bank = Bank::new_for_tests(&GenesisConfig::default());
+        if root_active {
+            root_bank.activate_feature(&feature_id);
+        } else {
+            root_bank.deactivate_feature(&feature_id);
+        }
+        let (root_bank, _bank_forks) = root_bank.wrap_with_bank_forks_for_tests();
+        let mut working_bank = Bank::new_from_parent(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            root_bank.slot() + 1,
+        );
+        if working_active {
+            working_bank.activate_feature(&feature_id);
+        } else {
+            working_bank.deactivate_feature(&feature_id);
+        }
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        let tx = solana_system_transaction::transfer(&Keypair::new(), &program, 1, Hash::default());
+        let mut storage = BundleStorage::with_capacity(10);
+        storage
+            .insert_bundle(
+                VerifiedPacketBundle::new(PacketBatch::from(vec![
+                    BytesPacket::from_data(tx).unwrap(),
+                ])),
+                &root_bank,
+                &working_bank,
+                &HashSet::new(),
+            )
+            .unwrap();
+        let entry = storage
+            .pop_bundle(working_bank.slot(), working_bank.bank_id())
+            .unwrap();
+        assert_eq!(
+            entry.transactions[0]
+                .implicit_read_locks()
+                .contains(&programdata),
+            expect_locks
+        );
+        let locker = BundleAccountLocker::default();
+        locker
+            .lock_bundle(&entry.transactions[..], &working_bank)
+            .unwrap();
+        assert_eq!(
+            locker
+                .account_locks()
+                .read_locks()
+                .contains_key(&programdata),
+            expect_locks
+        );
+        locker
+            .unlock_bundle(&entry.transactions[..], &working_bank)
+            .unwrap();
+        assert!(locker.account_locks().read_locks().is_empty());
+        assert!(locker.account_locks().write_locks().is_empty());
+
+        let writer = RuntimeTransaction::from_transaction_for_tests(
+            solana_system_transaction::transfer(&Keypair::new(), &programdata, 1, Hash::default()),
+        );
+        let writer_batch = working_bank.prepare_sanitized_batch(std::slice::from_ref(&writer));
+        assert!(writer_batch.lock_results()[0].is_ok());
+        let bundle_batch = working_bank.prepare_sanitized_batch(&entry.transactions[..]);
+        assert_eq!(
+            bundle_batch.lock_results()[0],
+            if expect_locks {
+                Err(TransactionError::AccountInUse)
+            } else {
+                Ok(())
+            }
+        );
+        drop(bundle_batch);
+        drop(writer_batch);
+        storage.destroy_bundle(entry);
+    }
+
     #[test]
     fn test_bundle_alt_resolution_uses_root_bank() {
         let (root_bank, _bank_forks) =

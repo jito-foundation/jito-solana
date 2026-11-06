@@ -715,6 +715,119 @@ mod tests {
         assert!(!summary.reached_max_poh_height);
     }
 
+    // A vote can list any account, so it holds the same implicit locks as other transactions
+    // until the floor is active on the root bank. A conflict delays the vote without losing it.
+    #[test_case::test_case(false, false, true; "root_inactive_keeps_locks")]
+    #[test_case::test_case(false, true, true; "working_active_root_inactive_keeps_locks")]
+    #[test_case::test_case(true, true, false; "root_active_drops_locks")]
+    fn test_vote_implicit_programdata_locks_follow_root_gate(
+        root_active: bool,
+        working_active: bool,
+        expect_locks: bool,
+    ) {
+        use {solana_pubkey::Pubkey, solana_signer::Signer};
+
+        let set_floor = |bank: &mut Bank, active: bool| {
+            let feature = agave_feature_set::loaderv3_programdata_size_floor::id();
+            if active {
+                bank.activate_feature(&feature);
+            } else {
+                bank.deactivate_feature(&feature);
+            }
+        };
+        // TowerSync votes only succeed under TowerBFT; Alpenglow is active by default.
+        let GenesisConfigInfo {
+            mut genesis_config,
+            mint_keypair,
+            voting_keypair,
+            ..
+        } = solana_runtime::genesis_utils::create_genesis_config_with_tower_leader(
+            10_000,
+            &solana_pubkey::new_rand(),
+            solana_runtime::genesis_utils::bootstrap_validator_stake_lamports(),
+        );
+        // Like create_slow_genesis_config(): there's only 1 slot, don't run out of ticks.
+        genesis_config.ticks_per_slot *= 1024;
+        let mut root_bank = Bank::new_for_tests(&genesis_config);
+        set_floor(&mut root_bank, root_active);
+        let (root_bank, bank_forks) = root_bank.wrap_with_bank_forks_for_tests();
+        let mut bank = Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 1);
+        set_floor(&mut bank, working_active);
+        let bank = Arc::new(bank);
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(bank.bank_id());
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+        let migration_status = bank_forks.read().unwrap().migration_status();
+        let mut worker = VoteWorker::new(
+            Arc::new(AtomicBool::new(false)),
+            CancellationToken::new(),
+            DecisionMaker::new(
+                shared_leader_state,
+                migration_status,
+                agave_votor::slot_clock::SharedAlpenglowSlotClock::default(),
+            ),
+            VotePacketReceiver::new(never(), Arc::default()),
+            VotePacketReceiver::new(never(), Arc::default()),
+            VoteStorage::new(&bank),
+            bank_forks,
+            Consumer::new(
+                Committer::new(None, bounded(1).0, None),
+                solana_poh::transaction_recorder::TransactionRecorder::new(record_sender),
+                None,
+            ),
+            BundleAccountLocker::default(),
+        );
+        let mut tower_sync = TowerSync::from(vec![(0, 1)]);
+        tower_sync.hash = root_bank.hash();
+        let vote = new_tower_sync_transaction(
+            tower_sync,
+            root_bank.last_blockhash(),
+            &mint_keypair,
+            &voting_keypair,
+            &voting_keypair,
+            None,
+        );
+        let signature = vote.signatures[0];
+        worker.storage.insert_packet(
+            VoteSource::Tpu,
+            to_sanitized_view(BytesPacket::from_data(vote).unwrap()),
+        );
+
+        // Another transaction holds a write lock on the ProgramData address of a key of the vote.
+        let programdata = Pubkey::find_program_address(
+            &[voting_keypair.pubkey().as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        let writer = RuntimeTransaction::from_transaction_for_tests(system_transaction::transfer(
+            &solana_keypair::Keypair::new(),
+            &programdata,
+            1,
+            Hash::default(),
+        ));
+        let writer_batch = bank.prepare_sanitized_batch(std::slice::from_ref(&writer));
+        assert_eq!(writer_batch.lock_results()[0], Ok(()));
+
+        let mut banking_stage_stats = BankingStageStats::new();
+        let mut slot_metrics_tracker = LeaderSlotMetricsTracker::default();
+        worker.process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker);
+        assert_eq!(
+            bank.get_signature_status(&signature).is_some(),
+            !expect_locks
+        );
+        assert_eq!(record_receiver.drain().count(), usize::from(!expect_locks));
+
+        drop(writer_batch);
+        worker.process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker);
+        assert_eq!(bank.get_signature_status(&signature), Some(Ok(())));
+    }
+
     #[test]
     fn test_retained_vote_after_direct_bank_replacement() {
         // TowerSync votes only succeed under TowerBFT; Alpenglow is active by default.

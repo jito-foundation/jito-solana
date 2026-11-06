@@ -720,6 +720,104 @@ mod tests {
         );
     }
 
+    // Transactions from the TPU may be buffered past the working bank, so they keep their locks
+    // until the floor is active on the root bank. Locks cover every resolved account key, including
+    // a program reachable only through a lookup table.
+    #[test_case(false, false, true; "root_inactive_keeps_locks")]
+    #[test_case(false, true, true; "working_active_root_inactive_keeps_locks")]
+    #[test_case(true, true, false; "root_active_drops_locks")]
+    fn test_precheck_implicit_programdata_locks_follow_root_gate(
+        root_active: bool,
+        working_active: bool,
+        expect_locks: bool,
+    ) {
+        use {
+            solana_address_lookup_table_interface::{
+                self as address_lookup_table,
+                state::{AddressLookupTable, LookupTableMeta},
+            },
+            solana_leader_schedule::SlotLeader,
+            solana_runtime_transaction::transaction_meta::TransactionMeta,
+            std::borrow::Cow,
+        };
+        let set_floor = |bank: &mut Bank, active: bool| {
+            let feature = agave_feature_set::loaderv3_programdata_size_floor::id();
+            if active {
+                bank.activate_feature(&feature);
+            } else {
+                bank.deactivate_feature(&feature);
+            }
+        };
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(u64::MAX);
+        let static_program = Pubkey::new_unique();
+        let table_program = Pubkey::new_unique();
+        let table_key = Pubkey::new_unique();
+        let genesis_bank = Bank::new_for_tests(&genesis_config);
+        let data = AddressLookupTable {
+            meta: LookupTableMeta::default(),
+            addresses: Cow::Owned(vec![table_program]),
+        }
+        .serialize_for_tests()
+        .unwrap();
+        let mut table_account =
+            AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
+        table_account.set_data_from_slice(&data);
+        genesis_bank.store_account(&table_key, &table_account);
+        let (genesis_bank, _bank_forks) = genesis_bank.wrap_with_bank_forks_for_tests();
+        let mut root_bank = Bank::new_from_parent(genesis_bank, SlotLeader::new_unique(), 1);
+        set_floor(&mut root_bank, root_active);
+        let root_bank = Arc::new(root_bank);
+        let mut working_bank =
+            Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 2);
+        set_floor(&mut working_bank, working_active);
+
+        let payer = mint_keypair.pubkey();
+        let mut instruction = system_instruction::transfer(&payer, &Pubkey::new_unique(), 1);
+        instruction.accounts.extend([
+            AccountMeta::new_readonly(static_program, false),
+            AccountMeta::new_readonly(table_program, false),
+        ]);
+        let message = v0::Message::try_compile(
+            &payer,
+            &[instruction],
+            &[AddressLookupTableAccount {
+                key: table_key,
+                addresses: vec![table_program],
+            }],
+            root_bank.last_blockhash(),
+        )
+        .unwrap();
+        assert!(!message.account_keys.contains(&table_program));
+        let transaction =
+            VersionedTransaction::try_new(VersionedMessage::V0(message), &[&mint_keypair]).unwrap();
+        let bytes = BytesPacket::from_data(transaction)
+            .unwrap()
+            .buffer()
+            .clone();
+
+        let PrecheckedTransaction { state, .. } =
+            precheck_transaction(bytes, &root_bank, &working_bank, &HashSet::new()).unwrap();
+
+        for program in [static_program, table_program] {
+            let programdata = Pubkey::find_program_address(
+                &[program.as_ref()],
+                &solana_sdk_ids::bpf_loader_upgradeable::id(),
+            )
+            .0;
+            assert_eq!(
+                state
+                    .transaction()
+                    .implicit_read_locks()
+                    .contains(&programdata),
+                expect_locks,
+            );
+        }
+    }
+
     fn assert_runtime_view(_: &RuntimeTransactionView) {}
 
     #[test]
