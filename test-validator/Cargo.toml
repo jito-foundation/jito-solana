@@ -78,6 +78,7 @@ wincode = { workspace = true }
 serial_test = { workspace = true }
 solana-sdk-ids = { workspace = true }
 solana-test-validator = { path = ".", features = ["agave-unstable-api", "dev-context-only-utils"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

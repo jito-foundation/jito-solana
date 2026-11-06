@@ -17,6 +17,7 @@ use {
         resolved_transaction_view::ResolvedTransactionView,
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
+    ahash::HashSet as AHashSet,
     core::time::Duration,
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError},
     solana_accounts_db::account_locks::{TransactionAccountLockLimits, validate_account_locks},
@@ -48,7 +49,7 @@ pub(crate) enum IngressCheckError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PacketHandlingError {
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
@@ -89,6 +90,16 @@ pub(crate) struct PrecheckedTransaction {
 
 pub(crate) type PrecheckResult = Result<PrecheckedTransaction, IngressCheckError>;
 
+pub(crate) fn contains_blacklisted_account<'a>(
+    account_keys: impl IntoIterator<Item = &'a Pubkey>,
+    filter_keys: &AHashSet<Pubkey>,
+) -> bool {
+    !filter_keys.is_empty()
+        && account_keys
+            .into_iter()
+            .any(|key| filter_keys.contains(key))
+}
+
 pub(crate) fn precheck_transaction(
     bytes: Bytes,
     root_bank: &Bank,
@@ -100,6 +111,7 @@ pub(crate) fn precheck_transaction(
     let (view, deactivation_slot) = translate_to_runtime_view(
         bytes,
         root_bank,
+        working_bank.vote_only_bank(),
         transaction_account_lock_limits,
         !root_bank
             .feature_set
@@ -151,6 +163,7 @@ pub(crate) fn precheck_transaction(
 pub(crate) fn translate_to_runtime_view<D: AsRef<[u8]>>(
     data: D,
     bank: &Bank,
+    vote_only: bool,
     transaction_account_lock_limits: TransactionAccountLockLimits,
     enable_implicit_read_locks: bool,
 ) -> Result<(RuntimeTransaction<ResolvedTransactionView<D>>, u64), PacketHandlingError> {
@@ -161,6 +174,7 @@ pub(crate) fn translate_to_runtime_view<D: AsRef<[u8]>>(
     translate_sanitized_to_runtime_view(
         view,
         bank,
+        vote_only,
         transaction_account_lock_limits,
         None,
         enable_implicit_read_locks,
@@ -173,6 +187,7 @@ pub(crate) fn translate_to_runtime_view<D: AsRef<[u8]>>(
 pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
     view: SanitizedTransactionView<D>,
     bank: &Bank,
+    vote_only: bool,
     transaction_account_lock_limits: TransactionAccountLockLimits,
     preloaded_addresses: Option<(Option<LoadedAddresses>, Slot)>,
     enable_implicit_read_locks: bool,
@@ -189,7 +204,7 @@ pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
         return Err(PacketHandlingError::Sanitization);
     }
 
-    if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+    if vote_only && !view.is_simple_vote_transaction() {
         return Err(PacketHandlingError::Sanitization);
     }
 
@@ -224,7 +239,7 @@ pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
     Ok((view, deactivation_slot))
 }
 
-fn load_addresses_for_view<D: AsRef<[u8]>>(
+pub(crate) fn load_addresses_for_view<D: AsRef<[u8]>>(
     view: &SanitizedTransactionView<D>,
     bank: &Bank,
 ) -> Result<(Option<LoadedAddresses>, Slot), PacketHandlingError> {
@@ -239,7 +254,7 @@ fn load_addresses_for_view<D: AsRef<[u8]>>(
     }
 }
 
-fn calculate_max_age(
+pub(crate) fn calculate_max_age(
     sanitized_epoch: Epoch,
     deactivation_slot: Slot,
     current_slot: Slot,
@@ -486,6 +501,41 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
 }
 
 impl TransactionViewReceiveAndBuffer {
+    pub(crate) fn try_handle_packet(
+        bytes: Bytes,
+        root_bank: &Bank,
+        working_bank: &Bank,
+        transaction_account_lock_limits: TransactionAccountLockLimits,
+        filter_keys: &AHashSet<Pubkey>,
+    ) -> Result<TransactionViewState, PacketHandlingError> {
+        let (view, deactivation_slot) = translate_to_runtime_view(
+            bytes,
+            root_bank,
+            working_bank.vote_only_bank(),
+            transaction_account_lock_limits,
+            !root_bank
+                .feature_set
+                .snapshot()
+                .loaderv3_programdata_size_floor,
+        )?;
+
+        if contains_blacklisted_account(view.account_keys().iter(), filter_keys) {
+            return Err(PacketHandlingError::FilterKey);
+        }
+
+        let Ok(transaction_configuration) =
+            view.transaction_configuration(&working_bank.feature_set)
+        else {
+            return Err(PacketHandlingError::ComputeBudget);
+        };
+
+        let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
+        let (priority, cost) =
+            calculate_priority_and_cost(working_bank, &view, &transaction_configuration);
+
+        Ok(TransactionState::new(view, max_age, priority, cost))
+    }
+
     fn check_capacity(&self) -> usize {
         self.check_work_sender
             .capacity()
