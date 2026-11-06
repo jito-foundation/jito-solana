@@ -8,7 +8,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::{TipManager, TipManagerError},
     },
-    arc_swap::ArcSwap,
+    arc_swap::{ArcSwap, ArcSwapOption},
     jito_protos::proto::{
         bam_api::{SchedulerMessage, SchedulerMessageV0, scheduler_message::VersionedMsg},
         bam_types,
@@ -17,10 +17,16 @@ use {
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_pubkey::Pubkey,
-    solana_runtime::{bank::Bank, bank_forks::BankForks},
+    solana_runtime::{
+        bank::{Bank, BankId},
+        bank_forks::BankForks,
+    },
     solana_transaction_error::TransactionError,
     solana_turbine::ShredReceiverAddresses,
-    std::sync::RwLock,
+    std::{
+        sync::{Mutex, RwLock, TryLockError},
+        time::{Duration, Instant},
+    },
     thiserror::Error,
     tokio::sync::mpsc,
 };
@@ -166,6 +172,113 @@ impl TipProcessingDependencies {
             self.tip_manager
                 .get_tip_programs_crank_bundle(bank, &keypair, builder),
         )
+    }
+}
+
+/// Prepares the tip programs once per bank before external scheduler bundles execute on it.
+pub(crate) struct TipPreparation {
+    dependencies: TipProcessingDependencies,
+    /// The bank and block builder the tip programs were last prepared for.
+    prepared: ArcSwapOption<(BankId, Arc<BlockBuilderFeeInfo>)>,
+    /// Held while cranking; a thread finding it taken reports not ready and is retried.
+    crank: Mutex<TipPreparationState>,
+}
+
+/// Minimum delay between tip program crank attempts after a failure, as in BAM.
+const TIP_RETRY_INTERVAL: Duration = Duration::from_millis(1);
+
+#[derive(Default)]
+struct TipPreparationState {
+    retry_at: Option<Instant>,
+    last_error: Option<(Slot, TipProgramsError)>,
+}
+
+impl TipPreparation {
+    pub(crate) fn new(dependencies: TipProcessingDependencies) -> Self {
+        Self {
+            dependencies,
+            prepared: ArcSwapOption::empty(),
+            crank: Mutex::default(),
+        }
+    }
+
+    /// Returns true once the tip programs are prepared on `bank` for the current block
+    /// builder. Failures are retried after [`TIP_RETRY_INTERVAL`]. Never blocks: while another
+    /// thread cranks, the caller gets false and the scheduler retries.
+    pub(crate) fn prepare(&self, consumer: &Consumer, bank: &Arc<Bank>) -> bool {
+        if self.is_prepared(bank, &self.dependencies.block_builder_fee_info.load()) {
+            return true;
+        }
+        let mut state = match self.crank.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(error)) => panic!("{error}"),
+        };
+        // Snapshot the builder under the lock so a crank never regresses to an older value.
+        let builder = self.dependencies.block_builder_fee_info.load_full();
+        if self.is_prepared(bank, &builder) {
+            return true;
+        }
+        let now = Instant::now();
+        if state.retry_at.is_some_and(|retry_at| now < retry_at) {
+            return false;
+        }
+        let ready =
+            self.dependencies
+                .process_tip_programs(consumer, bank, &builder, &mut state.last_error);
+        if ready {
+            self.prepared
+                .store(Some(Arc::new((bank.bank_id(), builder))));
+        }
+        state.retry_at = if ready {
+            None
+        } else {
+            now.checked_add(TIP_RETRY_INTERVAL)
+        };
+        ready
+    }
+
+    fn is_prepared(&self, bank: &Bank, builder: &Arc<BlockBuilderFeeInfo>) -> bool {
+        self.prepared.load().as_ref().is_some_and(|prepared| {
+            prepared.0 == bank.bank_id() && Arc::ptr_eq(&prepared.1, builder)
+        })
+    }
+}
+
+#[cfg(test)]
+impl TipPreparation {
+    /// Tip preparation for `block_builder` with a fresh identity and tip manager.
+    pub(crate) fn new_for_tests(block_builder: Pubkey) -> Arc<Self> {
+        use {
+            crate::tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
+            solana_gossip::node::Node,
+            solana_keypair::Keypair,
+            solana_net_utils::SocketAddrSpace,
+            solana_program_binaries::{jito_tip_distribution, jito_tip_payment},
+            solana_signer::Signer,
+        };
+
+        let leader_keypair = Keypair::new();
+        let node = Node::new_localhost_with_pubkey(&leader_keypair.pubkey());
+        Arc::new(Self::new(TipProcessingDependencies {
+            tip_manager: TipManager::new(TipManagerConfig {
+                tip_payment_program_id: Pubkey::new_from_array(*jito_tip_payment::id().as_array()),
+                tip_distribution_program_id: Pubkey::new_from_array(
+                    *jito_tip_distribution::id().as_array(),
+                ),
+                tip_distribution_account_config: TipDistributionAccountConfig::default(),
+            }),
+            block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+                block_builder,
+                block_builder_commission: 0,
+            })),
+            cluster_info: Arc::new(ClusterInfo::new(
+                node.info.clone(),
+                Arc::new(leader_keypair),
+                SocketAddrSpace::Unspecified,
+            )),
+            bundle_account_locker: BundleAccountLocker::default(),
+        }))
     }
 }
 

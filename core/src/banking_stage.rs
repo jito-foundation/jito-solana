@@ -7,7 +7,7 @@ use {
         vote_packet_receiver::VotePacketReceiver, vote_storage::VoteStorage,
     },
     crate::{
-        bam_dependencies::{BamDependencies, TipProcessingDependencies},
+        bam_dependencies::{BamDependencies, TipPreparation, TipProcessingDependencies},
         banking_stage::{
             consume_worker::ConsumeWorker,
             transaction_scheduler::{
@@ -19,7 +19,7 @@ use {
                 scheduler_error::SchedulerError,
             },
         },
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
+        bundle_stage::{BundleStageControlMsg, bundle_account_locker::BundleAccountLocker},
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::{BankingPacketReceiver, SchedulerPriorityFloor},
@@ -360,6 +360,7 @@ pub struct BankingStage {
     bundle_account_locker: BundleAccountLocker,
     tip_processing_dependencies: Option<TipProcessingDependencies>,
     bam_dependencies: Option<BamDependencies>,
+    bundle_control_sender: Sender<BundleStageControlMsg>,
 }
 
 impl BankingStage {
@@ -386,6 +387,7 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         tip_processing_dependencies: Option<TipProcessingDependencies>,
         bam_dependencies: Option<BamDependencies>,
+        bundle_control_sender: Sender<BundleStageControlMsg>,
     ) -> BankingStageHandle {
         let committer = Committer::new(
             transaction_status_sender,
@@ -415,6 +417,7 @@ impl BankingStage {
             bundle_account_locker,
             tip_processing_dependencies,
             bam_dependencies,
+            bundle_control_sender,
         };
 
         // Spawn the manager thread.
@@ -536,6 +539,10 @@ impl BankingStage {
         let tip_processing_dependencies = self.tip_processing_dependencies.clone();
         let bam_dependencies = self.bam_dependencies.clone();
         info!("Spawning internal central scheduler");
+        // The receiver is gone only in tests and during shutdown.
+        let _ = self
+            .bundle_control_sender
+            .send(BundleStageControlMsg::Internal);
 
         assert!(num_workers <= BankingStage::max_num_workers());
         let num_workers = num_workers.get();
@@ -845,6 +852,7 @@ mod external {
             AgaveSession {
                 tpu_to_pack,
                 progress_tracker,
+                bundle_to_pack,
                 check_workers,
                 workers,
                 simulate_workers,
@@ -852,7 +860,21 @@ mod external {
         ) -> Result<Vec<JoinHandle<()>>, ()> {
             let bundle_account_locker = self.bundle_account_locker.clone();
             let filter_keys = Arc::new(self.filter_keys.iter().copied().collect::<AHashSet<_>>());
+            // Tip programs are cranked here only when this session owns block engine bundles;
+            // otherwise BundleStage keeps cranking them in process.
+            let tip_preparation = match (&bundle_to_pack, &self.tip_processing_dependencies) {
+                (Some(_), Some(dependencies)) => {
+                    Some(Arc::new(TipPreparation::new(dependencies.clone())))
+                }
+                _ => None,
+            };
             info!("Spawning external scheduler");
+            // The receiver is gone only in tests and during shutdown.
+            let _ = self
+                .bundle_control_sender
+                .send(BundleStageControlMsg::External {
+                    session: bundle_to_pack,
+                });
 
             static_assertions::const_assert!(
                 agave_scheduler_handshake::MAX_WORKERS == BankingStage::max_num_workers().get()
@@ -890,6 +912,7 @@ mod external {
                     self.bank_forks.read().unwrap().sharable_banks(),
                     bundle_account_locker.clone(),
                     filter_keys.clone(),
+                    tip_preparation.clone(),
                 );
 
                 worker_metrics.push(consume_worker.metrics_handle());
@@ -931,6 +954,7 @@ mod external {
                     self.bank_forks.read().unwrap().sharable_banks(),
                     bundle_account_locker.clone(),
                     filter_keys.clone(),
+                    None,
                 );
 
                 worker_metrics.push(consume_worker.metrics_handle());
@@ -1028,6 +1052,7 @@ impl BankingStageHandle {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum BankingControlMsg {
     Internal {
         block_production_method: BlockProductionMethod,
@@ -1189,6 +1214,7 @@ mod tests {
             BundleAccountLocker::default(),
             None,
             None,
+            crossbeam_channel::unbounded().0,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -1259,6 +1285,7 @@ mod tests {
             BundleAccountLocker::default(),
             None,
             None,
+            crossbeam_channel::unbounded().0,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -1341,6 +1368,7 @@ mod tests {
             BundleAccountLocker::default(),
             None,
             None,
+            crossbeam_channel::unbounded().0,
         );
 
         // good tx, and no verify
@@ -1497,6 +1525,7 @@ mod tests {
                 BundleAccountLocker::default(),
                 None,
                 None,
+                crossbeam_channel::unbounded().0,
             );
 
             // wait for banking_stage to eat the packets
@@ -1668,6 +1697,7 @@ mod tests {
                     BundleAccountLocker::default(),
                     None,
                     None,
+                    crossbeam_channel::unbounded().0,
                 );
 
                 // bad tx
