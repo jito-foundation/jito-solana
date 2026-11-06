@@ -235,7 +235,7 @@ impl BamReceiveAndBuffer {
                 &mut verification_results,
             ));
             stats.accumulate(deserialize_stats);
-            metrics.increment_total_us(duration_us);
+            metrics.total_us += duration_us;
             recv_buffer.clear();
 
             let mut verification_result_offset = 0;
@@ -283,7 +283,7 @@ impl BamReceiveAndBuffer {
                                 &mut metrics,
                             ));
                         stats.accumulate(parse_stats);
-                        metrics.increment_total_us(duration_us);
+                        metrics.total_us += duration_us;
                         parse_result.map_err(|reason| (reason, seq_id))
                     },
                 );
@@ -336,7 +336,7 @@ impl BamReceiveAndBuffer {
         ))
     }
 
-    fn send_no_leader_slot_txn_batch_result(&self, seq_id: u32) {
+    fn send_scheduling_error_txn_batch_result(&self, seq_id: u32, error: SchedulingError) {
         let _ = self
             .response_sender
             .try_send(BamOutboundMessage::AtomicTxnBatchResult(
@@ -344,26 +344,7 @@ impl BamReceiveAndBuffer {
                     seq_id,
                     result: Some(atomic_txn_batch_result::Result::NotCommitted(
                         jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Reason::SchedulingError(
-                                SchedulingError::OutsideLeaderSlot as i32,
-                            )),
-                        },
-                    )),
-                },
-            ));
-    }
-
-    fn send_container_full_txn_batch_result(&self, seq_id: u32) {
-        let _ = self
-            .response_sender
-            .try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                jito_protos::proto::bam_types::AtomicTxnBatchResult {
-                    seq_id,
-                    result: Some(atomic_txn_batch_result::Result::NotCommitted(
-                        jito_protos::proto::bam_types::NotCommitted {
-                            reason: Some(Reason::SchedulingError(
-                                SchedulingError::ContainerFull as i32,
-                            )),
+                            reason: Some(Reason::SchedulingError(error as i32)),
                         },
                     )),
                 },
@@ -432,11 +413,9 @@ impl BamReceiveAndBuffer {
                 );
             };
             let sanitization_end = Instant::now();
-            metrics.increment_sanitization_us(
-                sanitization_end
-                    .duration_since(sanitization_start)
-                    .as_micros() as u64,
-            );
+            metrics.sanitization_us += sanitization_end
+                .duration_since(sanitization_start)
+                .as_micros() as u64;
 
             // Check 0: Reject vote transactions
             if view.is_simple_vote_transaction() {
@@ -490,9 +469,8 @@ impl BamReceiveAndBuffer {
                 );
             };
             let resolution_end = Instant::now();
-            metrics.increment_resolution_us(
-                resolution_end.duration_since(resolution_start).as_micros() as u64,
-            );
+            metrics.resolution_us +=
+                resolution_end.duration_since(resolution_start).as_micros() as u64;
 
             // Check 2: Ensure no duplicates and valid number of account locks
             let start = Instant::now();
@@ -512,12 +490,12 @@ impl BamReceiveAndBuffer {
                     stats,
                 );
             }
-            metrics.increment_lock_validation_us(start.elapsed().as_micros() as u64);
+            metrics.lock_validation_us += start.elapsed().as_micros() as u64;
 
             // Check 3: Ensure the compute budget limits are valid
             let (result, duration_us) =
                 measure_us!(view.transaction_configuration(&working_bank.feature_set));
-            metrics.increment_fee_budget_extraction_us(duration_us);
+            metrics.fee_budget_extraction_us += duration_us;
             if let Err(err) = result {
                 let reason = convert_txn_error_to_proto(err);
                 stats.num_dropped_on_compute_budget += 1;
@@ -545,7 +523,7 @@ impl BamReceiveAndBuffer {
                         false,
                         &mut TransactionErrorMetrics::default(),
                     ));
-                metrics.increment_check_transactions_us(duration_us);
+                metrics.check_transactions_us += duration_us;
                 if let Some(Err(err)) = check_results.first() {
                     let reason = convert_txn_error_to_proto(err.clone());
                     stats.num_dropped_on_age += 1;
@@ -569,7 +547,7 @@ impl BamReceiveAndBuffer {
                     &view,
                     &mut TransactionErrorMetrics::default(),
                 ));
-                metrics.increment_fee_payer_check_us(duration_us);
+                metrics.fee_payer_check_us += duration_us;
                 if let Err(err) = result {
                     let reason = convert_txn_error_to_proto(err);
                     stats.num_dropped_on_fee_payer += 1;
@@ -590,7 +568,7 @@ impl BamReceiveAndBuffer {
                 view.account_keys().iter(),
                 blacklisted_accounts
             ));
-            metrics.increment_blacklist_check_us(duration_us);
+            metrics.blacklist_check_us += duration_us;
             if is_blacklisted {
                 stats.num_dropped_on_filter_key += 1;
                 return (
@@ -628,7 +606,7 @@ impl BamReceiveAndBuffer {
                     .iter_mut()
                     .for_each(|(view, _)| view.load_implicit_read_locks())
             );
-            metrics.increment_implicit_read_locks_us(duration_us);
+            metrics.implicit_read_locks_us += duration_us;
         }
 
         (Ok(parsed_batch), stats)
@@ -864,7 +842,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         if !buffering {
             while let Some(next_batch_id) = container.pop() {
                 if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
-                    self.send_no_leader_slot_txn_batch_result(seq_id);
+                    self.send_scheduling_error_txn_batch_result(
+                        seq_id,
+                        SchedulingError::OutsideLeaderSlot,
+                    );
                 }
                 container.remove_by_id(next_batch_id.id);
             }
@@ -895,7 +876,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
 
             // Both leadership and the BAM connection can change while receive is blocked.
             if !buffering && !self.should_buffer_batches() {
-                self.send_no_leader_slot_txn_batch_result(batch.seq_id);
+                self.send_scheduling_error_txn_batch_result(
+                    batch.seq_id,
+                    SchedulingError::OutsideLeaderSlot,
+                );
                 stats.num_dropped_without_parsing += 1;
                 continue;
             }
@@ -916,7 +900,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 .is_none()
             {
                 stats.num_dropped_on_capacity += 1;
-                self.send_container_full_txn_batch_result(batch.seq_id);
+                self.send_scheduling_error_txn_batch_result(
+                    batch.seq_id,
+                    SchedulingError::ContainerFull,
+                );
             } else {
                 self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
             }
@@ -993,42 +980,6 @@ impl BamReceiveAndBufferMetrics {
         );
         self.sigverify_metrics.report();
         *self = Self::default();
-    }
-
-    fn increment_total_us(&mut self, us: u64) {
-        self.total_us = self.total_us.saturating_add(us);
-    }
-
-    fn increment_sanitization_us(&mut self, us: u64) {
-        self.sanitization_us = self.sanitization_us.saturating_add(us);
-    }
-
-    fn increment_resolution_us(&mut self, us: u64) {
-        self.resolution_us = self.resolution_us.saturating_add(us);
-    }
-
-    fn increment_lock_validation_us(&mut self, us: u64) {
-        self.lock_validation_us = self.lock_validation_us.saturating_add(us);
-    }
-
-    fn increment_fee_budget_extraction_us(&mut self, us: u64) {
-        self.fee_budget_extraction_us = self.fee_budget_extraction_us.saturating_add(us);
-    }
-
-    fn increment_check_transactions_us(&mut self, us: u64) {
-        self.check_transactions_us = self.check_transactions_us.saturating_add(us);
-    }
-
-    fn increment_fee_payer_check_us(&mut self, us: u64) {
-        self.fee_payer_check_us = self.fee_payer_check_us.saturating_add(us);
-    }
-
-    fn increment_blacklist_check_us(&mut self, us: u64) {
-        self.blacklist_check_us = self.blacklist_check_us.saturating_add(us);
-    }
-
-    fn increment_implicit_read_locks_us(&mut self, us: u64) {
-        self.implicit_read_locks_us = self.implicit_read_locks_us.saturating_add(us);
     }
 }
 
@@ -1265,11 +1216,19 @@ pub(super) mod tests {
         )
     }
 
+    fn transfer_packet(payer: &Keypair, recipient: &Pubkey, bank: &Bank) -> Packet {
+        let transaction = transfer(payer, recipient, 1, bank.last_blockhash());
+        Packet {
+            data: wincode::serialize(&transaction).unwrap().into(),
+            meta: None,
+        }
+    }
+
     pub(crate) fn transfer_batch(payer: &Keypair, bank: &Bank, seq_id: u32) -> AtomicTxnBatch {
-        let transaction = transfer(payer, &Pubkey::new_unique(), 1, bank.last_blockhash());
         AtomicTxnBatch {
             seq_id,
-            ..batch_with_packet_data(wincode::serialize(&transaction).unwrap().into())
+            packets: vec![transfer_packet(payer, &Pubkey::new_unique(), bank)],
+            max_schedule_slot: Slot::MAX,
         }
     }
 
@@ -1705,14 +1664,7 @@ pub(super) mod tests {
         let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
             setup_bam_receive_and_buffer(receiver, bank_forks.clone(), None, HashSet::new());
 
-        let bundle = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: Bytes::new(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
+        let bundle = batch_with_packet_data(Bytes::new());
         sender
             .send(MultipleAtomicTxnBatch {
                 batches: vec![bundle],
@@ -1739,21 +1691,7 @@ pub(super) mod tests {
     #[test]
     fn test_batch_deserialize_success() {
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let bundle = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: bincode::serialize(&transfer(
-                    &mint_keypair,
-                    &Pubkey::new_unique(),
-                    1,
-                    bank_forks.read().unwrap().root_bank().last_blockhash(),
-                ))
-                .unwrap()
-                .into(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
+        let bundle = transfer_batch(&mint_keypair, &bank_forks.read().unwrap().root_bank(), 1);
 
         let mut stats = BamReceiveAndBufferMetrics::default();
         let (results, _batch_stats) = run_batch_verify(vec![bundle], Slot::MAX, &mut stats);
@@ -1780,14 +1718,7 @@ pub(super) mod tests {
 
         sender
             .send(MultipleAtomicTxnBatch {
-                batches: vec![AtomicTxnBatch {
-                    seq_id: 1,
-                    packets: vec![Packet {
-                        data: data.into(),
-                        meta: None,
-                    }],
-                    max_schedule_slot: Slot::MAX,
-                }],
+                batches: vec![batch_with_packet_data(data.into())],
                 ..Default::default()
             })
             .unwrap();
@@ -1831,14 +1762,8 @@ pub(super) mod tests {
     #[test]
     fn test_batch_deserialize_invalid_packet() {
         let (_bank_forks, _mint_keypair) = test_bank_forks();
-        let batch = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: vec![0; solana_message::v1::MAX_TRANSACTION_SIZE + 1].into(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
+        let batch =
+            batch_with_packet_data(vec![0; solana_message::v1::MAX_TRANSACTION_SIZE + 1].into());
 
         let mut stats = BamReceiveAndBufferMetrics::default();
         let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
@@ -1855,21 +1780,7 @@ pub(super) mod tests {
     fn test_batch_deserialize_fee_payer_doesnt_exist() {
         let (bank_forks, _) = test_bank_forks();
         let fee_payer = Keypair::new();
-        let batch = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: bincode::serialize(&transfer(
-                    &fee_payer,
-                    &Pubkey::new_unique(),
-                    1,
-                    bank_forks.read().unwrap().root_bank().last_blockhash(),
-                ))
-                .unwrap()
-                .into(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
+        let batch = transfer_batch(&fee_payer, &bank_forks.read().unwrap().root_bank(), 1);
 
         let mut stats = BamReceiveAndBufferMetrics::default();
         let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
@@ -2028,6 +1939,7 @@ pub(super) mod tests {
     fn test_batch_deserialize_seeded_later_fee_payer() {
         let (bank_forks, mint_keypair) = test_bank_forks();
         let later_fee_payer = Keypair::new();
+        let root_bank = bank_forks.read().unwrap().root_bank();
         let revert_on_error_meta = Some(jito_protos::proto::bam_types::Meta {
             flags: Some(jito_protos::proto::bam_types::PacketFlags {
                 revert_on_error: true,
@@ -2039,26 +1951,12 @@ pub(super) mod tests {
             seq_id: 1,
             packets: vec![
                 Packet {
-                    data: bincode::serialize(&transfer(
-                        &mint_keypair,
-                        &later_fee_payer.pubkey(),
-                        1,
-                        bank_forks.read().unwrap().root_bank().last_blockhash(),
-                    ))
-                    .unwrap()
-                    .into(),
                     meta: revert_on_error_meta,
+                    ..transfer_packet(&mint_keypair, &later_fee_payer.pubkey(), &root_bank)
                 },
                 Packet {
-                    data: bincode::serialize(&transfer(
-                        &later_fee_payer,
-                        &Pubkey::new_unique(),
-                        1,
-                        bank_forks.read().unwrap().root_bank().last_blockhash(),
-                    ))
-                    .unwrap()
-                    .into(),
                     meta: revert_on_error_meta,
+                    ..transfer_packet(&later_fee_payer, &Pubkey::new_unique(), &root_bank)
                 },
             ],
             max_schedule_slot: Slot::MAX,
@@ -2122,29 +2020,12 @@ pub(super) mod tests {
     #[test]
     fn test_batch_deserialize_inconsistent() {
         let (bank_forks, mint_keypair) = test_bank_forks();
+        let root_bank = bank_forks.read().unwrap().root_bank();
         let bundle = AtomicTxnBatch {
             seq_id: 1,
             packets: vec![
+                transfer_packet(&mint_keypair, &Pubkey::new_unique(), &root_bank),
                 Packet {
-                    data: bincode::serialize(&transfer(
-                        &mint_keypair,
-                        &Pubkey::new_unique(),
-                        1,
-                        bank_forks.read().unwrap().root_bank().last_blockhash(),
-                    ))
-                    .unwrap()
-                    .into(),
-                    meta: None,
-                },
-                Packet {
-                    data: bincode::serialize(&transfer(
-                        &mint_keypair,
-                        &Pubkey::new_unique(),
-                        1,
-                        bank_forks.read().unwrap().root_bank().last_blockhash(),
-                    ))
-                    .unwrap()
-                    .into(),
                     meta: Some(jito_protos::proto::bam_types::Meta {
                         flags: Some(jito_protos::proto::bam_types::PacketFlags {
                             revert_on_error: true,
@@ -2152,6 +2033,7 @@ pub(super) mod tests {
                         }),
                         ..Default::default()
                     }),
+                    ..transfer_packet(&mint_keypair, &Pubkey::new_unique(), &root_bank)
                 },
             ],
             max_schedule_slot: Slot::MAX,
@@ -2176,17 +2058,11 @@ pub(super) mod tests {
         let (bank_forks, mint_keypair) = test_bank_forks();
         let batch = AtomicTxnBatch {
             seq_id: 1,
-            packets: vec![Packet {
-                data: bincode::serialize(&transfer(
-                    &mint_keypair,
-                    &keypair.pubkey(),
-                    100,
-                    bank_forks.read().unwrap().root_bank().last_blockhash(),
-                ))
-                .unwrap()
-                .into(),
-                meta: None,
-            }],
+            packets: vec![transfer_packet(
+                &mint_keypair,
+                &keypair.pubkey(),
+                &bank_forks.read().unwrap().root_bank(),
+            )],
             max_schedule_slot: Slot::MAX,
         };
 
@@ -2241,14 +2117,7 @@ pub(super) mod tests {
 
         let vote_data = bincode::serialize(&VersionedTransaction::from(vote_tx)).unwrap();
 
-        let batch = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: vote_data.into(),
-                meta: None,
-            }],
-            max_schedule_slot: Slot::MAX,
-        };
+        let batch = batch_with_packet_data(vote_data.into());
 
         let mut stats = BamReceiveAndBufferMetrics::default();
         let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
@@ -2384,19 +2253,8 @@ pub(super) mod tests {
     fn test_batch_deserialize_reject_wrong_slot() {
         let (bank_forks, mint_keypair) = test_bank_forks();
         let batch = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![Packet {
-                data: bincode::serialize(&transfer(
-                    &mint_keypair,
-                    &Pubkey::new_unique(),
-                    1,
-                    bank_forks.read().unwrap().root_bank().last_blockhash(),
-                ))
-                .unwrap()
-                .into(),
-                meta: None,
-            }],
             max_schedule_slot: 0,
+            ..transfer_batch(&mint_keypair, &bank_forks.read().unwrap().root_bank(), 1)
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
@@ -2406,38 +2264,34 @@ pub(super) mod tests {
         assert!(results[0].is_err());
     }
 
-    #[test_case::test_case(false; "implicit_programdata_locks_until_rooted")]
-    #[test_case::test_case(true; "no_implicit_programdata_locks_once_rooted")]
-    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(feature_active: bool) {
+    #[test_case::test_case(false, false; "before_activation")]
+    #[test_case::test_case(false, true; "activation_not_rooted")]
+    #[test_case::test_case(true, true; "activation_rooted")]
+    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(
+        root_active: bool,
+        working_active: bool,
+    ) {
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
             ..
         } = create_slow_genesis_config(u64::MAX);
-        let mut bank = Bank::new_for_tests(&genesis_config);
         // Test genesis activates every feature; the gate only matters before activation.
         let feature_id = agave_feature_set::loaderv3_programdata_size_floor::id();
-        if feature_active {
-            bank.activate_feature(&feature_id);
-        } else {
-            bank.deactivate_feature(&feature_id);
+        let mut root = Bank::new_for_tests(&genesis_config);
+        if !root_active {
+            root.deactivate_feature(&feature_id);
         }
-        let (_bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        let (root, _bank_forks) = root.wrap_with_bank_forks_for_tests();
+        let mut working = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
+        if working_active {
+            Arc::make_mut(&mut working.feature_set).activate(&feature_id, 1);
+        }
 
         let recipient = Pubkey::new_unique();
         let batch = AtomicTxnBatch {
             seq_id: 1,
-            packets: vec![Packet {
-                data: bincode::serialize(&transfer(
-                    &mint_keypair,
-                    &recipient,
-                    1,
-                    bank_forks.read().unwrap().root_bank().last_blockhash(),
-                ))
-                .unwrap()
-                .into(),
-                meta: None,
-            }],
+            packets: vec![transfer_packet(&mint_keypair, &recipient, &root)],
             max_schedule_slot: Slot::MAX,
         };
 
@@ -2449,13 +2303,12 @@ pub(super) mod tests {
             panic!("batch verification should succeed");
         };
 
-        let bank_forks = bank_forks.read().unwrap();
         let (result, _stats) = BamReceiveAndBuffer::parse_batch(
             &mut verified_packets,
             seq_id,
             revert_on_error,
             max_schedule_slot,
-            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            (&root, &working),
             &HashSet::new(),
             true,
             &mut stats,
@@ -2464,7 +2317,7 @@ pub(super) mod tests {
         let (transaction, _max_age) = &parsed.txns_max_age[0];
         let implicit_locks = transaction.implicit_read_locks();
 
-        if feature_active {
+        if root_active {
             assert!(implicit_locks.is_empty());
         } else {
             let programdata = Pubkey::find_program_address(
