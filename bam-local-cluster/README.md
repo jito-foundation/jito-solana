@@ -3,19 +3,6 @@
 A tool for spinning up local Solana clusters with BAM (Block Assembly Marketplace) support for testing purposes. This
 tool uses subprocess-based execution to spawn `agave-validator` instances.
 
-## Overview
-
-BAM Local Cluster is a development tool for spinning up local Solana clusters with BAM (Block Assembly Marketplace)
-support. It's designed for testing BAM-related functionality in a controlled local environment.
-
-The tool automatically handles:
-
-- Validator process management and monitoring
-- Genesis configuration with SPL programs
-- Keypair generation and ledger setup
-- Bootstrap node coordination
-- Process health monitoring and shutdown
-
 ## Quick Start
 
 The cluster tool belongs to the `dev-bins` workspace so its development
@@ -147,17 +134,3 @@ Common issues:
 - **Binary not found**: Check `validator_build_path` and
   `ledger_tool_build_path` against the separate build output directories
 - **Permission errors**: Make sure the ledger base directory is writable
-
-Validator output is streamed to the console for debugging.
-
-## Development
-
-To modify the cluster behavior:
-
-1. Update `src/cluster_manager.rs` for process spawning logic
-2. Modify `src/config.rs` for configuration structure
-3. Update `src/main.rs` for command-line interface
-
-## License
-
-This project is part of the Jito Solana JDS repository and follows the same license terms.

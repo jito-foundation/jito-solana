@@ -8421,7 +8421,6 @@ dependencies = [
  "crossbeam-channel",
  "itertools 0.15.0",
  "log",
- "solana-clock",
  "solana-gossip",
  "solana-hash",
  "solana-keypair",
