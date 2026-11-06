@@ -196,6 +196,7 @@ fn main() {
         BundleAccountLocker::default(),
         None,
         Some(bam_dependencies),
+        crossbeam_channel::unbounded().0,
     );
 
     let bank_setting_thread = {

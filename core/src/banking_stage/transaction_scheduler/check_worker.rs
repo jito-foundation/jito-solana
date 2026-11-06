@@ -927,6 +927,7 @@ pub(crate) mod external {
                 check_worker_to_pack_capacity: 16,
                 pack_to_simulate_worker_capacity: 0,
                 simulate_worker_to_pack_capacity: 0,
+                bundle_to_pack_capacity: 0,
             };
             let (_agave_session, client_session) = setup_local_session(logon).unwrap();
             let allocator = client_session.allocator;

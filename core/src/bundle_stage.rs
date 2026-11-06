@@ -15,6 +15,7 @@ use {
             bundle_account_locker::BundleAccountLocker,
             bundle_consumer::BundleConsumer,
             bundle_storage::{BundleStorage, BundleStorageEntry, BundleStorageError},
+            bundle_to_pack::BundleToPack,
         },
         packet_bundle::VerifiedPacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -51,8 +52,20 @@ use {
 pub mod bundle_account_locker;
 mod bundle_consumer;
 mod bundle_storage;
+mod bundle_to_pack;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
+
+/// Selects which block production path owns block engine bundles.
+pub enum BundleStageControlMsg {
+    /// Bundles are buffered and executed in process.
+    Internal,
+    /// Bundles are forwarded to the external scheduler if it requested the queue.
+    #[cfg(unix)]
+    External {
+        session: Option<agave_scheduler_handshake::AgaveBundleToPackSession>,
+    },
+}
 
 // Stats emitted periodically
 pub struct BundleStageLoopMetrics {
@@ -352,6 +365,7 @@ impl BundleStage {
         bam_enabled: Arc<AtomicU8>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
+        control_receiver: Receiver<BundleStageControlMsg>,
     ) -> Self {
         Self::start_bundle_thread(
             cluster_info,
@@ -370,6 +384,7 @@ impl BundleStage {
             bam_enabled,
             prioritization_fee_cache,
             blacklisted_accounts,
+            control_receiver,
         )
     }
 
@@ -395,6 +410,7 @@ impl BundleStage {
         bam_enabled: Arc<AtomicU8>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
+        control_receiver: Receiver<BundleStageControlMsg>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -427,6 +443,7 @@ impl BundleStage {
                     block_builder_fee_info,
                     bam_enabled,
                     cluster_info,
+                    control_receiver,
                 );
             })
             .unwrap();
@@ -447,6 +464,7 @@ impl BundleStage {
         block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
         bam_enabled: Arc<AtomicU8>,
         cluster_info: Arc<ClusterInfo>,
+        control_receiver: Receiver<BundleStageControlMsg>,
     ) {
         let mut last_metrics_update = Instant::now();
         let mut bundle_storage = BundleStorage::with_capacity(2_000);
@@ -455,9 +473,17 @@ impl BundleStage {
         let consume_worker_metrics = ConsumeWorkerMetrics::new();
 
         let mut last_tip_update_slot = Slot::MAX;
+        let mut forwarder: Option<BundleToPack> = None;
         while !exit.load(Ordering::Relaxed) {
-            let block_engine_processing =
-                Self::block_engine_processing_enabled(&bam_enabled, &mut bundle_storage);
+            while let Ok(control) = control_receiver.try_recv() {
+                forwarder = match control {
+                    BundleStageControlMsg::Internal => None,
+                    #[cfg(unix)]
+                    BundleStageControlMsg::External { session } => session.map(BundleToPack::from),
+                };
+            }
+            let block_engine_processing = forwarder.is_none()
+                && Self::block_engine_processing_enabled(&bam_enabled, &mut bundle_storage);
 
             if block_engine_processing
                 && (bundle_storage.unprocessed_bundles_len() > 0
@@ -489,6 +515,7 @@ impl BundleStage {
                 &mut bundle_storage,
                 &blacklisted_accounts,
                 &mut bundle_stage_metrics,
+                forwarder.as_mut(),
             ) {
                 break;
             }
@@ -536,6 +563,7 @@ impl BundleStage {
         bundle_storage: &mut BundleStorage,
         blacklisted_accounts: &HashSet<Pubkey>,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
+        mut forwarder: Option<&mut BundleToPack>,
     ) -> Result<(), RecvTimeoutError> {
         let (root_bank, working_bank) = {
             let bank_forks = bank_forks.read().unwrap();
@@ -557,6 +585,12 @@ impl BundleStage {
             bundle_stage_metrics.increment_num_bundles_received(1);
             bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
 
+            if let Some(forwarder) = forwarder.as_deref_mut() {
+                if let Err(error) = forwarder.forward(&bundle) {
+                    bundle_stage_metrics.increment_bundle_dropped_error(error);
+                }
+                continue;
+            }
             match bundle_storage.insert_bundle(
                 bundle,
                 &root_bank,
@@ -1403,6 +1437,7 @@ mod tests {
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
+            crossbeam_channel::never(),
         );
 
         // initialize tip distribution config
@@ -1543,6 +1578,7 @@ mod tests {
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
+            crossbeam_channel::never(),
         );
 
         let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
@@ -1635,6 +1671,7 @@ mod tests {
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
+            crossbeam_channel::never(),
         );
 
         let kp1 = Keypair::new();
@@ -1753,6 +1790,7 @@ mod tests {
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
+            crossbeam_channel::never(),
         );
 
         let kp1 = Keypair::new();
@@ -1870,6 +1908,7 @@ mod tests {
             Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
+            crossbeam_channel::never(),
         );
 
         let kp = Keypair::new();

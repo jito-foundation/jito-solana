@@ -223,6 +223,7 @@ pub(crate) mod external {
     use {
         super::*,
         crate::{
+            bam_dependencies::TipPreparation,
             banking_stage::{
                 committer::CommitTransactionDetails,
                 scheduler_messages::MaxAge,
@@ -271,6 +272,7 @@ pub(crate) mod external {
         metrics: Arc<ConsumeWorkerMetrics>,
         bundle_account_locker: BundleAccountLocker,
         blacklisted_accounts: Arc<HashSet<Pubkey>>,
+        tip_preparation: Option<Arc<TipPreparation>>,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -291,6 +293,7 @@ pub(crate) mod external {
             sharable_banks: SharableBanks,
             bundle_account_locker: BundleAccountLocker,
             blacklisted_accounts: Arc<HashSet<Pubkey>>,
+            tip_preparation: Option<Arc<TipPreparation>>,
         ) -> Self {
             Self {
                 exit,
@@ -301,6 +304,7 @@ pub(crate) mod external {
                 metrics: Arc::new(ConsumeWorkerMetrics::new()),
                 bundle_account_locker,
                 blacklisted_accounts,
+                tip_preparation,
             }
         }
 
@@ -445,6 +449,27 @@ pub(crate) mod external {
                     ));
                 }
 
+                // The first message on a bank that accepts atomic batches cranks the tip
+                // programs, as BundleStage does at slot start. Only bundles wait for such a bank
+                // and for the crank; both are per bank, so later messages are not drained.
+                let bundle = message.flags & execution_message_flags::BUNDLE != 0;
+                if !simulate {
+                    let ready = leader_state.atomic_batches_enabled()
+                        && self
+                            .tip_preparation
+                            .as_ref()
+                            .is_none_or(|tips| tips.prepare(&self.transaction_consumer, bank));
+                    if bundle && !ready {
+                        return self
+                            .return_not_included_with_reason(
+                                message,
+                                not_included_reasons::BUNDLE_NOT_READY,
+                                bank.slot(),
+                            )
+                            .map(|response| (false, response));
+                    }
+                }
+
                 // SAFETY: Assumption that external scheduler does not pass messages with batch regions
                 //         not pointing to valid regions in the allocator.
                 let batch = unsafe {
@@ -468,8 +493,10 @@ pub(crate) mod external {
                 // Enforce all or nothing on translation_results.
                 let execution_flags = ExecutionFlags {
                     simulate,
-                    drop_on_failure: message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
-                    all_or_nothing: message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
+                    drop_on_failure: bundle
+                        || message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
+                    all_or_nothing: bundle
+                        || message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
                 };
                 if execution_flags.all_or_nothing && translation_results.len() != transactions.len()
                 {
@@ -489,7 +516,7 @@ pub(crate) mod external {
                         &max_ages,
                         &execution_flags,
                         Some(&self.bundle_account_locker),
-                        false,
+                        bundle,
                         None,
                     );
 
@@ -720,8 +747,9 @@ pub(crate) mod external {
         }
 
         fn validate_message_flags(flags: u16) -> bool {
-            const ALLOWED_EXECUTE_FLAGS: u16 =
-                execution_message_flags::DROP_ON_FAILURE | execution_message_flags::ALL_OR_NOTHING;
+            const ALLOWED_EXECUTE_FLAGS: u16 = execution_message_flags::DROP_ON_FAILURE
+                | execution_message_flags::ALL_OR_NOTHING
+                | execution_message_flags::BUNDLE;
 
             flags & !ALLOWED_EXECUTE_FLAGS == 0
         }
@@ -844,6 +872,7 @@ pub(crate) mod external {
                 transaction_recorder::TransactionRecorder,
             },
             solana_pubkey::Pubkey,
+            solana_rent::Rent,
             solana_runtime::{
                 bank_forks::BankForks, genesis_utils, vote_sender_types::ReplayVoteReceiver,
             },
@@ -1012,11 +1041,21 @@ pub(crate) mod external {
         }
 
         fn setup_external_test_frame_disable_features(feature_ids: &[Pubkey]) -> ExternalTestFrame {
+            setup_external_test_frame_with(feature_ids, 10_000, Rent::free(), None)
+        }
+
+        fn setup_external_test_frame_with(
+            feature_ids: &[Pubkey],
+            mint_lamports: u64,
+            rent: Rent,
+            tip_preparation: Option<Arc<TipPreparation>>,
+        ) -> ExternalTestFrame {
             let GenesisConfigInfo {
                 mut genesis_config,
                 mint_keypair,
                 ..
-            } = create_slow_genesis_config(10_000);
+            } = create_slow_genesis_config(mint_lamports);
+            genesis_config.rent = rent;
             for feature_id in feature_ids {
                 genesis_config.accounts.remove(feature_id);
             }
@@ -1039,6 +1078,7 @@ pub(crate) mod external {
                 check_worker_to_pack_capacity: 16,
                 pack_to_simulate_worker_capacity: 16,
                 simulate_worker_to_pack_capacity: 16,
+                bundle_to_pack_capacity: 0,
             };
             let (mut agave_session, mut client_session) = setup_local_session(logon).unwrap();
             let agave_worker = agave_session.workers.pop().unwrap();
@@ -1060,6 +1100,7 @@ pub(crate) mod external {
                 bank_forks.read().unwrap().sharable_banks(),
                 BundleAccountLocker::default(),
                 Arc::new(ahash::HashSet::default()),
+                tip_preparation,
             );
 
             ExternalTestFrame {
@@ -1121,7 +1162,10 @@ pub(crate) mod external {
             assert!(ExternalWorker::validate_message_flags(
                 execution_message_flags::DROP_ON_FAILURE | execution_message_flags::ALL_OR_NOTHING
             ));
-            assert!(!ExternalWorker::validate_message_flags(1 << 2));
+            assert!(ExternalWorker::validate_message_flags(
+                execution_message_flags::BUNDLE
+            ));
+            assert!(!ExternalWorker::validate_message_flags(1 << 3));
             assert!(!ExternalWorker::validate_message_flags(1 << 15));
         }
 
@@ -1717,6 +1761,191 @@ pub(crate) mod external {
             test_frame.free_batch(batch);
         }
 
+        fn serialized_transfer(
+            test_frame: &ExternalTestFrame,
+            from: &Keypair,
+            to: &Pubkey,
+            lamports: u64,
+        ) -> Vec<u8> {
+            wincode::serialize(&transfer(
+                from,
+                to,
+                lamports,
+                test_frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()
+        }
+
+        #[test]
+        fn test_run_execute_bundle_happy_path() {
+            let mut test_frame = setup_external_test_frame_with(
+                &[],
+                10_000,
+                Rent::free(),
+                Some(TipPreparation::new_for_tests(Pubkey::new_unique())),
+            );
+            test_frame.enable_execution();
+
+            // Dependent transfers: later fee payers are funded by the preceding transaction, so
+            // the bundle only succeeds when state is threaded through the batch.
+            let (first, second, recipient) = (Keypair::new(), Keypair::new(), Pubkey::new_unique());
+            let batch = test_frame.allocate_batch(&[
+                serialized_transfer(
+                    &test_frame,
+                    &test_frame.mint_keypair,
+                    &first.pubkey(),
+                    9_000,
+                ),
+                serialized_transfer(&test_frame, &first, &second.pubkey(), 6_000),
+                serialized_transfer(&test_frame, &second, &recipient, 3_000),
+            ]);
+
+            test_frame.send_message(PackToExecutionWorkerMessage {
+                flags: execution_message_flags::BUNDLE,
+                max_working_slot: test_frame.bank.slot(),
+                batch: batch.region,
+            });
+            test_frame.iterate().unwrap();
+            let response = test_frame.recv_response();
+            assert_eq!(response.processed_code, processed_codes::PROCESSED);
+            let responses = test_frame.execution_responses(&response.responses);
+            assert_eq!(responses.len(), 3);
+            for response in &responses {
+                assert_eq!(response.not_included_reason, not_included_reasons::NONE);
+                assert_eq!(response.execution_status, execution_statuses::SUCCESS);
+            }
+            assert_eq!(test_frame.bank.get_balance(&recipient), 3_000);
+            let records: Vec<_> = test_frame.record_receiver.drain().collect();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].transactions.len(), 3);
+            assert!(!records[0].reschedule_on_sad_handover);
+
+            test_frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_run_execute_bundle_failure_reverts_all() {
+            let mut test_frame = setup_external_test_frame();
+            test_frame.enable_execution();
+
+            let recipient = Pubkey::new_unique();
+            let batch = test_frame.allocate_batch(&[
+                serialized_transfer(&test_frame, &test_frame.mint_keypair, &recipient, 1),
+                serialized_transfer(&test_frame, &test_frame.mint_keypair, &recipient, 2),
+                serialized_transfer(&test_frame, &Keypair::new(), &recipient, 3),
+            ]);
+
+            test_frame.send_message(PackToExecutionWorkerMessage {
+                flags: execution_message_flags::BUNDLE,
+                max_working_slot: test_frame.bank.slot(),
+                batch: batch.region,
+            });
+            test_frame.iterate().unwrap();
+            let response = test_frame.recv_response();
+            assert_eq!(response.processed_code, processed_codes::PROCESSED);
+            let responses = test_frame.execution_responses(&response.responses);
+            assert_eq!(responses.len(), 3);
+            for response in &responses[..2] {
+                assert_eq!(
+                    response.not_included_reason,
+                    not_included_reasons::ALL_OR_NOTHING_BATCH_FAILURE
+                );
+            }
+            assert_ne!(responses[2].not_included_reason, not_included_reasons::NONE);
+            assert!(
+                responses
+                    .iter()
+                    .all(|response| response.execution_status == execution_statuses::NOT_INCLUDED)
+            );
+            assert_eq!(test_frame.bank.get_balance(&recipient), 0);
+            assert_eq!(test_frame.record_receiver.drain().count(), 0);
+
+            test_frame.free_batch(batch);
+        }
+
+        /// Sends a bundle and then a plain batch; the bundle must be held with
+        /// `BUNDLE_NOT_READY` while the plain batch still executes.
+        fn assert_bundle_held_but_plain_batch_executes(test_frame: &mut ExternalTestFrame) {
+            let recipient = Pubkey::new_unique();
+            let lamports = test_frame
+                .bank
+                .get_minimum_balance_for_rent_exemption(0)
+                .max(1);
+            let bundle = test_frame.allocate_batch(&[serialized_transfer(
+                test_frame,
+                &test_frame.mint_keypair,
+                &recipient,
+                lamports,
+            )]);
+            let plain = test_frame.allocate_batch(&[serialized_transfer(
+                test_frame,
+                &test_frame.mint_keypair,
+                &recipient,
+                lamports,
+            )]);
+            test_frame.send_message(PackToExecutionWorkerMessage {
+                flags: execution_message_flags::BUNDLE,
+                max_working_slot: test_frame.bank.slot(),
+                batch: bundle.region,
+            });
+            test_frame.send_message(PackToExecutionWorkerMessage {
+                flags: 0,
+                max_working_slot: test_frame.bank.slot(),
+                batch: plain.region,
+            });
+            test_frame.iterate().unwrap();
+
+            let response = test_frame.recv_response();
+            assert_eq!(response.processed_code, processed_codes::PROCESSED);
+            let responses = test_frame.execution_responses(&response.responses);
+            assert_eq!(
+                responses[0].not_included_reason,
+                not_included_reasons::BUNDLE_NOT_READY
+            );
+            assert_eq!(responses[0].execution_slot, test_frame.bank.slot());
+            let response = test_frame.recv_response();
+            assert_eq!(response.processed_code, processed_codes::PROCESSED);
+            let responses = test_frame.execution_responses(&response.responses);
+            assert_eq!(responses[0].not_included_reason, not_included_reasons::NONE);
+            assert_eq!(test_frame.bank.get_balance(&recipient), lamports);
+
+            test_frame.free_batch(bundle);
+            test_frame.free_batch(plain);
+        }
+
+        #[test]
+        fn test_run_execute_bundle_requires_atomic_bank() {
+            let mut test_frame = setup_external_test_frame();
+            test_frame.shared_leader_state.store(Arc::new(
+                LeaderState::new_with_atomic_batches_enabled(
+                    Some(test_frame.bank.clone()),
+                    test_frame.bank.tick_height(),
+                    None,
+                    None,
+                    false,
+                ),
+            ));
+            test_frame
+                .record_receiver
+                .restart(test_frame.bank.bank_id());
+
+            assert_bundle_held_but_plain_batch_executes(&mut test_frame);
+        }
+
+        #[test]
+        fn test_run_execute_bundle_waits_for_tip_preparation() {
+            // An unknown block builder keeps the tip programs unprepared.
+            let mut test_frame = setup_external_test_frame_with(
+                &[],
+                10_000_000_000,
+                Rent::default(),
+                Some(TipPreparation::new_for_tests(Pubkey::default())),
+            );
+            test_frame.enable_execution();
+
+            assert_bundle_held_but_plain_batch_executes(&mut test_frame);
+        }
+
         #[test]
         fn test_run_execute_failed_transaction() {
             let mut test_frame = setup_external_test_frame();
@@ -1779,6 +2008,7 @@ pub(crate) mod external {
                 test_frame.bank_forks.read().unwrap().sharable_banks(),
                 BundleAccountLocker::default(),
                 Arc::new(ahash::HashSet::default()),
+                None,
             );
 
             client_session
@@ -1839,6 +2069,7 @@ pub(crate) mod external {
                     test_frame.bank_forks.read().unwrap().sharable_banks(),
                     BundleAccountLocker::default(),
                     Arc::new(ahash::HashSet::default()),
+                    None,
                 )
             };
             let mut first_worker = make_worker();

@@ -35,7 +35,7 @@ use {
     agave_xdp::transmitter::XdpSender,
     ahash::HashSet as AHashSet,
     arc_swap::ArcSwap,
-    crossbeam_channel::{Receiver, Sender, bounded},
+    crossbeam_channel::{Receiver, Sender, bounded, unbounded},
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_ledger::{blockstore::Blockstore, entry_notifier_service::EntryNotifierSender},
@@ -361,6 +361,7 @@ impl Tpu {
         // Scheduler bindings are immutable for the lifetime of the TPU. Exclude the BAM runtime
         // structurally so changing the shared URL cannot activate BAM in external-scheduler mode.
         let bam_dependencies = scheduler_bindings.is_none().then_some(bam_dependencies);
+        let (bundle_control_sender, bundle_control_receiver) = unbounded();
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -390,6 +391,7 @@ impl Tpu {
                 bundle_account_locker: bundle_account_locker.clone(),
             }),
             bam_dependencies.clone(),
+            bundle_control_sender,
         );
 
         #[cfg(unix)]
@@ -427,6 +429,7 @@ impl Tpu {
             bam_enabled,
             prioritization_fee_cache.clone(),
             filter_keys.iter().copied().collect::<AHashSet<_>>(),
+            bundle_control_receiver,
         );
 
         let bam_manager = bam_dependencies.map(|bam_dependencies| {
