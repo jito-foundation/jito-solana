@@ -23,9 +23,7 @@ dev-context-only-utils = ["solana-net-utils", "solana-signer"]
 crossbeam-channel = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
-solana-client = { workspace = true }
 solana-clock = { workspace = true }
-solana-connection-cache = { workspace = true }
 solana-gossip = { workspace = true }
 solana-hash = { workspace = true }
 solana-keypair = { workspace = true }

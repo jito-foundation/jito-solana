@@ -403,8 +403,6 @@ pub struct ValidatorConfig {
     pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
     pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
     /// Configured external receivers for this validator's own broadcast path.
-    /// Used for direct leader shreds and replay-triggered rebroadcasts of this
-    /// validator's slots.
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     /// Configured external receivers for TVU retransmit-stage shreds.
     /// Does not apply to this validator's own direct leader broadcast path.

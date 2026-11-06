@@ -777,24 +777,14 @@ pub mod test {
         );
     }
 
-    #[allow(clippy::implicit_hasher)]
-    #[allow(clippy::type_complexity)]
-    fn make_transmit_shreds(
-        slot: Slot,
-        num: u64,
-    ) -> (
-        Vec<Shred>,
-        Vec<Shred>,
-        Vec<Arc<Vec<Shred>>>,
-        Vec<Arc<Vec<Shred>>>,
-    ) {
+    fn make_data_shreds(slot: Slot, num: u64) -> Vec<Shred> {
         let num_entries = max_ticks_per_n_shreds(num, None);
         let entries = create_ticks(num_entries, /*hashes_per_tick:*/ 0, Hash::default());
         let shredder = Shredder::new(
             slot, /*parent_slot:*/ 0, /*reference_tick:*/ 0, /*version:*/ 0,
         )
         .unwrap();
-        let (data_shreds, coding_shreds) = shredder.entries_to_merkle_shreds_for_tests(
+        let (data_shreds, _coding_shreds) = shredder.entries_to_merkle_shreds_for_tests(
             &Keypair::new(),
             &entries,
             true, // is_last_in_slot
@@ -804,18 +794,7 @@ pub mod test {
             0, // next_code_index
             &mut ProcessShredsStats::default(),
         );
-        (
-            data_shreds.clone(),
-            coding_shreds.clone(),
-            data_shreds
-                .into_iter()
-                .map(|shred| Arc::new(vec![shred]))
-                .collect(),
-            coding_shreds
-                .into_iter()
-                .map(|shred| Arc::new(vec![shred]))
-                .collect(),
-        )
+        data_shreds
     }
 
     #[test]
@@ -867,8 +846,7 @@ pub mod test {
         let cluster_nodes_cache =
             ClusterNodesCache::<BroadcastStage>::new(1, Duration::from_secs(60));
         let mut transmit_stats = TransmitShredsStats::default();
-        let (shreds, _, _, _) = make_transmit_shreds(0, 1);
-        let shreds = vec![shreds[0].clone()];
+        let shreds = vec![make_data_shreds(0, 1)[0].clone()];
 
         broadcast_shreds(
             BroadcastSocket::Udp(&main_sender),

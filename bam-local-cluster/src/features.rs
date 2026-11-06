@@ -121,6 +121,14 @@ impl ResolvedFeatures {
             }
         };
         let resolved = Self::resolve(&baseline, &config)?;
+        // Validators no longer start leaders before the Alpenglow migration, so a cluster without
+        // Alpenglow at genesis stays at slot 0 and never reaches the migration.
+        ensure!(
+            resolved.states.get(&agave_feature_set::alpenglow::id()) == Some(&FeatureState::Active),
+            "Alpenglow must be active at genesis, or the cluster stays at slot 0; add it to \
+             `enable`: {}",
+            agave_feature_set::alpenglow::id()
+        );
         fs::write(snapshot_path, toml::to_string_pretty(&baseline)?)?;
         Ok(resolved)
     }
@@ -145,7 +153,6 @@ impl ResolvedFeatures {
             let id = known_id(value)?;
             ensure!(
                 [
-                    agave_feature_set::alpenglow::id(),
                     agave_feature_set::alpenglow_fast_leader_handover::id(),
                     agave_feature_set::reduce_slot_time_to_200ms::id(),
                 ]
@@ -429,10 +436,14 @@ mod tests {
     #[test]
     fn snapshot_round_trip_preserves_source_and_pending_state() {
         let mut baseline = baseline();
-        let id = agave_feature_set::alpenglow::id();
+        let id = agave_feature_set::alpenglow_fast_leader_handover::id();
         baseline
             .features
             .insert(id.to_string(), FeatureState::Pending);
+        baseline.features.insert(
+            agave_feature_set::alpenglow::id().to_string(),
+            FeatureState::Active,
+        );
         let directory =
             std::env::temp_dir().join(format!("feature-snapshot-{}", Pubkey::new_unique()));
         fs::create_dir_all(&directory).unwrap();
@@ -455,6 +466,45 @@ mod tests {
         assert_eq!(saved.source, "fixture");
         fs::remove_dir_all(directory).unwrap();
         assert_eq!(replay.states[&id], FeatureState::Inactive);
+    }
+
+    #[test]
+    fn from_file_requires_alpenglow_at_genesis() {
+        let id = agave_feature_set::alpenglow::id();
+        let directory =
+            std::env::temp_dir().join(format!("feature-alpenglow-{}", Pubkey::new_unique()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("baseline.toml"),
+            toml::to_string_pretty(&baseline()).unwrap(),
+        )
+        .unwrap();
+        let from_file = |overrides: String| {
+            let path = directory.join("features.toml");
+            fs::write(
+                &path,
+                format!("[features]\nbaseline = \"baseline.toml\"\n{overrides}\n"),
+            )
+            .unwrap();
+            ResolvedFeatures::from_file(&path, &directory.join("saved.toml"))
+        };
+        for (overrides, expected) in [
+            (String::new(), "must be active at genesis"),
+            (format!("disable = [\"{id}\"]"), "must be active at genesis"),
+            (
+                format!("activate_next_epoch = [\"{id}\"]"),
+                "must be active at genesis",
+            ),
+            (
+                format!("[features.activate_at_epoch]\n\"{id}\" = 2"),
+                "not supported",
+            ),
+        ] {
+            let error = from_file(overrides).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+        assert!(from_file(format!("enable = [\"{id}\"]")).is_ok());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

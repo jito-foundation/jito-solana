@@ -87,7 +87,7 @@ pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>
 
 /// Decides whether a subscriber should receive a given bank notification.
 ///
-/// This method runs synchronously on replay, gossip, and root-processing producer threads.
+/// This method runs synchronously on replay and votor root-processing producer threads.
 /// Implementations must return quickly and must not perform blocking I/O, wait on contended locks,
 /// do expensive work, or panic. A slow, blocking, or panicking filter delays or disrupts
 /// bank-notification production for every subscriber.

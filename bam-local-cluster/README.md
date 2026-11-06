@@ -77,10 +77,10 @@ inactive. Override by feature public key:
 - `disable`: leave inactive.
 - `activate_next_epoch`: request runtime activation at the first epoch
   boundary.
-- `activate_at_epoch`: map Alpenglow, fast leader handover, or the 200 ms slot
-  feature to a target epoch (1 or later). Other gates are rejected because some
-  have extra activation hooks. The feature becomes active at that epoch's first
-  slot. For example:
+- `activate_at_epoch`: map fast leader handover or the 200 ms slot feature to a
+  target epoch (1 or later). Other gates are rejected because some have extra
+  activation hooks. The feature becomes active at that epoch's first slot. For
+  example:
 
   ```toml
   [features.activate_at_epoch]
@@ -97,12 +97,11 @@ reads span multiple finalized slots, recorded in the snapshot. A saved
 baseline's features that this build no longer has log a warning, and an active
 one still gets its feature account; an unknown override is an error.
 
-Alpenglow enabled at genesis uses a synthetic certificate and skips migration;
-later-epoch activation requires the real migration and does not guarantee it
-completes. The production migration starts 5,000 slots after the Alpenglow
-feature activates. On a short local run, activating the feature does not mean
-the cluster has switched consensus. Invalid or conflicting overrides and
-missing prerequisites are rejected. Without `--features-config`, genesis enables
+Alpenglow must be active at genesis, where it uses a synthetic certificate and
+skips migration. Validators no longer start leaders before the migration, so a
+config that leaves Alpenglow inactive or schedules it for later is rejected
+instead of staying at slot 0. Invalid or conflicting overrides and missing
+prerequisites are also rejected. Without `--features-config`, genesis enables
 every feature in the build, with Alpenglow at genesis.
 
 ## How It Works

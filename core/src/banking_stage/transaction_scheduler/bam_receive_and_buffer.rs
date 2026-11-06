@@ -2306,23 +2306,29 @@ pub(super) mod tests {
         assert!(results[0].is_err());
     }
 
-    #[test_case::test_case(false; "implicit_programdata_locks_until_rooted")]
-    #[test_case::test_case(true; "no_implicit_programdata_locks_once_rooted")]
-    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(feature_active: bool) {
+    #[test_case::test_case(false, false; "before_activation")]
+    #[test_case::test_case(false, true; "activation_not_rooted")]
+    #[test_case::test_case(true, true; "activation_rooted")]
+    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(
+        root_active: bool,
+        working_active: bool,
+    ) {
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
             ..
         } = create_slow_genesis_config(u64::MAX);
-        let mut bank = Bank::new_for_tests(&genesis_config);
         // Test genesis activates every feature; the gate only matters before activation.
         let feature_id = agave_feature_set::loaderv3_programdata_size_floor::id();
-        if feature_active {
-            bank.activate_feature(&feature_id);
-        } else {
-            bank.deactivate_feature(&feature_id);
+        let mut root = Bank::new_for_tests(&genesis_config);
+        if !root_active {
+            root.deactivate_feature(&feature_id);
         }
-        let (_bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        let (root, _bank_forks) = root.wrap_with_bank_forks_for_tests();
+        let mut working = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
+        if working_active {
+            Arc::make_mut(&mut working.feature_set).activate(&feature_id, 1);
+        }
 
         let recipient = Pubkey::new_unique();
         let batch = AtomicTxnBatch {
@@ -2332,7 +2338,7 @@ pub(super) mod tests {
                     &mint_keypair,
                     &recipient,
                     1,
-                    bank_forks.read().unwrap().root_bank().last_blockhash(),
+                    root.last_blockhash(),
                 ))
                 .unwrap()
                 .into(),
@@ -2349,13 +2355,12 @@ pub(super) mod tests {
             panic!("batch verification should succeed");
         };
 
-        let bank_forks = bank_forks.read().unwrap();
         let (result, _stats) = BamReceiveAndBuffer::parse_batch(
             &mut verified_packets,
             seq_id,
             revert_on_error,
             max_schedule_slot,
-            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            (&root, &working),
             &HashSet::new(),
             true,
             &mut stats,
@@ -2364,7 +2369,7 @@ pub(super) mod tests {
         let (transaction, _max_age) = &parsed.txns_max_age[0];
         let implicit_locks = transaction.implicit_read_locks();
 
-        if feature_active {
+        if root_active {
             assert!(implicit_locks.is_empty());
         } else {
             let programdata = Pubkey::find_program_address(

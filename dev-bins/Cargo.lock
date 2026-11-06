@@ -1029,17 +1029,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-lock"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0876700b0d007ad25d5508865a4259c3af9af6d296bf663a0d586d0bc3369f6f"
-dependencies = [
- "event-listener",
- "event-listener-strategy",
- "pin-project-lite",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2492,26 +2481,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "event-listener"
-version = "5.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
-dependencies = [
- "parking",
- "pin-project-lite",
-]
-
-[[package]]
-name = "event-listener-strategy"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
-dependencies = [
- "event-listener",
- "pin-project-lite",
 ]
 
 [[package]]
@@ -4449,12 +4418,6 @@ checksum = "81fec4625e73cf41ef4bb6846cafa6d44736525f442ba45e407c4a000a13996f"
 dependencies = [
  "group 0.13.0",
 ]
-
-[[package]]
-name = "parking"
-version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"
@@ -6481,42 +6444,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-client"
-version = "5.0.0-alpha.0"
-dependencies = [
- "async-trait",
- "dashmap",
- "futures-util",
- "indicatif",
- "log",
- "solana-commitment-config",
- "solana-connection-cache",
- "solana-hash",
- "solana-keypair",
- "solana-measure",
- "solana-message",
- "solana-net-utils",
- "solana-pubkey 4.4.0",
- "solana-pubsub-client",
- "solana-quic-client",
- "solana-rpc-client",
- "solana-rpc-client-api",
- "solana-rpc-client-nonce-utils",
- "solana-signature",
- "solana-signer",
- "solana-streamer",
- "solana-time-utils",
- "solana-tls-utils",
- "solana-tpu-client",
- "solana-tpu-client-next",
- "solana-transaction",
- "solana-transaction-error",
- "solana-udp-client",
- "tokio",
- "wincode",
-]
-
-[[package]]
 name = "solana-client-traits"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6627,24 +6554,6 @@ dependencies = [
  "solana-short-vec",
  "solana-system-interface",
  "wincode",
-]
-
-[[package]]
-name = "solana-connection-cache"
-version = "5.0.0-alpha.0"
-dependencies = [
- "async-trait",
- "crossbeam-channel",
- "indexmap",
- "log",
- "rand 0.9.4",
- "solana-keypair",
- "solana-measure",
- "solana-metrics",
- "solana-net-utils",
- "solana-time-utils",
- "solana-transaction-error",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -8014,30 +7923,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-quic-client"
-version = "5.0.0-alpha.0"
-dependencies = [
- "anza-quinn",
- "async-lock",
- "async-trait",
- "futures 0.3.34",
- "log",
- "solana-connection-cache",
- "solana-keypair",
- "solana-measure",
- "solana-metrics",
- "solana-net-utils",
- "solana-pubkey 4.4.0",
- "solana-rpc-client-api",
- "solana-signer",
- "solana-streamer",
- "solana-tls-utils",
- "solana-transaction-error",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "solana-rayon-threadlimit"
 version = "5.0.0-alpha.0"
 dependencies = [
@@ -8188,7 +8073,6 @@ dependencies = [
  "base64 0.23.1",
  "bs58",
  "futures 0.3.34",
- "indicatif",
  "log",
  "reqwest 0.12.28",
  "reqwest-middleware",
@@ -8240,22 +8124,6 @@ dependencies = [
  "solana-transaction-error",
  "solana-transaction-status-client-types",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "solana-rpc-client-nonce-utils"
-version = "5.0.0-alpha.0"
-dependencies = [
- "solana-account",
- "solana-commitment-config",
- "solana-hash",
- "solana-message",
- "solana-nonce",
- "solana-pubkey 4.4.0",
- "solana-rpc-client",
- "solana-sdk-ids",
- "thiserror 2.0.21",
- "wincode",
 ]
 
 [[package]]
@@ -8553,9 +8421,7 @@ dependencies = [
  "crossbeam-channel",
  "itertools 0.15.0",
  "log",
- "solana-client",
  "solana-clock",
- "solana-connection-cache",
  "solana-gossip",
  "solana-hash",
  "solana-keypair",
@@ -9167,34 +9033,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-tpu-client"
-version = "5.0.0-alpha.0"
-dependencies = [
- "futures-util",
- "indicatif",
- "log",
- "rayon",
- "solana-client-traits",
- "solana-clock",
- "solana-commitment-config",
- "solana-connection-cache",
- "solana-epoch-schedule",
- "solana-leader-schedule",
- "solana-message",
- "solana-pubkey 4.4.0",
- "solana-pubsub-client",
- "solana-rpc-client",
- "solana-rpc-client-api",
- "solana-signature",
- "solana-signer",
- "solana-transaction",
- "solana-transaction-error",
- "thiserror 2.0.21",
- "tokio",
- "wincode",
-]
-
-[[package]]
 name = "solana-tpu-client-next"
 version = "5.0.0-alpha.0"
 dependencies = [
@@ -9388,18 +9226,6 @@ dependencies = [
  "solana-transaction-error",
  "thiserror 2.0.21",
  "wincode",
-]
-
-[[package]]
-name = "solana-udp-client"
-version = "5.0.0-alpha.0"
-dependencies = [
- "async-trait",
- "solana-connection-cache",
- "solana-keypair",
- "solana-net-utils",
- "solana-streamer",
- "solana-transaction-error",
 ]
 
 [[package]]
