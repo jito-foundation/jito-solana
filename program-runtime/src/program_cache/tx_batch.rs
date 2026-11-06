@@ -48,8 +48,19 @@ impl ProgramCacheForTxBatch {
         self.slot
     }
 
+    /// Whether no programs have been extracted into this batch cache yet.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn merged_modified(&self) -> bool {
         self.merged_modified
+    }
+
+    /// Clears the merged marker, so a cache reused across transactions reports only the merges
+    /// of the next one.
+    pub fn reset_merged_modified(&mut self) {
+        self.merged_modified = false;
     }
 
     /// Refill the cache with a single entry. It's typically called during transaction loading, and
@@ -111,10 +122,6 @@ impl ProgramCacheForTxBatch {
 
 #[cfg(any(test, feature = "dev-context-only-utils"))]
 impl ProgramCacheForTxBatch {
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     /// Look up `entries` directly, without the delay visibility rewrite
     /// `find` performs, so a test can see the entry as it was stored.
     pub fn get_entry_for_tests(&self, key: &Pubkey) -> Option<&Arc<ProgramCacheEntry>> {

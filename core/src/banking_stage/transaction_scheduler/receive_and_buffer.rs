@@ -17,6 +17,7 @@ use {
         resolved_transaction_view::ResolvedTransactionView,
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
+    ahash::HashSet as AHashSet,
     core::time::Duration,
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError},
     solana_accounts_db::account_locks::{TransactionAccountLockLimits, validate_account_locks},
@@ -48,7 +49,7 @@ pub(crate) enum IngressCheckError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PacketHandlingError {
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
@@ -88,6 +89,16 @@ pub(crate) struct PrecheckedTransaction {
 }
 
 pub(crate) type PrecheckResult = Result<PrecheckedTransaction, IngressCheckError>;
+
+pub(crate) fn contains_blacklisted_account<'a>(
+    account_keys: impl IntoIterator<Item = &'a Pubkey>,
+    filter_keys: &AHashSet<Pubkey>,
+) -> bool {
+    !filter_keys.is_empty()
+        && account_keys
+            .into_iter()
+            .any(|key| filter_keys.contains(key))
+}
 
 pub(crate) fn precheck_transaction(
     bytes: Bytes,
@@ -220,7 +231,7 @@ pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
     Ok((view, deactivation_slot))
 }
 
-fn load_addresses_for_view<D: AsRef<[u8]>>(
+pub(crate) fn load_addresses_for_view<D: AsRef<[u8]>>(
     view: &SanitizedTransactionView<D>,
     bank: &Bank,
 ) -> Result<(Option<LoadedAddresses>, Slot), PacketHandlingError> {
@@ -235,7 +246,7 @@ fn load_addresses_for_view<D: AsRef<[u8]>>(
     }
 }
 
-fn calculate_max_age(
+pub(crate) fn calculate_max_age(
     sanitized_epoch: Epoch,
     deactivation_slot: Slot,
     current_slot: Slot,
@@ -482,6 +493,41 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
 }
 
 impl TransactionViewReceiveAndBuffer {
+    pub(crate) fn try_handle_packet(
+        bytes: Bytes,
+        root_bank: &Bank,
+        working_bank: &Bank,
+        transaction_account_lock_limits: TransactionAccountLockLimits,
+        filter_keys: &AHashSet<Pubkey>,
+    ) -> Result<TransactionViewState, PacketHandlingError> {
+        // Buffered transactions may outlive the working bank; only drop locks after activation is rooted.
+        let (view, deactivation_slot) = translate_to_runtime_view(
+            bytes,
+            root_bank,
+            transaction_account_lock_limits,
+            !root_bank
+                .feature_set
+                .snapshot()
+                .loaderv3_programdata_size_floor,
+        )?;
+
+        if contains_blacklisted_account(view.account_keys().iter(), filter_keys) {
+            return Err(PacketHandlingError::FilterKey);
+        }
+
+        let Ok(transaction_configuration) =
+            view.transaction_configuration(&working_bank.feature_set)
+        else {
+            return Err(PacketHandlingError::ComputeBudget);
+        };
+
+        let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
+        let (priority, cost) =
+            calculate_priority_and_cost(working_bank, &view, &transaction_configuration);
+
+        Ok(TransactionState::new(view, max_age, priority, cost))
+    }
+
     fn check_capacity(&self) -> usize {
         self.check_work_sender
             .capacity()
@@ -663,6 +709,107 @@ mod tests {
                 alt_invalidation_slot: current_slot + get_entries() as u64,
             }
         );
+    }
+
+    // Transactions from the TPU may be buffered past the working bank, so they keep their locks
+    // until the floor is active on the root bank. Locks cover every resolved account key, including
+    // a program reachable only through a lookup table.
+    #[test_case(false, false, true; "root_inactive_keeps_locks")]
+    #[test_case(false, true, true; "working_active_root_inactive_keeps_locks")]
+    #[test_case(true, true, false; "root_active_drops_locks")]
+    fn test_precheck_implicit_programdata_locks_follow_root_gate(
+        root_active: bool,
+        working_active: bool,
+        expect_locks: bool,
+    ) {
+        use {
+            solana_address_lookup_table_interface::{
+                self as address_lookup_table,
+                state::{AddressLookupTable, LookupTableMeta},
+            },
+            solana_leader_schedule::SlotLeader,
+            solana_runtime_transaction::transaction_meta::TransactionMeta,
+            std::borrow::Cow,
+        };
+        let set_floor = |bank: &mut Bank, active: bool| {
+            let feature = agave_feature_set::loaderv3_programdata_size_floor::id();
+            if active {
+                bank.activate_feature(&feature);
+            } else {
+                bank.deactivate_feature(&feature);
+            }
+        };
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(u64::MAX);
+        let static_program = Pubkey::new_unique();
+        let table_program = Pubkey::new_unique();
+        let table_key = Pubkey::new_unique();
+        let genesis_bank = Bank::new_for_tests(&genesis_config);
+        let data = AddressLookupTable {
+            meta: LookupTableMeta::default(),
+            addresses: Cow::Owned(vec![table_program]),
+        }
+        .serialize_for_tests()
+        .unwrap();
+        let mut table_account = AccountSharedData::new_with_data(
+            1,
+            vec![0; data.len()],
+            &address_lookup_table::program::id(),
+        );
+        table_account.set_data_from_slice(&data);
+        genesis_bank.store_account(&table_key, &table_account);
+        let (genesis_bank, _bank_forks) = genesis_bank.wrap_with_bank_forks_for_tests();
+        let mut root_bank = Bank::new_from_parent(genesis_bank, SlotLeader::new_unique(), 1);
+        set_floor(&mut root_bank, root_active);
+        let root_bank = Arc::new(root_bank);
+        let mut working_bank =
+            Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 2);
+        set_floor(&mut working_bank, working_active);
+
+        let payer = mint_keypair.pubkey();
+        let mut instruction = system_instruction::transfer(&payer, &Pubkey::new_unique(), 1);
+        instruction.accounts.extend([
+            AccountMeta::new_readonly(static_program, false),
+            AccountMeta::new_readonly(table_program, false),
+        ]);
+        let message = v0::Message::try_compile(
+            &payer,
+            &[instruction],
+            &[AddressLookupTableAccount {
+                key: table_key,
+                addresses: vec![table_program],
+            }],
+            root_bank.last_blockhash(),
+        )
+        .unwrap();
+        assert!(!message.account_keys.contains(&table_program));
+        let transaction =
+            VersionedTransaction::try_new(VersionedMessage::V0(message), &[&mint_keypair]).unwrap();
+        let bytes = BytesPacket::from_data(transaction)
+            .unwrap()
+            .buffer()
+            .clone();
+
+        let PrecheckedTransaction { state, .. } =
+            precheck_transaction(bytes, &root_bank, &working_bank, &HashSet::new()).unwrap();
+
+        for program in [static_program, table_program] {
+            let programdata = Pubkey::find_program_address(
+                &[program.as_ref()],
+                &solana_sdk_ids::bpf_loader_upgradeable::id(),
+            )
+            .0;
+            assert_eq!(
+                state
+                    .transaction()
+                    .implicit_read_locks()
+                    .contains(&programdata),
+                expect_locks,
+            );
+        }
     }
 
     fn assert_runtime_view(_: &RuntimeTransactionView) {}

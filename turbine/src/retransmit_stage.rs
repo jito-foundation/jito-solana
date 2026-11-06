@@ -2,7 +2,7 @@
 
 use {
     crate::{
-        XdpSender,
+        MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses, XdpSender,
         cluster_nodes::{
             ClusterNodes, ClusterNodesCache, DATA_PLANE_FANOUT, Error, MAX_NUM_TURBINE_HOPS,
         },
@@ -10,11 +10,13 @@ use {
     agave_votor::event::VotorEvent,
     agave_votor_messages::migration::MigrationStatus,
     agave_worker_pool::{WorkerPool, WorkerPoolConfig},
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, Sender, TrySendError},
     lru::LruCache,
     rand::Rng,
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
+    solana_leader_schedule::NUM_CONSECUTIVE_LEADER_SLOTS,
     solana_ledger::{
         leader_schedule_cache::LeaderScheduleCache,
         shred::{
@@ -23,7 +25,7 @@ use {
         },
     },
     solana_measure::measure::Measure,
-    solana_net_utils::SocketAddrSpace,
+    solana_net_utils::{SocketAddrSpace, bind_to_unspecified},
     solana_perf::deduper::Deduper,
     solana_pubkey::Pubkey,
     solana_rpc::{
@@ -133,10 +135,15 @@ struct WorkerContext {
     leader_schedule_cache: Arc<LeaderScheduleCache>,
     cluster_info: Arc<ClusterInfo>,
     retransmit_sockets: Arc<Vec<UdpSocket>>,
+    external_sender_socket: UdpSocket,
     xdp_sender: Option<XdpSender>,
     cluster_nodes_cache: Arc<ClusterNodesCache<RetransmitStage>>,
     shred_deduper: Arc<ShredDeduper>,
     max_slots: Arc<MaxSlots>,
+    shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    multicast_root_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     stats_sender: Sender<BatchStats>,
 }
 
@@ -235,7 +242,14 @@ impl<const K: usize> ShredDeduper<K> {
     }
 }
 
-type SlotLeaderCache = HashMap<Slot, (Pubkey, Arc<ClusterNodes<RetransmitStage>>)>;
+type SlotLeaderCache = HashMap<
+    Slot,
+    (
+        /*leader:*/ Pubkey,
+        Arc<ClusterNodes<RetransmitStage>>,
+        /*include_bam_shred_receivers:*/ bool,
+    ),
+>;
 
 #[derive(Default)]
 struct BatchStats {
@@ -347,11 +361,39 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
     stats.epoch_fetch = epoch_fetch.as_us();
     stats.root = root_bank.slot();
 
-    // Resolve the leader and retransmit tree once for each distinct slot in this capped batch.
-    let cache: SlotLeaderCache = shreds
+    let shred_slots: HashSet<Slot> = shreds
         .iter()
         .filter_map(|shred| shred::layout::get_slot(shred))
-        .collect::<HashSet<Slot>>()
+        .collect();
+    let shred_receiver_addresses = context.shred_receiver_addresses.load_full();
+    let bam_shred_receiver_addresses = context.bam_shred_receiver_addresses.load_full();
+    let shredstream_receiver_address = **context.shredstream_receiver_address.load();
+    let multicast_root_receiver_address = **context.multicast_root_receiver_address.load();
+    let leader_schedule_cache = context.leader_schedule_cache.as_ref();
+    let my_pubkey = context.cluster_info.id();
+    let mut leader_schedule_epoch = None;
+    let mut leader_schedule = None;
+    let mut leader_at_slot = |slot| {
+        let (epoch, slot_index) = working_bank.get_epoch_and_slot_index(slot);
+        let mut computed_slot_leader = None;
+        if leader_schedule_epoch != Some(epoch) {
+            leader_schedule = leader_schedule_cache.get_epoch_leader_schedule(epoch);
+            if leader_schedule.is_none() {
+                computed_slot_leader =
+                    leader_schedule_cache.slot_leader_at(slot, Some(&working_bank));
+                leader_schedule = leader_schedule_cache.get_epoch_leader_schedule(epoch);
+            }
+            leader_schedule_epoch = Some(epoch);
+        }
+        leader_schedule
+            .as_ref()
+            .map(|leader_schedule| leader_schedule[slot_index])
+            .or(computed_slot_leader)
+            .or_else(|| leader_schedule_cache.slot_leader_at(slot, Some(&working_bank)))
+    };
+
+    // Resolve the leader and retransmit tree once for each distinct slot in this capped batch.
+    let cache: SlotLeaderCache = shred_slots
         .into_iter()
         .filter_map(|slot| {
             context
@@ -359,23 +401,33 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
                 .retransmit
                 .fetch_max(slot, Ordering::Relaxed);
             // Shreds have already passed signature verification, so the leader should be known.
-            let Some(slot_leader) = context
-                .leader_schedule_cache
-                .slot_leader_at(slot, Some(&working_bank))
-            else {
+            let Some(slot_leader) = leader_at_slot(slot) else {
                 stats.unknown_shred_slot_leader += shreds
                     .iter()
                     .filter(|shred| shred::layout::get_slot(shred) == Some(slot))
                     .count();
                 return None;
             };
+            let include_bam_shred_receivers = !bam_shred_receiver_addresses.is_empty()
+                && slot_leader.id != my_pubkey
+                && (1..=4).any(|offset| {
+                    slot.checked_add(offset).is_some_and(|lookahead_slot| {
+                        lookahead_slot % NUM_CONSECUTIVE_LEADER_SLOTS.get() as u64 == 0
+                            && lookahead_slot > working_bank.slot()
+                            && leader_at_slot(lookahead_slot)
+                                .is_some_and(|leader| leader.id == my_pubkey)
+                    })
+                });
             let cluster_nodes = context.cluster_nodes_cache.get(
                 slot,
                 &root_bank,
                 &working_bank,
                 &context.cluster_info,
             );
-            Some((slot, (slot_leader.id, cluster_nodes)))
+            Some((
+                slot,
+                (slot_leader.id, cluster_nodes, include_bam_shred_receivers),
+            ))
         })
         .collect();
 
@@ -394,7 +446,12 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
             &cache,
             socket_addr_space,
             &socket,
+            &context.external_sender_socket,
             &mut stats,
+            &shred_receiver_addresses,
+            &bam_shred_receiver_addresses,
+            &shredstream_receiver_address,
+            &multicast_root_receiver_address,
         );
         if let Some(shred_stats) = shred_stats {
             stats.record_slot_stats(shred_stats);
@@ -408,6 +465,7 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
 }
 
 // Retransmit a single shred to all downstream nodes
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
@@ -415,7 +473,12 @@ fn retransmit_shred(
     slot_leader_cache: &SlotLeaderCache,
     socket_addr_space: &SocketAddrSpace,
     socket: &RetransmitSocket<'_>,
+    external_sender_socket: &UdpSocket,
     stats: &mut BatchStats,
+    shred_receiver_addresses: &ShredReceiverAddresses,
+    bam_shred_receiver_addresses: &ShredReceiverAddresses,
+    shredstream_receiver_address: &Option<SocketAddr>,
+    multicast_root_receiver_address: &Option<SocketAddr>,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -425,7 +488,7 @@ fn retransmit_shred(
         return None;
     }
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) =
+    let (root_distance, addrs, include_bam_shred_receivers) =
         get_retransmit_addrs(&key, slot_leader_cache, socket_addr_space, stats)?;
     compute_turbine_peers.stop();
     stats.compute_turbine_peers_total += compute_turbine_peers.as_us();
@@ -433,13 +496,59 @@ fn retransmit_shred(
         .map(|flags| flags.contains(ShredFlags::LAST_SHRED_IN_SLOT))
         .unwrap_or_default();
     let mut retransmit_time = Measure::start("retransmit_to");
-    let num_addrs = addrs.len();
+    let mut turbine_addrs = Vec::with_capacity(addrs.len());
+    for addr in addrs.iter() {
+        if !turbine_addrs.contains(addr) {
+            turbine_addrs.push(*addr);
+        }
+    }
+    let num_shred_receiver_addresses = shred_receiver_addresses
+        .len()
+        .min(MAX_SHRED_RECEIVER_ADDRESSES);
+    let external_addr_capacity = num_shred_receiver_addresses
+        .saturating_add(if include_bam_shred_receivers {
+            bam_shred_receiver_addresses.len()
+        } else {
+            0
+        })
+        .saturating_add(usize::from(root_distance == 0) * 2);
+    let mut external_addrs = ShredReceiverAddresses::with_capacity(external_addr_capacity);
+    let root_external_addrs = if root_distance == 0 {
+        [
+            multicast_root_receiver_address.as_ref(),
+            shredstream_receiver_address.as_ref(),
+        ]
+    } else {
+        [None, None]
+    };
+    for &addr in include_bam_shred_receivers
+        .then_some(bam_shred_receiver_addresses)
+        .into_iter()
+        .flatten()
+        .chain(root_external_addrs.into_iter().flatten())
+        .chain(
+            shred_receiver_addresses
+                .iter()
+                .take(num_shred_receiver_addresses),
+        )
+    {
+        if !turbine_addrs.contains(&addr) && !external_addrs.contains(&addr) {
+            external_addrs.push(addr);
+        }
+    }
+    let num_addrs = turbine_addrs.len();
     let num_nodes = match socket {
         RetransmitSocket::Xdp(sender) => {
             let mut sent = num_addrs;
-            if num_addrs > 0
-                && let Err(e) = sender.try_send(key.index() as usize, addrs, shred.bytes)
+            let mut send_addrs =
+                Vec::with_capacity(turbine_addrs.len().saturating_add(external_addrs.len()));
+            send_addrs.extend(turbine_addrs.iter().copied());
+            send_addrs.extend(external_addrs.iter().copied());
+            if !send_addrs.is_empty()
+                && let Err(e) =
+                    sender.try_send(key.index() as usize, send_addrs, shred.bytes.clone())
             {
+                // External shred receivers are intentionally not included in retransmit stats.
                 log::warn!("xdp channel full: {e:?}");
                 stats.num_shreds_dropped_xdp_full += num_addrs;
                 sent = 0;
@@ -448,16 +557,30 @@ fn retransmit_shred(
         }
         RetransmitSocket::Socket(_) | RetransmitSocket::Multihomed { .. } => {
             let socket = socket.get_socket();
-            match multi_target_send(socket, shred, addrs.as_ref()) {
-                Ok(num_sent) => num_sent,
-                Err(SendPktsError::IoError(ioerr)) => {
-                    error!(
-                        "retransmit_to multi_target_send error: {ioerr:?}, {num_addrs} \
-                         destinations"
-                    );
-                    0
+            let sent = if turbine_addrs.is_empty() {
+                0usize
+            } else {
+                match multi_target_send(socket, &shred, &turbine_addrs) {
+                    Ok(num_sent) => num_sent,
+                    Err(SendPktsError::IoError(ioerr)) => {
+                        error!(
+                            "retransmit_to multi_target_send error: {ioerr:?}, {num_addrs} \
+                             destinations"
+                        );
+                        0
+                    }
                 }
+            };
+            if !external_addrs.is_empty()
+                && let Err(SendPktsError::IoError(ioerr)) =
+                    multi_target_send(external_sender_socket, &shred, &external_addrs)
+            {
+                warn!(
+                    "retransmit_to external multi_target_send error: {ioerr:?}, {} destinations",
+                    external_addrs.len()
+                );
             }
+            sent
         }
     };
     retransmit_time.stop();
@@ -472,13 +595,18 @@ fn retransmit_shred(
     })
 }
 
+#[allow(clippy::type_complexity)]
 fn get_retransmit_addrs(
     shred: &ShredId,
     cache: &SlotLeaderCache,
     socket_addr_space: &SocketAddrSpace,
     stats: &mut BatchStats,
-) -> Option<(/*root_distance:*/ u8, Vec<SocketAddr>)> {
-    let (slot_leader, cluster_nodes) = cache.get(&shred.slot())?;
+) -> Option<(
+    /*root_distance:*/ u8,
+    Vec<SocketAddr>,
+    /*include_bam_shred_receivers:*/ bool,
+)> {
+    let (slot_leader, cluster_nodes, include_bam_shred_receivers) = cache.get(&shred.slot())?;
     let (root_distance, addrs) = cluster_nodes
         .get_retransmit_addrs(slot_leader, shred, DATA_PLANE_FANOUT, socket_addr_space)
         .inspect_err(|err| match err {
@@ -487,7 +615,7 @@ fn get_retransmit_addrs(
             }
         })
         .ok()?;
-    Some((root_distance, addrs))
+    Some((root_distance, addrs, *include_bam_shred_receivers))
 }
 
 /// Service to retransmit messages received from other peers in turbine.
@@ -515,6 +643,10 @@ impl RetransmitStage {
         slot_status_notifier: Option<SlotStatusNotifier>,
         xdp_sender: Option<XdpSender>,
         votor_event_sender: Sender<VotorEvent>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_root_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> (RetransmitSender, Self) {
         let (sharable_banks, migration_status) = {
             let bank_forks = bank_forks.read().unwrap();
@@ -532,15 +664,28 @@ impl RetransmitStage {
         let (stats_sender, stats_receiver) =
             crossbeam_channel::bounded(STATS_BATCHES_PER_WORKER * num_workers.get());
         let is_xdp = xdp_sender.is_some();
+        let external_sender_socket = {
+            let socket =
+                bind_to_unspecified().expect("bind retransmit external_sender_socket 0.0.0.0:0");
+            if let Err(err) = socket.set_multicast_ttl_v4(64) {
+                warn!("retransmit external_sender_socket: failed to set multicast TTL: {err}");
+            }
+            socket
+        };
         let context = Arc::new(WorkerContext {
             sharable_banks: sharable_banks.clone(),
             leader_schedule_cache,
             cluster_info: cluster_info.clone(),
             retransmit_sockets,
+            external_sender_socket,
             xdp_sender,
             cluster_nodes_cache: cluster_nodes_cache.clone(),
             shred_deduper: shred_deduper.clone(),
             max_slots,
+            shred_receiver_addresses,
+            bam_shred_receiver_addresses,
+            shredstream_receiver_address,
+            multicast_root_receiver_address,
             stats_sender,
         });
 
@@ -857,11 +1002,20 @@ mod tests {
         crossbeam_channel::TryRecvError,
         rand::SeedableRng,
         rand_chacha::ChaChaRng,
+        solana_cluster_type::ClusterType,
         solana_entry::entry::create_ticks,
+        solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_leader_schedule::NUM_CONSECUTIVE_LEADER_SLOTS,
-        solana_ledger::shred::{ProcessShredsStats, Shredder},
+        solana_ledger::{
+            genesis_utils::create_genesis_config,
+            shred::{ProcessShredsStats, Shredder},
+        },
+        solana_net_utils::sockets::bind_to_localhost_unique,
+        solana_runtime::bank::Bank,
+        solana_signer::Signer,
+        std::{net::UdpSocket, time::Duration},
     };
 
     fn get_keypair() -> Keypair {
@@ -873,6 +1027,180 @@ mod tests {
             .map(Keypair::try_from)
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn test_retransmit_external_receivers_are_deduped_and_bam_gated() {
+        let bind_receiver = || {
+            let socket = bind_to_localhost_unique().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            socket
+        };
+        let recv_one = |socket: &UdpSocket| {
+            let mut buf = [0u8; 2048];
+            socket.recv_from(&mut buf).is_ok()
+        };
+        let assert_no_packet = |socket: &UdpSocket| {
+            let mut buf = [0u8; 2048];
+            assert!(socket.recv_from(&mut buf).is_err());
+        };
+
+        let turbine_receiver = bind_receiver();
+        let duplicate_configured_receiver = bind_receiver();
+        let configured_receiver = bind_receiver();
+        let bam_receiver = bind_receiver();
+        let shredstream_receiver = bind_receiver();
+        let multicast_receiver = bind_receiver();
+        let turbine_addr = turbine_receiver.local_addr().unwrap();
+        let duplicate_configured_addr = duplicate_configured_receiver.local_addr().unwrap();
+        let configured_addr = configured_receiver.local_addr().unwrap();
+        let bam_addr = bam_receiver.local_addr().unwrap();
+        let shredstream_addr = shredstream_receiver.local_addr().unwrap();
+        let multicast_addr = multicast_receiver.local_addr().unwrap();
+        let retransmit_socket = bind_to_localhost_unique().unwrap();
+        let external_sender_socket = bind_to_localhost_unique().unwrap();
+
+        let keypair = get_keypair();
+        let entries = create_ticks(1, 1, Hash::new_unique());
+        let shredder = Shredder::new(5, 4, 1, 0).unwrap();
+        let (data_shreds, _) = shredder.entries_to_merkle_shreds_for_tests(
+            &keypair,
+            &entries,
+            true,
+            Hash::new_from_array(rand::rng().random()),
+            0,
+            0,
+            &mut ProcessShredsStats::default(),
+        );
+        let shred = data_shreds[0].payload().clone();
+        let key = shred::layout::get_shred_id(shred.as_ref()).unwrap();
+
+        let genesis_config = create_genesis_config(10_000).genesis_config;
+        let root_bank = Bank::new_for_tests(&genesis_config);
+        let cluster_info = ClusterInfo::new(
+            Node::new_localhost_with_pubkey(&keypair.pubkey()).info,
+            Arc::new(keypair),
+            SocketAddrSpace::Unspecified,
+        );
+        for addr in [turbine_addr, duplicate_configured_addr] {
+            let mut peer = Node::new_localhost_with_pubkey(&Pubkey::new_unique()).info;
+            peer.set_tvu(solana_gossip::contact_info::Protocol::UDP, addr)
+                .unwrap();
+            cluster_info.insert_info(peer);
+        }
+        let shred_receiver_addresses: ShredReceiverAddresses =
+            [duplicate_configured_addr, configured_addr]
+                .into_iter()
+                .collect();
+        let bam_shred_receiver_addresses: ShredReceiverAddresses =
+            [configured_addr, bam_addr, turbine_addr]
+                .into_iter()
+                .collect();
+
+        let retransmit_once =
+            |include_bam_shred_receivers,
+             root_distance,
+             shredstream_receiver_address: Option<SocketAddr>,
+             multicast_root_receiver_address: Option<SocketAddr>| {
+                // A single staked node is always the turbine root. Stake this node
+                // for root forwarding, or another node to exercise a leaf.
+                let staked_node = if root_distance == 0 {
+                    cluster_info.id()
+                } else {
+                    Pubkey::new_unique()
+                };
+                let cluster_nodes =
+                    Arc::new(crate::cluster_nodes::new_cluster_nodes::<RetransmitStage>(
+                        &cluster_info,
+                        ClusterType::Development,
+                        &HashMap::from([(staked_node, 1)]),
+                    ));
+                let cache = HashMap::from([(
+                    key.slot(),
+                    (
+                        Pubkey::new_unique(),
+                        cluster_nodes,
+                        include_bam_shred_receivers,
+                    ),
+                )]);
+                let mut rng = ChaChaRng::from_seed([0xa5; 32]);
+                let shred_deduper = ShredDeduper::<2>::new(&mut rng, /*num_bits:*/ 640_007);
+                retransmit_shred(
+                    shred.clone(),
+                    &root_bank,
+                    &shred_deduper,
+                    &cache,
+                    &SocketAddrSpace::Unspecified,
+                    &RetransmitSocket::Socket(&retransmit_socket),
+                    &external_sender_socket,
+                    &mut BatchStats::default(),
+                    &shred_receiver_addresses,
+                    &bam_shred_receiver_addresses,
+                    &shredstream_receiver_address,
+                    &multicast_root_receiver_address,
+                )
+                .unwrap()
+            };
+
+        let out = retransmit_once(false, 0, None, None);
+        assert_eq!(out.num_nodes, 2);
+        assert!(recv_one(&turbine_receiver));
+        assert!(recv_one(&duplicate_configured_receiver));
+        assert!(recv_one(&configured_receiver));
+        assert_no_packet(&turbine_receiver);
+        assert_no_packet(&duplicate_configured_receiver);
+        assert_no_packet(&configured_receiver);
+        assert_no_packet(&bam_receiver);
+
+        let out = retransmit_once(true, 0, None, None);
+        assert_eq!(out.num_nodes, 2);
+        assert!(recv_one(&turbine_receiver));
+        assert!(recv_one(&duplicate_configured_receiver));
+        assert!(recv_one(&configured_receiver));
+        assert!(recv_one(&bam_receiver));
+        assert_no_packet(&turbine_receiver);
+        assert_no_packet(&duplicate_configured_receiver);
+        assert_no_packet(&configured_receiver);
+        assert_no_packet(&bam_receiver);
+
+        let out = retransmit_once(false, 0, Some(shredstream_addr), Some(multicast_addr));
+        assert_eq!(out.num_nodes, 2);
+        assert!(recv_one(&turbine_receiver));
+        assert!(recv_one(&duplicate_configured_receiver));
+        assert!(recv_one(&configured_receiver));
+        assert!(recv_one(&shredstream_receiver));
+        assert!(recv_one(&multicast_receiver));
+        assert_no_packet(&turbine_receiver);
+        assert_no_packet(&duplicate_configured_receiver);
+        assert_no_packet(&configured_receiver);
+        assert_no_packet(&bam_receiver);
+        assert_no_packet(&shredstream_receiver);
+        assert_no_packet(&multicast_receiver);
+
+        let out = retransmit_once(false, 1, Some(shredstream_addr), Some(multicast_addr));
+        assert_eq!(out.root_distance, 1);
+        assert_eq!(out.num_nodes, 0);
+        assert!(recv_one(&duplicate_configured_receiver));
+        assert!(recv_one(&configured_receiver));
+        assert_no_packet(&turbine_receiver);
+        assert_no_packet(&duplicate_configured_receiver);
+        assert_no_packet(&configured_receiver);
+        assert_no_packet(&bam_receiver);
+        assert_no_packet(&shredstream_receiver);
+        assert_no_packet(&multicast_receiver);
+
+        let out = retransmit_once(true, 0, Some(turbine_addr), Some(configured_addr));
+        assert_eq!(out.num_nodes, 2);
+        assert!(recv_one(&turbine_receiver));
+        assert!(recv_one(&duplicate_configured_receiver));
+        assert!(recv_one(&configured_receiver));
+        assert!(recv_one(&bam_receiver));
+        assert_no_packet(&turbine_receiver);
+        assert_no_packet(&duplicate_configured_receiver);
+        assert_no_packet(&configured_receiver);
+        assert_no_packet(&bam_receiver);
     }
 
     #[test]

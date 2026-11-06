@@ -11,6 +11,10 @@ use {
         block_creation_loop::{BlockCreationLoop, BlockCreationLoopConfig, ReplayHighestFrozen},
         completed_data_sets_service::CompletedDataSetsService,
         forwarding_stage::ForwardingClientConfig,
+        multicast_shred_check_service::{
+            MulticastShredCheckService, multicast_shred_addresses_for_cluster,
+        },
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self, repair_handler::RepairHandlerType, serve_repair_service::ServeRepairService,
         },
@@ -22,6 +26,7 @@ use {
             SystemMonitorService, SystemMonitorStatsReportConfig, XdpNetworkConfigReport,
             verify_net_stats_access,
         },
+        tip_manager::TipManagerConfig,
         tpu::{Tpu, TpuSockets},
         tvu::{AlpenglowInitializationState, Tvu, TvuConfig, TvuSockets},
     },
@@ -106,8 +111,8 @@ use {
     solana_rpc::{
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::{
-            BankNotificationSenderConfig, OptimisticallyConfirmedBank,
-            OptimisticallyConfirmedBankTracker,
+            BankNotificationBroadcaster, BankNotificationSender, BankNotificationSenderConfig,
+            OptimisticallyConfirmedBank, OptimisticallyConfirmedBankTracker,
         },
         rpc::JsonRpcConfig,
         rpc_completed_slots_service::RpcCompletedSlotsService,
@@ -144,6 +149,7 @@ use {
         streamer::StakedNodes,
     },
     solana_time_utils::timestamp,
+    solana_turbine::ShredReceiverAddresses,
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     solana_validator_exit::Exit,
     solana_vote_program::vote_state::handler::VoteStateHandler,
@@ -392,6 +398,20 @@ pub struct ValidatorConfig {
     pub repair_handler_type: RepairHandlerType,
     // Thread niceness adjustment for snapshot packager service
     pub snapshot_packager_niceness_adj: i8,
+    // jito configuration
+    pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
+    pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+    /// Configured external receivers for this validator's own broadcast path.
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Configured external receivers for TVU retransmit-stage shreds.
+    /// Does not apply to this validator's own direct leader broadcast path.
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Automatically detected multicast destination for leader shreds.
+    pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
+    /// Skips automatic multicast route detection and multicast receiver updates.
+    pub disable_multicast_shred_check: bool,
 }
 
 impl ValidatorConfig {
@@ -467,6 +487,14 @@ impl ValidatorConfig {
             delay_leader_block_for_pending_fork: true,
             repair_handler_type: RepairHandlerType::default(),
             snapshot_packager_niceness_adj: 0,
+            relayer_config: Arc::default(),
+            block_engine_config: Arc::default(),
+            shred_receiver_addresses: Arc::default(),
+            shred_retransmit_receiver_addresses: Arc::default(),
+            multicast_receiver_address: Arc::default(),
+            tip_manager_config: TipManagerConfig::default(),
+            bam_url: Arc::default(),
+            disable_multicast_shred_check: false,
         }
     }
 
@@ -658,6 +686,9 @@ pub struct Validator {
     transaction_status_service: Option<TransactionStatusService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
+    /// Background watchers that keep the leader-broadcast and turbine-root multicast shred
+    /// addresses in sync with kernel route availability.
+    multicast_shred_check_services: Vec<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
@@ -721,6 +752,7 @@ impl Validator {
             tpu_config,
             admin_rpc_service_post_init,
             xdp_transmit_setup,
+            Vec::new(),
             exit,
         )
     }
@@ -740,8 +772,13 @@ impl Validator {
         tpu_config: ValidatorTpuConfig,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
         xdp_transmit_setup: Option<XdpTransmitSetup>,
+        extra_bank_notification_senders: Vec<BankNotificationSender>,
         exit: Arc<AtomicBool>,
     ) -> Result<Self> {
+        if config.enable_scheduler_bindings && config.bam_url.load().is_some() {
+            return Err(anyhow!("BAM conflicts with external scheduler bindings"));
+        }
+
         #[cfg(debug_assertions)]
         const DEBUG_ASSERTION_STATUS: &str = "enabled";
         #[cfg(not(debug_assertions))]
@@ -1193,6 +1230,10 @@ impl Validator {
                 .unwrap()
         });
 
+        let should_send_parents =
+            geyser_plugin_service.is_some() || !extra_bank_notification_senders.is_empty();
+        let mut bank_notification_channel_senders = extra_bank_notification_senders;
+
         let rpc_override_health_check =
             Arc::new(AtomicBool::new(config.rpc_config.disable_health_check));
         let (
@@ -1202,7 +1243,7 @@ impl Validator {
             rpc_completed_slots_service,
             sample_performance_service,
             optimistically_confirmed_bank_tracker,
-            bank_notification_sender,
+            dependency_tracker,
         ) = if let Some((rpc_addr, rpc_pubsub_addr)) = config.rpc_addrs {
             assert_eq!(
                 node.info.rpc().map(|addr| socket_addr_space.check(&addr)),
@@ -1210,7 +1251,8 @@ impl Validator {
                     .rpc_pubsub()
                     .map(|addr| socket_addr_space.check(&addr))
             );
-            let (bank_notification_sender, bank_notification_receiver) = unbounded();
+            let (bank_notification_sender, bank_notification_receiver) =
+                BankNotificationSender::channel("optimistically-confirmed-bank-tracker");
             let confirmed_bank_subscribers = if !bank_notification_senders.is_empty() {
                 Some(Arc::new(RwLock::new(bank_notification_senders)))
             } else {
@@ -1327,11 +1369,8 @@ impl Validator {
                     prioritization_fee_cache.clone(),
                     dependency_tracker.clone(),
                 ));
-            let bank_notification_sender_config = Some(BankNotificationSenderConfig {
-                sender: bank_notification_sender,
-                should_send_parents: geyser_plugin_service.is_some(),
-                dependency_tracker,
-            });
+            // Keep the RPC subscriber first to preserve upstream notification ordering.
+            bank_notification_channel_senders.insert(0, bank_notification_sender);
             (
                 Some(json_rpc_service),
                 Some(rpc_subscriptions),
@@ -1339,11 +1378,17 @@ impl Validator {
                 rpc_completed_slots_service,
                 sample_performance_service,
                 optimistically_confirmed_bank_tracker,
-                bank_notification_sender_config,
+                dependency_tracker,
             )
         } else {
             (None, None, None, None, None, None, None)
         };
+        let bank_notification_sender =
+            (!bank_notification_channel_senders.is_empty()).then(|| BankNotificationSenderConfig {
+                sender: BankNotificationBroadcaster::new(bank_notification_channel_senders),
+                should_send_parents,
+                dependency_tracker,
+            });
 
         // CompletedDataSetsService feeds two independent sinks: RPC signatureSubscribe
         // notifications (which need rpc_subscriptions) and the geyser deshred-transaction notifier
@@ -1554,6 +1599,10 @@ impl Validator {
             "New shred signal for the TVU should be the same as the clear bank signal."
         );
 
+        let bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>> = Arc::default();
+        let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by BlockEngineStage
+        let multicast_root_receiver_address = Arc::new(ArcSwap::from_pointee(None));
+
         let (verified_vote_sender, verified_vote_receiver) = EvictingSender::new_bounded(4096);
 
         let serve_repair_service = ServeRepairService::new(
@@ -1649,6 +1698,10 @@ impl Validator {
                 highest_finalized,
             },
             reward_aggregates_sender,
+            shredstream_receiver_address.clone(),
+            config.shred_retransmit_receiver_addresses.clone(),
+            bam_shred_receiver_addresses.clone(),
+            multicast_root_receiver_address.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1714,6 +1767,14 @@ impl Validator {
             }),
             cancel,
             votor_event_sender.clone(),
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            shredstream_receiver_address,
+            config.shred_receiver_addresses.clone(),
+            bam_shred_receiver_addresses,
+            config.multicast_receiver_address.clone(),
+            config.bam_url.clone(),
         );
 
         datapoint_info!(
@@ -1748,8 +1809,30 @@ impl Validator {
             snapshot_controller,
             blockstore: blockstore.clone(),
             votor_event_sender,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
 
+        let multicast_shred_check_services = (!config.disable_multicast_shred_check)
+            .then(|| multicast_shred_addresses_for_cluster(genesis_config.cluster_type))
+            .flatten()
+            .map(|(leader_addr, root_addr)| {
+                vec![
+                    MulticastShredCheckService::new(
+                        exit.clone(),
+                        config.multicast_receiver_address.clone(),
+                        leader_addr,
+                    ),
+                    MulticastShredCheckService::new(
+                        exit.clone(),
+                        multicast_root_receiver_address,
+                        root_addr,
+                    ),
+                ]
+            })
+            .unwrap_or_default();
         Ok(Self {
             log_config: config.log_config.clone(),
             exit,
@@ -1763,6 +1846,7 @@ impl Validator {
             transaction_status_service,
             entry_notifier_service,
             system_monitor_service,
+            multicast_shred_check_services,
             sample_performance_service,
             snapshot_packager_service,
             completed_data_sets_service,
@@ -1905,6 +1989,12 @@ impl Validator {
             system_monitor_service
                 .join()
                 .expect("system_monitor_service");
+        }
+
+        for multicast_shred_check_service in self.multicast_shred_check_services {
+            multicast_shred_check_service
+                .join()
+                .expect("multicast_shred_check_service");
         }
 
         if let Some(sample_performance_service) = self.sample_performance_service {
