@@ -241,6 +241,10 @@ trait BroadcastRun {
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        // Dedicated socket bound to 0.0.0.0:0 used only for BAM, multicast, shredstream and
+        // ShredReceiverAddresses packets on the UDP path. Kept separate from the main broadcast
+        // socket so the OS routing table (not --bind-address) selects the outbound interface
+        // per destination. The XDP path resolves routes from the kernel table directly.
         shred_receiver_socket: &UdpSocket,
     ) -> Result<()>;
     fn record<'db>(
@@ -378,7 +382,7 @@ impl BroadcastStage {
         };
         let mut thread_hdls = vec![thread_hdl];
 
-        // Dedicated socket for ShredReceiverAddresses and multicast_receiver_address.
+        // Dedicated socket for BAM, multicast, shredstream and ShredReceiverAddresses packets.
         // Bound to 0.0.0.0:0 (not --bind-address) so the OS routing table selects the
         // correct outbound interface per destination, regardless of which interface Turbine
         // uses for its main broadcast traffic.
