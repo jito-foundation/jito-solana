@@ -438,9 +438,7 @@ mod tests {
     fn rejects_config_without_alpenglow_at_genesis() {
         let id = agave_feature_set::alpenglow::id().to_string();
         let mut inactive = baseline();
-        inactive
-            .features
-            .insert(id.clone(), FeatureState::Inactive);
+        inactive.features.insert(id.clone(), FeatureState::Inactive);
         let mut config = config();
         assert!(resolve_error(&inactive, &config).contains("prerequisite"));
         config.disable.push(id.clone());

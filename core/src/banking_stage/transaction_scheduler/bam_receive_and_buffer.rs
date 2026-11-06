@@ -1225,10 +1225,10 @@ pub(super) mod tests {
     }
 
     pub(crate) fn transfer_batch(payer: &Keypair, bank: &Bank, seq_id: u32) -> AtomicTxnBatch {
-        let transaction = transfer(payer, &Pubkey::new_unique(), 1, bank.last_blockhash());
         AtomicTxnBatch {
             seq_id,
-            ..batch_with_packet_data(wincode::serialize(&transaction).unwrap().into())
+            packets: vec![transfer_packet(payer, &Pubkey::new_unique(), bank)],
+            max_schedule_slot: Slot::MAX,
         }
     }
 

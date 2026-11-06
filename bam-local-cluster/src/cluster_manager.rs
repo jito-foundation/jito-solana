@@ -528,12 +528,6 @@ impl BamLocalCluster {
                 .public
                 .to_bytes_compressed(),
         );
-        let mut feature_set = FeatureSet::all_enabled();
-        if features.is_some() {
-            // `ResolvedFeatures::apply` sets up Alpenglow at genesis, so don't pre-configure its
-            // genesis state here.
-            feature_set.deactivate(&agave_feature_set::alpenglow::id());
-        }
         let mut genesis_config = create_genesis_config_with_leader_ex(
             mint_lamports,
             &mint_keypair.pubkey(),
@@ -546,7 +540,7 @@ impl BamLocalCluster {
             FeeRateGovernor::default(),
             Rent::default(),
             cluster_type,
-            &feature_set,
+            &FeatureSet::all_enabled(),
             vec![],
         );
         if let Some(features) = features {
