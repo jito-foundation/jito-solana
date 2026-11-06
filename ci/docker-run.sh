@@ -99,6 +99,7 @@ ARGS+=(
   --env CI_TAG
   --env CI_BUILD_ID
   --env CI_COMMIT
+  --env CI_HOST_SLOTS
   --env CI_JOB_ID
   --env CI_PULL_REQUEST
   --env CI_REPO_SLUG
