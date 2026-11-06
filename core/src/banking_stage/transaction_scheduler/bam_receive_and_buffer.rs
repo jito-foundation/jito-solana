@@ -474,7 +474,7 @@ impl BamReceiveAndBuffer {
                 );
             };
 
-            let Ok(mut view) = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
+            let Ok(view) = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
                 view,
                 loaded_addresses,
                 root_bank.get_reserved_account_keys(),
@@ -513,16 +513,6 @@ impl BamReceiveAndBuffer {
                 );
             }
             metrics.increment_lock_validation_us(start.elapsed().as_micros() as u64);
-
-            // Buffered transactions may outlive the working bank; only drop locks after
-            // activation is rooted.
-            if !root_bank
-                .feature_set
-                .snapshot()
-                .loaderv3_programdata_size_floor
-            {
-                view.load_implicit_read_locks();
-            }
 
             // Check 3: Ensure the compute budget limits are valid
             let (result, duration_us) =
@@ -618,15 +608,30 @@ impl BamReceiveAndBuffer {
             txns_max_age.push((view, max_age));
         }
 
-        (
-            Ok(ParsedBatch {
-                txns_max_age,
-                revert_on_error,
-                max_schedule_slot,
-                seq_id,
-            }),
-            stats,
-        )
+        let mut parsed_batch = ParsedBatch {
+            txns_max_age,
+            revert_on_error,
+            max_schedule_slot,
+            seq_id,
+        };
+        // Batches are all-or-nothing, so derive only once every transaction has passed.
+        // Buffered transactions may outlive the working bank; only drop the implicit
+        // ProgramData read locks once activation is rooted (mirrors `precheck_transaction`).
+        if !root_bank
+            .feature_set
+            .snapshot()
+            .loaderv3_programdata_size_floor
+        {
+            let ((), duration_us) = measure_us!(
+                parsed_batch
+                    .txns_max_age
+                    .iter_mut()
+                    .for_each(|(view, _)| view.load_implicit_read_locks())
+            );
+            metrics.increment_implicit_read_locks_us(duration_us);
+        }
+
+        (Ok(parsed_batch), stats)
     }
 
     fn batch_receive_until(
@@ -947,6 +952,7 @@ struct BamReceiveAndBufferMetrics {
     check_transactions_us: u64,
     fee_payer_check_us: u64,
     blacklist_check_us: u64,
+    implicit_read_locks_us: u64,
     pub sigverify_metrics: SigverifyMetrics,
 }
 
@@ -960,6 +966,7 @@ impl BamReceiveAndBufferMetrics {
             || self.check_transactions_us > 0
             || self.fee_payer_check_us > 0
             || self.blacklist_check_us > 0
+            || self.implicit_read_locks_us > 0
             || self.sigverify_metrics.has_data()
     }
 
@@ -982,6 +989,7 @@ impl BamReceiveAndBufferMetrics {
             ("check_transactions_us", self.check_transactions_us, i64),
             ("fee_payer_check_us", self.fee_payer_check_us, i64),
             ("blacklist_check_us", self.blacklist_check_us, i64),
+            ("implicit_read_locks_us", self.implicit_read_locks_us, i64),
         );
         self.sigverify_metrics.report();
         *self = Self::default();
@@ -1017,6 +1025,10 @@ impl BamReceiveAndBufferMetrics {
 
     fn increment_blacklist_check_us(&mut self, us: u64) {
         self.blacklist_check_us = self.blacklist_check_us.saturating_add(us);
+    }
+
+    fn increment_implicit_read_locks_us(&mut self, us: u64) {
+        self.implicit_read_locks_us = self.implicit_read_locks_us.saturating_add(us);
     }
 }
 
@@ -1149,7 +1161,9 @@ pub(super) mod tests {
         solana_poh::poh_recorder::LeaderState,
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
-        solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
+        solana_runtime_transaction::{
+            transaction_meta::TransactionMeta, transaction_with_meta::TransactionWithMeta,
+        },
         solana_signature::SIGNATURE_BYTES,
         solana_signer::Signer,
         solana_system_transaction::transfer,
@@ -2290,5 +2304,75 @@ pub(super) mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
+    }
+
+    #[test_case::test_case(false; "implicit_programdata_locks_until_rooted")]
+    #[test_case::test_case(true; "no_implicit_programdata_locks_once_rooted")]
+    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(feature_active: bool) {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(u64::MAX);
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        // Test genesis activates every feature; the gate only matters before activation.
+        let feature_id = agave_feature_set::loaderv3_programdata_size_floor::id();
+        if feature_active {
+            bank.activate_feature(&feature_id);
+        } else {
+            bank.deactivate_feature(&feature_id);
+        }
+        let (_bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
+
+        let recipient = Pubkey::new_unique();
+        let batch = AtomicTxnBatch {
+            seq_id: 1,
+            packets: vec![Packet {
+                data: bincode::serialize(&transfer(
+                    &mint_keypair,
+                    &recipient,
+                    1,
+                    bank_forks.read().unwrap().root_bank().last_blockhash(),
+                ))
+                .unwrap()
+                .into(),
+                meta: None,
+            }],
+            max_schedule_slot: Slot::MAX,
+        };
+
+        let mut stats = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
+            results.into_iter().next().unwrap()
+        else {
+            panic!("batch verification should succeed");
+        };
+
+        let bank_forks = bank_forks.read().unwrap();
+        let (result, _stats) = BamReceiveAndBuffer::parse_batch(
+            &mut verified_packets,
+            seq_id,
+            revert_on_error,
+            max_schedule_slot,
+            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            &HashSet::new(),
+            true,
+            &mut stats,
+        );
+        let parsed = result.expect("batch should parse");
+        let (transaction, _max_age) = &parsed.txns_max_age[0];
+        let implicit_locks = transaction.implicit_read_locks();
+
+        if feature_active {
+            assert!(implicit_locks.is_empty());
+        } else {
+            let programdata = Pubkey::find_program_address(
+                &[recipient.as_ref()],
+                &solana_sdk_ids::bpf_loader_upgradeable::id(),
+            )
+            .0;
+            assert!(implicit_locks.contains(&programdata));
+        }
     }
 }
