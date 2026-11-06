@@ -542,6 +542,67 @@ mod tests {
     }
 
     #[test]
+    fn test_complete_batch_releases_implicit_read_locks() {
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        let mut container = TransactionStateContainer::with_capacity(1024);
+        container.insert_new_transaction(
+            RuntimeTransaction::from_transaction_for_tests(system_transaction::transfer(
+                &Keypair::new(),
+                &program,
+                1,
+                Hash::default(),
+            )),
+            MaxAge::MAX,
+            1,
+            DUMMY_COST,
+        );
+        let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
+            (0..NUM_WORKERS).map(|_| bounded(1024)).unzip();
+        let (finished_work_sender, finished_work_receiver) = bounded(1024);
+        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, 10);
+
+        // The threads that a writer of the ProgramData account could be scheduled on.
+        let writer_threads = |common: &mut SchedulingCommon<_>| {
+            let mut threads = ThreadSet::none();
+            let thread_id = common
+                .account_locks
+                .try_lock_accounts(
+                    std::iter::once((&programdata, true)),
+                    ThreadSet::any(NUM_WORKERS),
+                    |schedulable| {
+                        threads = schedulable;
+                        schedulable.contained_threads_iter().next().unwrap()
+                    },
+                )
+                .unwrap();
+            common
+                .account_locks
+                .unlock_accounts(std::iter::once((&programdata, true)), thread_id);
+            threads
+        };
+
+        pop_and_add_transaction(&mut container, &mut common, 1);
+        common.send_batch(1, TEST_SLOT).unwrap();
+        assert!(writer_threads(&mut common) == ThreadSet::only(1));
+
+        let work = work_receivers[1].try_recv().unwrap();
+        finished_work_sender
+            .send(FinishedConsumeWork {
+                work,
+                retryable_indexes: vec![],
+                extra_info: None,
+            })
+            .unwrap();
+        common.try_receive_completed(&mut container).unwrap();
+        assert!(writer_threads(&mut common) == ThreadSet::any(NUM_WORKERS));
+    }
+
+    #[test]
     fn test_receive_completed() {
         let mut container = TransactionStateContainer::with_capacity(1024);
         add_transactions_to_container(&mut container, 1);

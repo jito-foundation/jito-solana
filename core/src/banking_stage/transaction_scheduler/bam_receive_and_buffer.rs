@@ -2280,6 +2280,106 @@ pub(super) mod tests {
         }
     }
 
+    // Activation on the working bank isn't enough: a buffered batch may still execute in a bank
+    // without the floor. Locks also cover a program reachable only through a lookup table.
+    #[test]
+    fn test_parse_batch_keeps_implicit_read_locks_until_floor_is_rooted() {
+        use {
+            solana_account::AccountSharedData,
+            solana_address_lookup_table_interface::{
+                self as address_lookup_table,
+                state::{AddressLookupTable, LookupTableMeta},
+            },
+            solana_message::{AddressLookupTableAccount, v0},
+            solana_system_interface::instruction as system_instruction,
+            std::borrow::Cow,
+        };
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(u64::MAX);
+        let feature_id = agave_feature_set::loaderv3_programdata_size_floor::id();
+        let table_program = Pubkey::new_unique();
+        let static_program = Pubkey::new_unique();
+        let table_key = Pubkey::new_unique();
+        let genesis_bank = Bank::new_for_tests(&genesis_config);
+        let data = AddressLookupTable {
+            meta: LookupTableMeta::default(),
+            addresses: Cow::Owned(vec![table_program]),
+        }
+        .serialize_for_tests()
+        .unwrap();
+        let mut table_account =
+            AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
+        table_account.set_data_from_slice(&data);
+        genesis_bank.store_account(&table_key, &table_account);
+        let (genesis_bank, _bank_forks) = genesis_bank.wrap_with_bank_forks_for_tests();
+        let mut root_bank = Bank::new_from_parent(genesis_bank, SlotLeader::new_unique(), 1);
+        root_bank.deactivate_feature(&feature_id);
+        let root_bank = Arc::new(root_bank);
+        let mut working_bank =
+            Bank::new_from_parent(root_bank.clone(), SlotLeader::new_unique(), 2);
+        working_bank.activate_feature(&feature_id);
+        let working_bank = Arc::new(working_bank);
+
+        let payer = mint_keypair.pubkey();
+        let mut instruction = system_instruction::transfer(&payer, &Pubkey::new_unique(), 1);
+        instruction.accounts.extend([
+            solana_instruction::AccountMeta::new_readonly(static_program, false),
+            solana_instruction::AccountMeta::new_readonly(table_program, false),
+        ]);
+        let message = v0::Message::try_compile(
+            &payer,
+            &[instruction],
+            &[AddressLookupTableAccount {
+                key: table_key,
+                addresses: vec![table_program],
+            }],
+            root_bank.last_blockhash(),
+        )
+        .unwrap();
+        assert!(!message.account_keys.contains(&table_program));
+        let transaction =
+            VersionedTransaction::try_new(VersionedMessage::V0(message), &[&mint_keypair]).unwrap();
+        let batch = AtomicTxnBatch {
+            seq_id: 1,
+            packets: vec![Packet {
+                data: bincode::serialize(&transaction).unwrap().into(),
+                meta: None,
+            }],
+            max_schedule_slot: Slot::MAX,
+        };
+
+        let mut stats = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
+            results.into_iter().next().unwrap()
+        else {
+            panic!("batch verification should succeed");
+        };
+        let (result, _stats) = BamReceiveAndBuffer::parse_batch(
+            &mut verified_packets,
+            seq_id,
+            revert_on_error,
+            max_schedule_slot,
+            (&root_bank, &working_bank),
+            &HashSet::new(),
+            true,
+            &mut stats,
+        );
+        let parsed = result.expect("batch should parse");
+        let (transaction, _max_age) = &parsed.txns_max_age[0];
+        for program in [static_program, table_program] {
+            let programdata = Pubkey::find_program_address(
+                &[program.as_ref()],
+                &solana_sdk_ids::bpf_loader_upgradeable::id(),
+            )
+            .0;
+            assert!(transaction.implicit_read_locks().contains(&programdata));
+        }
+    }
+
     #[test]
     fn test_batch_deserialize_reject_wrong_slot() {
         let (bank_forks, mint_keypair) = test_bank_forks();

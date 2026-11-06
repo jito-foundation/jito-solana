@@ -903,4 +903,127 @@ mod test {
             .unlock_bundle(&runtime_tx_2_b, &bank)
             .unwrap();
     }
+
+    #[test]
+    fn test_bundle_implicit_programdata_read_blocks_writer() {
+        let bundle_account_locker = BundleAccountLocker::default();
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        // The bundle only references the program; its lock on PDA(program) is implicit.
+        let bundle = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
+            &Keypair::new(),
+            &program,
+            1,
+            Hash::default(),
+        ))];
+        let mut container = create_container([
+            (Keypair::new(), vec![programdata], 1, 2),
+            (Keypair::new(), vec![Pubkey::new_unique()], 1, 1),
+        ]);
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame_with_bundle_locker(
+                1,
+                GreedySchedulerConfig::default(),
+                bundle_account_locker.clone(),
+            );
+        bundle_account_locker.lock_bundle(&bundle, &bank).unwrap();
+        let summary = scheduler
+            .schedule(&mut container, TEST_SLOT, u64::MAX)
+            .unwrap();
+        assert_eq!(summary.num_scheduled, 1);
+        assert_eq!(summary.num_unschedulable_conflicts, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
+        bundle_account_locker.unlock_bundle(&bundle, &bank).unwrap();
+        assert!(
+            bundle_account_locker
+                .account_locks()
+                .read_locks()
+                .is_empty()
+        );
+        let summary = scheduler
+            .schedule(&mut container, TEST_SLOT, u64::MAX)
+            .unwrap();
+        assert_eq!(summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
+    }
+
+    #[test]
+    fn test_bundle_write_to_programdata_blocks_implicit_reader() {
+        let bundle_account_locker = BundleAccountLocker::default();
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        // The bundle writes PDA(program); the scheduled tx only references the program.
+        let bundle = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
+            &Keypair::new(),
+            &programdata,
+            1,
+            Hash::default(),
+        ))];
+        let mut container = create_container([
+            (Keypair::new(), vec![program], 1, 2),
+            (Keypair::new(), vec![Pubkey::new_unique()], 1, 1),
+        ]);
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame_with_bundle_locker(
+                1,
+                GreedySchedulerConfig::default(),
+                bundle_account_locker.clone(),
+            );
+        bundle_account_locker.lock_bundle(&bundle, &bank).unwrap();
+        let summary = scheduler
+            .schedule(&mut container, TEST_SLOT, u64::MAX)
+            .unwrap();
+        assert_eq!(summary.num_scheduled, 1);
+        assert_eq!(summary.num_unschedulable_conflicts, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
+        bundle_account_locker.unlock_bundle(&bundle, &bank).unwrap();
+    }
+
+    #[test_case::test_case(true; "implicit_conflict_stays_on_one_thread")]
+    #[test_case::test_case(false; "independent_transactions_use_both_threads")]
+    fn test_implicit_programdata_conflict_same_thread(conflicting: bool) {
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(2, GreedySchedulerConfig::default());
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        let second_recipient = if conflicting {
+            programdata
+        } else {
+            Pubkey::new_unique()
+        };
+        let mut container = create_container([
+            (Keypair::new(), [program], 1, 1),
+            (Keypair::new(), [second_recipient], 1, 0),
+        ]);
+        assert_eq!(
+            scheduler
+                .schedule(&mut container, TEST_SLOT, u64::MAX)
+                .unwrap()
+                .num_scheduled,
+            2
+        );
+        // Independent transactions alternate threads; the implicit conflict pins them.
+        let (_, ids0) = collect_work(&work_receivers[0]);
+        let (_, ids1) = collect_work(&work_receivers[1]);
+        assert_eq!(
+            ids0.is_empty() || ids1.is_empty(),
+            conflicting,
+            "{ids0:?} {ids1:?}"
+        );
+        assert_eq!(ids0.into_iter().chain(ids1).flatten().count(), 2);
+    }
 }

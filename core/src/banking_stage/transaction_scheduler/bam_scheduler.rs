@@ -1351,6 +1351,60 @@ mod tests {
         );
     }
 
+    // Until `loaderv3_programdata_size_floor` is rooted, every transaction carries an implicit
+    // read lock on the loader-v3 ProgramData PDA of each of its account keys. A batch that
+    // writes such a PDA must be ordered behind an earlier batch that references the program,
+    // otherwise the bank-level lock turns the later batch into `NotCommitted(AccountInUse)`.
+    #[test_case::test_case(true; "write_to_programdata_pda_is_serialized")]
+    #[test_case::test_case(false; "unrelated_write_is_not_serialized")]
+    fn test_implicit_programdata_read_lock_orders_batches(conflicting: bool) {
+        let (bank_forks, _mint_keypair) = test_bank_forks();
+        let TestScheduler {
+            mut scheduler,
+            consume_work_receiver,
+            ..
+        } = create_test_scheduler(&bank_forks);
+        scheduler.extra_checks_enabled = false;
+
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        )
+        .0;
+        let second_recipient = if conflicting {
+            programdata
+        } else {
+            Pubkey::new_unique()
+        };
+        let mut container = create_container(vec![
+            (&Keypair::new(), vec![program], 1000, 0, u64::MAX),
+            (&Keypair::new(), vec![second_recipient], 1000, 1, u64::MAX),
+        ]);
+
+        let bank = bank_forks.read().unwrap().working_bank();
+        let decision = BufferedPacketsDecision::Consume(bank);
+        scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+
+        let result = scheduler.schedule(&mut container, 0, 0).unwrap();
+        let expected_scheduled = if conflicting { 1 } else { 2 };
+        assert_eq!(result.num_scheduled, expected_scheduled);
+
+        let work = consume_work_receiver.try_recv().unwrap();
+        assert_eq!(
+            work.transactions[0].message().account_keys()[1],
+            program,
+            "the batch referencing the program must be dispatched first"
+        );
+        assert_eq!(
+            consume_work_receiver.try_recv().is_ok(),
+            !conflicting,
+            "a write to the ProgramData PDA must wait for the implicit read lock"
+        );
+    }
+
     #[test]
     fn test_prio_graph_clears_on_slot_boundary() {
         let (bank_forks, _) = test_bank_forks();
