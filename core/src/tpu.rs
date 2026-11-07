@@ -211,8 +211,8 @@ impl Tpu {
         );
 
         let Channels {
-            non_vote_sender: banking_stage_sender,
-            non_vote_receiver: banking_stage_receiver,
+            non_vote_sender,
+            non_vote_receiver,
             ..
         } = banking_channels;
 
@@ -269,7 +269,7 @@ impl Tpu {
 
         let sigverify_stage = SigVerifyStage::new(
             sigverify_stage_receiver,
-            banking_stage_sender.clone(),
+            non_vote_sender.clone(),
             forward_stage_sender.clone(),
             tpu_sigverify_threads,
             enable_block_production_forwarding,
@@ -297,7 +297,7 @@ impl Tpu {
             unverified_bundle_sender,
             cluster_info.clone(),
             sigverify_stage_sender.clone(),
-            banking_stage_sender.clone(),
+            non_vote_sender.clone(),
             exit.clone(),
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
@@ -353,8 +353,6 @@ impl Tpu {
             outbound_sender: bam_outbound_sender,
             cluster_info: cluster_info.clone(),
             block_builder_fee_info: block_builder_fee_info.clone(),
-            bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
-            bank_forks: bank_forks.clone(),
             bam_tpu_info,
             bam_shred_receiver_addresses: bam_shred_receiver_addresses.clone(),
         };
@@ -366,7 +364,7 @@ impl Tpu {
             block_production_method,
             poh_recorder.clone(),
             transaction_recorder.clone(),
-            banking_stage_receiver,
+            non_vote_receiver,
             // Votes are not ingested. A disconnected receiver would shut down banking stage.
             crossbeam_channel::never(),
             crossbeam_channel::never(),

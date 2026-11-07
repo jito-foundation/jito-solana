@@ -384,13 +384,6 @@ impl JsonRpcRequestProcessor {
         Ok(accounts)
     }
 
-    fn bank_from_slot(&self, slot: Slot) -> Option<Arc<Bank>> {
-        debug!("bank_from_slot: {slot}");
-
-        let r_bank_forks = self.bank_forks.read().unwrap();
-        r_bank_forks.get(slot)
-    }
-
     #[allow(deprecated)]
     fn bank(&self, commitment: Option<CommitmentConfig>) -> Arc<Bank> {
         debug!("RPC commitment_config: {commitment:?}");
@@ -8446,7 +8439,6 @@ pub mod tests {
         )));
 
         let cluster_info = Arc::new(new_test_cluster_info());
-
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
         let config = JsonRpcConfig::default();

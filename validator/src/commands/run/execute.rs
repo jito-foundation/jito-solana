@@ -508,34 +508,16 @@ pub fn execute(
         ),
     }));
 
-    let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
-        parse_shred_receiver_addresses(
-            matches
-                .values_of("shred_receiver_address")
-                .into_iter()
-                .flatten(),
-        )
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("shred_receiver_address invalid: {err}"),
-            )
-        })?,
-    ));
-    let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::from_pointee(
-        parse_shred_receiver_addresses(
-            matches
-                .values_of("shred_retransmit_receiver_address")
-                .into_iter()
-                .flatten(),
-        )
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("shred_retransmit_receiver_address invalid: {err}"),
-            )
-        })?,
-    ));
+    let parse_receiver_addresses = |arg: &str| {
+        parse_shred_receiver_addresses(matches.values_of(arg).into_iter().flatten())
+            .map(|addresses| Arc::new(ArcSwap::from_pointee(addresses)))
+            .map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("{arg} invalid: {err}"))
+            })
+    };
+    let shred_receiver_addresses = parse_receiver_addresses("shred_receiver_address")?;
+    let shred_retransmit_receiver_addresses =
+        parse_receiver_addresses("shred_retransmit_receiver_address")?;
 
     let mut validator_config = ValidatorConfig {
         log_config,

@@ -140,7 +140,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             // This test only TowerBFT implementation does not use block markers
             return Ok(());
         };
-        // We are guaranteed by coalesce that this is not empty
+        // We are guarenteed by coalesce that this is not empty
         assert!(!entries.is_empty());
         // Update the recent blockhash based on transactions in the entries
         for entry in entries.iter() {

@@ -452,29 +452,15 @@ impl BundleConsumer {
             };
         }
 
-        let (commit_time_us, commit_transaction_statuses) =
-            if processed_counts.processed_transactions_count != 0 {
-                self.committer.commit_transactions(
-                    batch,
-                    processing_results,
-                    starting_transaction_index,
-                    bank,
-                    balance_collector,
-                    &mut execute_and_commit_timings,
-                    &processed_counts,
-                )
-            } else {
-                (
-                    0,
-                    processing_results
-                        .into_iter()
-                        .map(|processing_result| match processing_result {
-                            Ok(_) => unreachable!("processed transaction count is 0"),
-                            Err(err) => CommitTransactionDetails::NotCommitted(err),
-                        })
-                        .collect(),
-                )
-            };
+        let (commit_time_us, commit_transaction_statuses) = self.committer.commit_transactions(
+            batch,
+            processing_results,
+            starting_transaction_index,
+            bank,
+            balance_collector,
+            &mut execute_and_commit_timings,
+            &processed_counts,
+        );
 
         drop(freeze_lock);
 
@@ -524,9 +510,8 @@ mod tests {
         crossbeam_channel::unbounded,
         solana_cost_model::cost_model::CostModel,
         solana_entry::entry::Entry,
-        solana_genesis_config::create_genesis_config,
+        solana_genesis_config::{GenesisConfig, create_genesis_config},
         solana_keypair::Keypair,
-        solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::{
             GenesisConfigInfo, bootstrap_validator_stake_lamports,
             create_genesis_config_with_leader,
@@ -538,7 +523,8 @@ mod tests {
         },
         solana_pubkey::{Pubkey, new_rand},
         solana_runtime::{
-            bank::{Bank, NewBankOptions, entry_bytes_budget::EntryBytesReserveError},
+            bank::{Bank, entry_bytes_budget::EntryBytesReserveError},
+            bank_forks::BankForks,
             prioritization_fee_cache::PrioritizationFeeCache,
             vote_sender_types::ReplayVoteReceiver,
         },
@@ -546,10 +532,13 @@ mod tests {
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{
-            InstructionError, Transaction, TransactionError, TransactionVerificationMode,
-            sanitized::SanitizedTransaction,
+            InstructionError, Transaction, TransactionError, sanitized::SanitizedTransaction,
         },
-        std::{assert_matches, sync::Arc, time::Duration},
+        std::{
+            assert_matches,
+            sync::{Arc, RwLock},
+            time::Duration,
+        },
         test_case::test_case,
     };
 
@@ -575,6 +564,45 @@ mod tests {
         let consumer =
             BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
         (consumer, record_receiver, replay_vote_receiver)
+    }
+
+    fn test_bank() -> (GenesisConfig, Keypair, Arc<Bank>, Arc<RwLock<BankForks>>) {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        (genesis_config, mint_keypair, bank, bank_forks)
+    }
+
+    fn process_bundle(
+        consumer: &mut BundleConsumer,
+        bank: &Bank,
+        transactions: &[RuntimeTransaction<SanitizedTransaction>],
+    ) -> (Result<Vec<CommitTransactionDetails>, PohRecorderError>, u64) {
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            bank,
+            transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        (
+            commit_transactions_result,
+            cost_model_throttled_transactions_count,
+        )
     }
 
     #[test]
@@ -611,16 +639,7 @@ mod tests {
     #[test]
     fn test_single_tx_ok_bundle_committed() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
         let pubkey = solana_pubkey::new_rand();
 
         let transactions = sanitize_transactions(vec![transfer(
@@ -632,20 +651,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -658,16 +665,7 @@ mod tests {
 
     #[test]
     fn test_quiesced_bank_bundle_is_retryable() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
         let recipients = [Pubkey::new_unique(), Pubkey::new_unique()];
         let transactions = sanitize_transactions(
             recipients
@@ -726,80 +724,9 @@ mod tests {
     }
 
     #[test]
-    fn test_rejects_non_vote_bundle_in_vote_only_bank() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (parent_bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-        let recipient = Pubkey::new_unique();
-        let transaction_bytes =
-            wincode::serialize(&solana_transaction::versioned::VersionedTransaction::from(
-                transfer(&mint_keypair, &recipient, 1, parent_bank.last_blockhash()),
-            ))
-            .unwrap();
-        let transaction_view =
-            agave_transaction_view::transaction_view::UnsanitizedTransactionView::try_new_unsanitized(
-                bytes::Bytes::from(transaction_bytes),
-            )
-            .unwrap();
-        let transaction = parent_bank
-            .verify_transaction(
-                transaction_view,
-                TransactionVerificationMode::FullVerification,
-            )
-            .unwrap();
-        let max_age = MaxAge {
-            sanitized_epoch: parent_bank.epoch(),
-            alt_invalidation_slot: u64::MAX,
-        };
-        let bank = Bank::new_from_parent_with_options(
-            parent_bank,
-            SlotLeader::new_unique(),
-            1,
-            NewBankOptions {
-                vote_only_bank: true,
-            },
-        );
-
-        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
-
-        let output = consumer.process_and_record_aged_transactions(
-            &bank,
-            &[transaction],
-            &[max_age],
-            Duration::from_millis(20),
-        );
-
-        assert_matches!(
-            output
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-                .unwrap()
-                .as_slice(),
-            [CommitTransactionDetails::NotCommitted(
-                TransactionError::SanitizeFailure
-            )]
-        );
-        assert_eq!(bank.get_balance(&recipient), 0);
-        assert!(record_receiver.try_recv().is_err());
-        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
-    }
-
-    #[test]
     fn test_single_tx_bad_not_committed() {
         agave_logger::setup();
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, _, bank, _bank_forks) = test_bank();
 
         let transactions = sanitize_transactions(vec![transfer(
             &Keypair::new(),
@@ -810,20 +737,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -838,16 +753,7 @@ mod tests {
     #[test]
     fn test_multi_tx_bundle_last_tx_bad_not_committed() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
 
         let transactions = sanitize_transactions(vec![
             transfer(&mint_keypair, &new_rand(), 1, genesis_config.hash()),
@@ -858,20 +764,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -898,16 +792,7 @@ mod tests {
     #[test]
     fn test_multi_bundle_seed_fee_payer_ok() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -919,20 +804,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -955,16 +828,7 @@ mod tests {
     #[test_case(true; "exact_boundary")]
     fn test_bundle_entry_bytes_budget(exact_boundary: bool) {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
         let recipients: [Pubkey; TEST_BUNDLE_LEN] = std::array::from_fn(|_| Pubkey::new_unique());
         let transactions: [_; TEST_BUNDLE_LEN] = std::array::from_fn(|index| {
             RuntimeTransaction::from_transaction_for_tests(transfer(
@@ -1068,16 +932,7 @@ mod tests {
     #[test]
     fn test_tx_compute_reservation_exceeds_drops_bundle() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -1102,20 +957,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 1);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -1138,16 +981,7 @@ mod tests {
     #[test]
     fn test_transaction_already_processed_fails() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
 
         let transactions = sanitize_transactions(vec![transfer(
             &mint_keypair,
@@ -1158,20 +992,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -1181,20 +1003,8 @@ mod tests {
             CommitTransactionDetails::Committed { result: Ok(_), .. }
         );
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();
@@ -1208,16 +1018,7 @@ mod tests {
     #[test]
     fn test_bundle_account_in_use_rolls_back_qos() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
 
         let tx = sanitize_transactions(vec![transfer(
             &mint_keypair,
@@ -1229,20 +1030,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &tx,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &tx);
         drop(batch);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
@@ -1258,16 +1047,7 @@ mod tests {
     #[test]
     fn test_non_fee_payer_failure_tx_reverts() {
         agave_logger::setup();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let (genesis_config, mint_keypair, bank, _bank_forks) = test_bank();
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -1278,20 +1058,8 @@ mod tests {
 
         let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
 
-        let ProcessTransactionBatchOutput {
-            execute_and_commit_transactions_output:
-                ExecuteAndCommitTransactionsOutput {
-                    commit_transactions_result,
-                    ..
-                },
-            cost_model_throttled_transactions_count,
-            ..
-        } = consumer.process_and_record_aged_transactions(
-            &bank,
-            &transactions,
-            &[MaxAge::MAX],
-            Duration::from_millis(20),
-        );
+        let (commit_transactions_result, cost_model_throttled_transactions_count) =
+            process_bundle(&mut consumer, &bank, &transactions);
         assert_eq!(cost_model_throttled_transactions_count, 0);
         assert!(commit_transactions_result.is_ok());
         let commit_transactions_result = commit_transactions_result.unwrap();

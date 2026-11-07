@@ -49,70 +49,40 @@ impl BundleSigverifyStage {
         let mut last_update = Instant::now();
 
         while !exit.load(Ordering::Relaxed) {
-            let bundles = match receiver.recv_timeout(Duration::from_millis(10)) {
-                Ok(bundles) => bundles,
-                Err(RecvTimeoutError::Timeout) => {
-                    if (num_bundles_received > 0 || num_packets_received > 0)
-                        && last_update.elapsed().as_millis() > 20
-                    {
-                        datapoint_info!(
-                            "bundle_sigverify_stage",
-                            ("num_bundles_received", num_bundles_received, i64),
-                            ("num_packets_received", num_packets_received, i64),
-                            (
-                                "num_bundles_failed_sigverify",
-                                num_bundles_failed_sigverify,
-                                i64
-                            ),
-                            (
-                                "num_packets_failed_sigverify",
-                                num_packets_failed_sigverify,
-                                i64
-                            ),
-                            ("num_bundles_failed_send", num_bundles_failed_send, i64),
-                            ("num_packets_failed_send", num_packets_failed_send, i64),
-                        );
-                        num_packets_received = 0;
-                        num_bundles_received = 0;
-                        num_bundles_failed_sigverify = 0;
-                        num_packets_failed_sigverify = 0;
-                        num_bundles_failed_send = 0;
-                        num_packets_failed_send = 0;
-                        last_update = Instant::now();
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(bundles) => {
+                    workspace.extend(bundles.into_iter().map(|bundle| bundle.take()));
+
+                    let packet_count: usize = workspace.iter().map(|bundle| bundle.len()).sum();
+
+                    num_bundles_received += workspace.len();
+                    num_packets_received += packet_count;
+
+                    ed25519_verify(&thread_pool, &mut workspace, false, packet_count);
+
+                    for bundle in workspace.drain(..) {
+                        let num_packets_failed_sigverify_in_bundle = bundle
+                            .iter()
+                            .filter(|packet| packet.meta().discard())
+                            .count();
+
+                        // all the transactions in the bundle need to be verified to be valid
+                        let len = bundle.len();
+                        if num_packets_failed_sigverify_in_bundle == 0
+                            && sender.send(VerifiedPacketBundle::new(bundle)).is_err()
+                        {
+                            warn!("failed to send verified packet bundle");
+                            num_bundles_failed_send += 1;
+                            num_packets_failed_send += len;
+                            break;
+                        } else if num_packets_failed_sigverify_in_bundle > 0 {
+                            num_bundles_failed_sigverify += 1;
+                            num_packets_failed_sigverify += num_packets_failed_sigverify_in_bundle;
+                        }
                     }
-                    continue;
                 }
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
-            };
-
-            workspace.extend(bundles.into_iter().map(|bundle| bundle.take()));
-
-            let packet_count: usize = workspace.iter().map(|bundle| bundle.len()).sum();
-
-            num_bundles_received += workspace.len();
-            num_packets_received += packet_count;
-
-            ed25519_verify(&thread_pool, &mut workspace, false, packet_count);
-
-            for bundle in workspace.drain(..) {
-                let num_packets_failed_sigverify_in_bundle = bundle
-                    .iter()
-                    .filter(|packet| packet.meta().discard())
-                    .count();
-
-                // all the transactions in the bundle need to be verified to be valid
-                let len = bundle.len();
-                if num_packets_failed_sigverify_in_bundle == 0
-                    && sender.send(VerifiedPacketBundle::new(bundle)).is_err()
-                {
-                    warn!("failed to send verified packet bundle");
-                    num_bundles_failed_send += 1;
-                    num_packets_failed_send += len;
-                    break;
-                } else if num_packets_failed_sigverify_in_bundle > 0 {
-                    num_bundles_failed_sigverify += 1;
-                    num_packets_failed_sigverify += num_packets_failed_sigverify_in_bundle;
-                }
             }
 
             if (num_bundles_received > 0 || num_packets_received > 0)
@@ -206,18 +176,38 @@ mod tests {
         transaction
     }
 
+    fn start_stage(
+        unverified_receiver: Receiver<Vec<PacketBundle>>,
+        verified_sender: Sender<VerifiedPacketBundle>,
+        exit: &Arc<AtomicBool>,
+    ) -> BundleSigverifyStage {
+        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap());
+        BundleSigverifyStage::new(
+            thread_pool,
+            unverified_receiver,
+            verified_sender,
+            exit.clone(),
+        )
+    }
+
+    fn packet_bundle(transactions: &[Transaction]) -> PacketBundle {
+        PacketBundle::new(
+            PacketBatch::from(
+                transactions
+                    .iter()
+                    .map(|tx| BytesPacket::from_data(tx).unwrap())
+                    .collect::<Vec<_>>(),
+            ),
+            "".to_string(),
+        )
+    }
+
     #[test]
     fn test_bundle_sigverify_stage_exit() {
         let (_unverified_sender, unverified_receiver) = bounded(1024);
         let (verified_sender, _verified_receiver) = bounded(1024);
         let exit = Arc::new(AtomicBool::new(false));
-        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap());
-        let stage = BundleSigverifyStage::new(
-            thread_pool,
-            unverified_receiver,
-            verified_sender,
-            exit.clone(),
-        );
+        let stage = start_stage(unverified_receiver, verified_sender, &exit);
         exit.store(true, Ordering::Relaxed);
         stage.join().unwrap();
     }
@@ -229,38 +219,16 @@ mod tests {
         let exit = Arc::new(AtomicBool::new(false));
 
         let txs_1 = (0..3).map(|_| test_tx()).collect::<Vec<_>>();
-        let packet_bundle_1 = PacketBundle::new(
-            PacketBatch::from(
-                txs_1
-                    .iter()
-                    .map(|tx| BytesPacket::from_data(tx).unwrap())
-                    .collect::<Vec<_>>(),
-            ),
-            "".to_string(),
-        );
+        let packet_bundle_1 = packet_bundle(&txs_1);
 
         let txs_2 = (0..4).map(|_| test_tx()).collect::<Vec<_>>();
-        let packet_bundle_2 = PacketBundle::new(
-            PacketBatch::from(
-                txs_2
-                    .iter()
-                    .map(|tx| BytesPacket::from_data(tx).unwrap())
-                    .collect::<Vec<_>>(),
-            ),
-            "".to_string(),
-        );
+        let packet_bundle_2 = packet_bundle(&txs_2);
 
         unverified_sender
             .send(vec![packet_bundle_1, packet_bundle_2])
             .unwrap();
 
-        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap());
-        let stage = BundleSigverifyStage::new(
-            thread_pool,
-            unverified_receiver,
-            verified_sender,
-            exit.clone(),
-        );
+        let stage = start_stage(unverified_receiver, verified_sender, &exit);
 
         let verified_bundle_1 = verified_receiver.recv().unwrap();
         assert_eq!(verified_bundle_1.batch().len(), 3);
@@ -305,25 +273,11 @@ mod tests {
         let mut txs_1 = (0..3).map(|_| test_tx()).collect::<Vec<_>>();
         txs_1[0].signatures[0] = Signature::default();
 
-        let packet_bundle_1 = PacketBundle::new(
-            PacketBatch::from(
-                txs_1
-                    .iter()
-                    .map(|tx| BytesPacket::from_data(tx).unwrap())
-                    .collect::<Vec<_>>(),
-            ),
-            "".to_string(),
-        );
+        let packet_bundle_1 = packet_bundle(&txs_1);
 
         unverified_sender.send(vec![packet_bundle_1]).unwrap();
 
-        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap());
-        let stage = BundleSigverifyStage::new(
-            thread_pool,
-            unverified_receiver,
-            verified_sender,
-            exit.clone(),
-        );
+        let stage = start_stage(unverified_receiver, verified_sender, &exit);
 
         assert_eq!(
             verified_receiver
@@ -352,13 +306,7 @@ mod tests {
 
         unverified_sender.send(vec![packet_bundle]).unwrap();
 
-        let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build().unwrap());
-        let stage = BundleSigverifyStage::new(
-            thread_pool,
-            unverified_receiver,
-            verified_sender,
-            exit.clone(),
-        );
+        let stage = start_stage(unverified_receiver, verified_sender, &exit);
 
         let verified_bundle = verified_receiver
             .recv_timeout(Duration::from_secs(30))

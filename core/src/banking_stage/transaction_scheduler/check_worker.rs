@@ -481,7 +481,6 @@ pub(crate) mod external {
             let Ok((transaction, _)) = translate_sanitized_to_runtime_view(
                 transaction,
                 root_bank,
-                root_bank.vote_only_bank(),
                 root_bank.get_transaction_account_lock_limits(),
                 preloaded_addresses,
                 !root_bank

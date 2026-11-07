@@ -761,7 +761,6 @@ mod tests {
     fn test_create_transaction_view_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
-        blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
         let (check_work_sender, check_work_receiver) = bounded(10_000);
         let (check_result_sender, check_result_receiver) = bounded(10_000);
@@ -771,7 +770,7 @@ mod tests {
             check_result_sender,
             bank_forks.read().unwrap().sharable_banks(),
             SharedLeaderState::new(0, None, None),
-            Arc::new(blacklisted_accounts.into_iter().collect()),
+            Arc::default(),
         );
         TransactionViewReceiveAndBuffer::new(receiver, check_work_sender, check_result_receiver)
     }
@@ -779,11 +778,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn create_test_frame<R: ReceiveAndBuffer>(
         num_threads: usize,
-        create_receive_and_buffer: impl FnOnce(
-            BankingPacketReceiver,
-            Arc<RwLock<BankForks>>,
-            HashSet<Pubkey>,
-        ) -> R,
+        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
     ) -> (
         TestFrame<R::Transaction>,
         SchedulerController<R, GreedyScheduler<R::Transaction>>,
@@ -804,12 +799,9 @@ mod tests {
             SharedAlpenglowSlotClock::default(),
         );
 
-        let (banking_packet_sender, banking_packet_receiver) = unbounded();
-        let receive_and_buffer = create_receive_and_buffer(
-            banking_packet_receiver,
-            bank_forks.clone(),
-            HashSet::default(),
-        );
+        let (banking_packet_sender, banking_packet_receiver) = bounded(1024);
+        let receive_and_buffer =
+            create_receive_and_buffer(banking_packet_receiver, bank_forks.clone());
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = bounded(1024);
@@ -828,6 +820,7 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             GreedySchedulerConfig::default(),
+            crate::bundle_stage::bundle_account_locker::BundleAccountLocker::default(),
         );
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(

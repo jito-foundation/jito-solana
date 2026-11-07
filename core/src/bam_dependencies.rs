@@ -17,10 +17,9 @@ use {
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_pubkey::Pubkey,
-    solana_runtime::{bank::Bank, bank_forks::BankForks},
+    solana_runtime::bank::Bank,
     solana_transaction_error::TransactionError,
     solana_turbine::ShredReceiverAddresses,
-    std::sync::RwLock,
     thiserror::Error,
     tokio::sync::mpsc,
 };
@@ -64,8 +63,6 @@ pub struct BamDependencies {
 
     pub cluster_info: Arc<ClusterInfo>,
     pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
-    pub bank_forks: Arc<RwLock<BankForks>>,
-    pub bam_node_pubkey: Arc<ArcSwap<Pubkey>>,
     pub bam_tpu_info: Arc<ArcSwap<Option<(std::net::SocketAddr, std::net::SocketAddr)>>>,
     pub bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }

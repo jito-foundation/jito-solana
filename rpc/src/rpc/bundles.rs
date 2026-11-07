@@ -98,9 +98,11 @@ pub(super) fn simulate_bundle(
 
     let bank = match simulation_bank.unwrap_or_default() {
         SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
-        SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
-            Error::invalid_params(format!("bank not found for the provided slot: {slot}"))
-        }),
+        SimulationSlotConfig::Slot(slot) => {
+            meta.bank_forks.read().unwrap().get(slot).ok_or_else(|| {
+                Error::invalid_params(format!("bank not found for the provided slot: {slot}"))
+            })
+        }
         SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
     }?;
 
@@ -194,6 +196,12 @@ pub(super) fn simulate_bundle(
         )));
     }
 
+    let encode_accounts = |accounts: &[KeyedAccountSharedData]| {
+        accounts
+            .iter()
+            .map(|(address, data)| encode_account(data, address, UiAccountEncoding::Base64, None))
+            .collect::<Result<Vec<_>>>()
+    };
     let result = RpcSimulateBundleResult {
         // if any of them errored out, return the first one that did
         summary: if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
@@ -218,32 +226,8 @@ pub(super) fn simulate_bundle(
                 Ok(RpcSimulateBundleTransactionResult {
                     err: result.result.err(),
                     logs: Some(result.logs),
-                    pre_execution_accounts: Some(
-                        pre_accounts
-                            .iter()
-                            .map(|(address, data)| {
-                                encode_account(
-                                    data,
-                                    address,
-                                    UiAccountEncoding::Base64,
-                                    None,
-                                )
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    ),
-                    post_execution_accounts: Some(
-                        post_accounts
-                            .iter()
-                            .map(|(address, data)| {
-                                encode_account(
-                                    data,
-                                    address,
-                                    UiAccountEncoding::Base64,
-                                    None,
-                                )
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    ),
+                    pre_execution_accounts: Some(encode_accounts(&pre_accounts)?),
+                    post_execution_accounts: Some(encode_accounts(&post_accounts)?),
                     units_consumed: Some(result.units_consumed),
                     loaded_accounts_data_size: Some(result.loaded_accounts_data_size),
                     return_data: result.return_data.map(|return_data| return_data.into()),

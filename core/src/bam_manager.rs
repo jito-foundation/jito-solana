@@ -138,9 +138,7 @@ impl BamManager {
         let mut last_observed_bam_url = Arc::new(None);
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
-        let fallback_client_id = ClientId::JitoLabs;
-        let mut current_client_id = fallback_client_id;
-        let bam_client_id = ClientId::AgaveBam;
+        let mut bam_client_id_set = false;
 
         while !exit.load(Ordering::Relaxed) {
             let latest_bam_url = bam_url.load_full();
@@ -185,9 +183,9 @@ impl BamManager {
                     }
 
                     // Set ClientId to 'JitoSolana'
-                    if current_client_id != fallback_client_id {
-                        Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
-                        current_client_id = fallback_client_id;
+                    if bam_client_id_set {
+                        dependencies.cluster_info.set_client_id(ClientId::JitoLabs);
+                        bam_client_id_set = false;
                     }
 
                     // Try to connect to BAM
@@ -349,9 +347,9 @@ impl BamManager {
             }
 
             // Set BAM Client Id (If not set already)
-            if current_client_id != bam_client_id {
-                Self::set_client_id(&dependencies.cluster_info, bam_client_id);
-                current_client_id = bam_client_id;
+            if !bam_client_id_set {
+                dependencies.cluster_info.set_client_id(ClientId::AgaveBam);
+                bam_client_id_set = true;
             }
 
             current_connection = Some(connection);
@@ -440,12 +438,7 @@ impl BamManager {
     fn apply_builder_config(config: &ConfigResponse, dependencies: &BamDependencies) -> bool {
         Self::update_tpu_config(config, &dependencies.bam_tpu_info);
         Self::update_shred_socks_config(config, dependencies);
-        let block_builder_updated = Self::update_block_engine_key_and_commission(
-            config,
-            &dependencies.block_builder_fee_info,
-        );
-        Self::update_bam_recipient_and_commission(config, &dependencies.bam_node_pubkey);
-        block_builder_updated
+        Self::update_block_engine_key_and_commission(config, &dependencies.block_builder_fee_info)
     }
 
     fn update_tpu_config(
@@ -577,40 +570,6 @@ impl BamManager {
         true
     }
 
-    fn update_bam_recipient_and_commission(
-        config: &ConfigResponse,
-        prio_fee_recipient_pubkey: &Arc<ArcSwap<Pubkey>>,
-    ) -> bool {
-        let Some(bam_info) = config.bam_config.as_ref() else {
-            return false;
-        };
-
-        let pubkey = match Pubkey::from_str(&bam_info.prio_fee_recipient_pubkey) {
-            Ok(pubkey) => pubkey,
-            Err(error) => {
-                let raw_pubkey = &bam_info.prio_fee_recipient_pubkey;
-                let pubkey_sample =
-                    &raw_pubkey[..raw_pubkey.floor_char_boundary(raw_pubkey.len().min(64))];
-                let safe_pubkey_sample = pubkey_sample
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric())
-                    .then_some(pubkey_sample);
-                datapoint_warn!(
-                    "bam_manager-pubkey_error",
-                    ("count", 1, i64),
-                    ("field", "prio_fee_recipient_pubkey", String),
-                    ("pubkey", safe_pubkey_sample, Option<String>),
-                    ("pubkey_len", raw_pubkey.len(), i64),
-                    ("error", error.to_string(), String),
-                );
-                return false;
-            }
-        };
-
-        prio_fee_recipient_pubkey.store(Arc::new(pubkey));
-        true
-    }
-
     fn wait_for_identity_in_cluster_info(
         new_identity: &ArcSwap<Option<Pubkey>>,
         cluster_info: &ClusterInfo,
@@ -655,14 +614,6 @@ impl BamManager {
             ("timeout_us", timeout.as_micros(), i64)
         );
         false
-    }
-
-    fn set_client_id(cluster_info: &ClusterInfo, new_client_id: ClientId) {
-        let current_client_id = cluster_info.get_client_id();
-        if current_client_id == new_client_id {
-            return;
-        }
-        cluster_info.set_client_id(new_client_id);
     }
 
     pub fn join(self) -> std::thread::Result<()> {

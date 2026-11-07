@@ -14,8 +14,6 @@ pub enum TipDistributionError {
     InvalidDiscriminator,
     #[error("Deserialization error")]
     DeserializationError,
-    #[error("Serialization error")]
-    SerializationError,
 }
 
 pub type TipDistributionResult<T> = std::result::Result<T, TipDistributionError>;
@@ -50,30 +48,15 @@ impl InitializeTipDistributionConfigInstruction {
         num_epochs_valid: u64,
         max_validator_commission_bps: u16,
         bump: u8,
-    ) -> TipDistributionResult<Vec<u8>> {
+    ) -> Vec<u8> {
         let mut data = Vec::with_capacity(Self::DISCRIMINATOR.len() + 75);
         data.extend_from_slice(Self::DISCRIMINATOR);
-        data.extend(borsh::to_vec(&authority).map_err(|e| {
-            error!("Error serializing authority: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        data.extend(borsh::to_vec(&expired_funds_account).map_err(|e| {
-            error!("Error serializing expired funds account: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        data.extend(borsh::to_vec(&num_epochs_valid).map_err(|e| {
-            error!("Error serializing num epochs valid: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        data.extend(borsh::to_vec(&max_validator_commission_bps).map_err(|e| {
-            error!("Error serializing max validator commission bps: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        data.extend(borsh::to_vec(&bump).map_err(|e| {
-            error!("Error serializing bump: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        Ok(data)
+        data.extend_from_slice(authority.as_ref());
+        data.extend_from_slice(expired_funds_account.as_ref());
+        data.extend_from_slice(&num_epochs_valid.to_le_bytes());
+        data.extend_from_slice(&max_validator_commission_bps.to_le_bytes());
+        data.push(bump);
+        data
     }
 }
 
@@ -86,23 +69,13 @@ impl InitializeTipDistributionAccountInstruction {
         merkle_root_upload_authority: Pubkey,
         validator_commission_bps: u16,
         bump: u8,
-    ) -> TipDistributionResult<Vec<u8>> {
+    ) -> Vec<u8> {
         let mut data = Vec::with_capacity(Self::DISCRIMINATOR.len() + 35);
         data.extend_from_slice(Self::DISCRIMINATOR);
-        data.extend(borsh::to_vec(&merkle_root_upload_authority).map_err(|e| {
-            error!("Error serializing merkle root upload authority: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        data.extend(borsh::to_vec(&validator_commission_bps).map_err(|e| {
-            error!("Error serializing validator commission bps: {e}");
-            TipDistributionError::SerializationError
-        })?);
-        data.extend(borsh::to_vec(&bump).map_err(|e| {
-            error!("Error serializing bump: {e}");
-            TipDistributionError::SerializationError
-        })?);
-
-        Ok(data)
+        data.extend_from_slice(merkle_root_upload_authority.as_ref());
+        data.extend_from_slice(&validator_commission_bps.to_le_bytes());
+        data.push(bump);
+        data
     }
 }
 
@@ -166,9 +139,5 @@ impl JitoTipDistributionConfig {
 
     pub(crate) fn max_validator_commission_bps(&self) -> u16 {
         self.max_validator_commission_bps
-    }
-
-    pub(crate) fn bump(&self) -> u8 {
-        self.bump
     }
 }

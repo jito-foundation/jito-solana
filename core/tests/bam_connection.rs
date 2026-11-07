@@ -101,12 +101,6 @@ impl MockBamNode {
             outbound_result_batch_size: Arc::new(AtomicU64::new(0)),
         }
     }
-
-    #[allow(dead_code)]
-    fn with_config(self, config: MockConfig) -> Self {
-        *self.config.lock().unwrap() = config;
-        self
-    }
 }
 
 #[tonic::async_trait]
@@ -249,7 +243,6 @@ struct MockServerHandle {
     auth_proofs_received: Arc<AtomicU64>,
     config_requests: Arc<AtomicU64>,
     scheduler_stream_rejections: Arc<AtomicU64>,
-    #[allow(dead_code)]
     config: Arc<Mutex<MockConfig>>,
     config_response_delay_ms: Arc<AtomicU64>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
@@ -326,7 +319,7 @@ async fn wait_until_healthy(
 ) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        if connection.get_latest_config().is_some() {
+        if connection.get_latest_config_if_changed(&mut 0).is_some() {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -338,29 +331,38 @@ async fn wait_until_healthy(
 mod bam_connection_tests {
     use {super::*, solana_core::bam_connection::BamConnection};
 
-    #[tokio::test]
-    async fn test_connection_healthy_with_heartbeats() {
-        let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
-
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
+    async fn connect(
+        server: &MockServerHandle,
+    ) -> (
+        crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
+        mpsc::Sender<BamOutboundMessage>,
+        BamConnection,
+    ) {
+        let (batch_tx, batch_rx, outbound_tx, mut outbound_rx) = create_channels();
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
-            cluster_info,
+            create_test_cluster_info(),
             batch_tx,
             &mut outbound_rx,
         )
         .await
         .expect("should connect");
+        (batch_rx, outbound_tx, connection)
+    }
+
+    #[tokio::test]
+    async fn test_connection_healthy_with_heartbeats() {
+        let send_heartbeats = Arc::new(AtomicBool::new(true));
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
+
+        let (_batch_rx, _outbound_tx, connection) = connect(&server).await;
 
         assert!(
             wait_until_healthy(&connection, Duration::from_secs(10)).await,
             "connection should become healthy"
         );
         assert!(connection.is_healthy());
-        assert!(connection.get_latest_config().is_some());
+        assert!(connection.get_latest_config_if_changed(&mut 0).is_some());
     }
 
     #[tokio::test]
@@ -369,17 +371,7 @@ mod bam_connection_tests {
         let server =
             start_mock_server(send_heartbeats.clone(), Duration::from_millis(500), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("should connect");
+        let (_batch_rx, _outbound_tx, connection) = connect(&server).await;
 
         assert!(
             wait_until_healthy(&connection, Duration::from_secs(10)).await,
@@ -400,17 +392,7 @@ mod bam_connection_tests {
         let send_heartbeats = Arc::new(AtomicBool::new(false));
         let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("should connect");
+        let (_batch_rx, _outbound_tx, connection) = connect(&server).await;
 
         let became_healthy = wait_until_healthy(&connection, Duration::from_secs(3)).await;
 
@@ -443,17 +425,7 @@ mod bam_connection_tests {
         )
         .await;
 
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("transport should connect before auth rejection");
+        let (_batch_rx, _outbound_tx, connection) = connect(&server).await;
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
@@ -479,7 +451,7 @@ mod bam_connection_tests {
             "refresh_config should not start when auth is rejected immediately"
         );
         assert!(!connection.is_healthy());
-        assert!(connection.get_latest_config().is_none());
+        assert!(connection.get_latest_config_if_changed(&mut 0).is_none());
     }
 
     #[tokio::test]
@@ -487,21 +459,13 @@ mod bam_connection_tests {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
         let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("should connect");
+        let (_batch_rx, _outbound_tx, connection) = connect(&server).await;
 
         assert!(wait_until_healthy(&connection, Duration::from_secs(10)).await);
 
-        let config = connection.get_latest_config().expect("config should exist");
+        let config = connection
+            .get_latest_config_if_changed(&mut 0)
+            .expect("config should exist");
         let bam_config = config.bam_config.expect("bam_config should exist");
         assert_eq!(bam_config.commission_bps, 100);
         let mut version = 0;
@@ -557,17 +521,7 @@ mod bam_connection_tests {
             .config_response_delay_ms
             .store(5_000, Ordering::Relaxed);
 
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("should connect");
+        let (_batch_rx, _outbound_tx, connection) = connect(&server).await;
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
@@ -591,17 +545,7 @@ mod bam_connection_tests {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
         let server = start_mock_server(send_heartbeats, Duration::from_millis(100), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, batch_rx, outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("should connect");
+        let (batch_rx, outbound_tx, connection) = connect(&server).await;
 
         for seq_id in 0..3 {
             outbound_tx
@@ -648,30 +592,6 @@ mod bam_connection_tests {
 
         assert_eq!(batch_size, 3);
     }
-
-    #[tokio::test]
-    async fn test_drop_sets_unhealthy() {
-        let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
-
-        let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
-
-        let connection = BamConnection::try_init(
-            format!("http://{}", server.addr),
-            cluster_info,
-            batch_tx,
-            &mut outbound_rx,
-        )
-        .await
-        .expect("should connect");
-
-        assert!(wait_until_healthy(&connection, Duration::from_secs(10)).await);
-        assert!(connection.is_healthy());
-
-        drop(connection);
-        // Connection is dropped, no assertion needed - Drop impl sets unhealthy
-    }
 }
 
 #[cfg(test)]
@@ -687,14 +607,12 @@ mod bam_manager_tests {
         },
         solana_ledger::{blockstore::Blockstore, genesis_utils::create_genesis_config},
         solana_poh::poh_recorder::create_test_recorder,
-        solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
         std::sync::{RwLock, atomic::AtomicU8},
     };
 
     fn create_test_bam_dependencies(
         cluster_info: Arc<ClusterInfo>,
-        bank_forks: Arc<RwLock<solana_runtime::bank_forks::BankForks>>,
     ) -> (BamDependencies, mpsc::Receiver<BamOutboundMessage>) {
         let (batch_tx, batch_rx) = crossbeam_channel::unbounded();
         let (outbound_tx, outbound_rx) = mpsc::channel(100_000);
@@ -705,8 +623,6 @@ mod bam_manager_tests {
             outbound_sender: outbound_tx,
             cluster_info,
             block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
-            bank_forks,
-            bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
             bam_shred_receiver_addresses: Arc::default(),
         };
@@ -761,119 +677,111 @@ mod bam_manager_tests {
         (exit, poh_recorder, bank_forks, poh_service, ledger_path)
     }
 
+    struct TestManager {
+        exit: Arc<AtomicBool>,
+        poh_service: solana_poh::poh_service::PohService,
+        bam_url: Arc<ArcSwap<Option<String>>>,
+        bam_enabled: Arc<AtomicU8>,
+        cluster_info: Arc<ClusterInfo>,
+        identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        _manager: BamManager,
+        _bank_forks: Arc<RwLock<solana_runtime::bank_forks::BankForks>>,
+        _ledger_path: tempfile::TempDir,
+    }
+
+    impl TestManager {
+        fn start(server_addr: Option<SocketAddr>) -> Self {
+            let cluster_info = create_test_cluster_info();
+            let (exit, poh_recorder, bank_forks, poh_service, ledger_path) =
+                create_test_poh_recorder();
+            let (dependencies, outbound_receiver) =
+                create_test_bam_dependencies(cluster_info.clone());
+            let bam_enabled = dependencies.bam_enabled.clone();
+            let block_builder_fee_info = dependencies.block_builder_fee_info.clone();
+            let bam_url = Arc::new(ArcSwap::from_pointee(
+                server_addr.map(|addr| format!("http://{addr}")),
+            ));
+            let identity_notifiers = Arc::new(RwLock::new(KeyUpdaters::default()));
+            let manager = BamManager::new(
+                exit.clone(),
+                bam_url.clone(),
+                dependencies,
+                outbound_receiver,
+                poh_recorder,
+                identity_notifiers.clone(),
+            );
+            Self {
+                exit,
+                poh_service,
+                bam_url,
+                bam_enabled,
+                cluster_info,
+                identity_notifiers,
+                block_builder_fee_info,
+                _manager: manager,
+                _bank_forks: bank_forks,
+                _ledger_path: ledger_path,
+            }
+        }
+
+        fn shutdown(self) {
+            self.exit.store(true, Ordering::Relaxed);
+            self.poh_service.join().unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn test_bam_enabled_when_connection_healthy() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server =
-            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
-        let (dependencies, outbound_receiver) =
-            create_test_bam_dependencies(cluster_info, bank_forks);
-        let bam_enabled = dependencies.bam_enabled.clone();
+        let manager = TestManager::start(Some(server.addr));
 
-        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
-            "http://{}",
-            server.addr
-        ))));
-        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
+        wait_for_bam_connection(&manager.bam_enabled).await;
 
-        let _manager = BamManager::new(
-            exit.clone(),
-            bam_url,
-            dependencies,
-            outbound_receiver,
-            poh_recorder,
-            identity_notifiers,
-        );
-
-        wait_for_bam_connection(&bam_enabled).await;
-
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
+        manager.shutdown();
     }
 
     #[tokio::test]
     async fn test_bam_disabled_when_connection_unhealthy() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server =
-            start_mock_server(send_heartbeats.clone(), Duration::from_millis(500), false).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_millis(500), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
-        let (dependencies, outbound_receiver) =
-            create_test_bam_dependencies(cluster_info, bank_forks);
-        let bam_enabled = dependencies.bam_enabled.clone();
+        let manager = TestManager::start(Some(server.addr));
 
-        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
-            "http://{}",
-            server.addr
-        ))));
-        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
-
-        let _manager = BamManager::new(
-            exit.clone(),
-            bam_url,
-            dependencies,
-            outbound_receiver,
-            poh_recorder,
-            identity_notifiers,
-        );
-
-        wait_for_bam_connection(&bam_enabled).await;
+        wait_for_bam_connection(&manager.bam_enabled).await;
 
         server.send_heartbeats.store(false, Ordering::Relaxed);
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(15) {
-            if !bam_is_connected(&bam_enabled) {
+            if !bam_is_connected(&manager.bam_enabled) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         assert!(
-            !bam_is_connected(&bam_enabled),
+            !bam_is_connected(&manager.bam_enabled),
             "bam_enabled should be false"
         );
 
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
+        manager.shutdown();
     }
 
     #[tokio::test]
     async fn test_bam_disabled_when_no_url() {
-        let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
-        let (dependencies, outbound_receiver) =
-            create_test_bam_dependencies(cluster_info, bank_forks);
-        let bam_enabled = dependencies.bam_enabled.clone();
-
-        let bam_url = Arc::new(ArcSwap::from_pointee(None));
-        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
-
-        let _manager = BamManager::new(
-            exit.clone(),
-            bam_url,
-            dependencies,
-            outbound_receiver,
-            poh_recorder,
-            identity_notifiers,
-        );
+        let manager = TestManager::start(None);
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         assert!(
-            !bam_is_connected(&bam_enabled),
+            !bam_is_connected(&manager.bam_enabled),
             "bam_enabled should remain false"
         );
 
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
+        manager.shutdown();
     }
 
     #[tokio::test]
@@ -881,76 +789,35 @@ mod bam_manager_tests {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
         let server1 =
             start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
-        let server2 =
-            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
+        let server2 = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
-        let (dependencies, outbound_receiver) =
-            create_test_bam_dependencies(cluster_info, bank_forks);
-        let bam_enabled = dependencies.bam_enabled.clone();
+        let manager = TestManager::start(Some(server1.addr));
 
-        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
-            "http://{}",
-            server1.addr
-        ))));
-        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
+        wait_for_bam_connection(&manager.bam_enabled).await;
 
-        let _manager = BamManager::new(
-            exit.clone(),
-            bam_url.clone(),
-            dependencies,
-            outbound_receiver,
-            poh_recorder,
-            identity_notifiers,
-        );
-
-        wait_for_bam_connection(&bam_enabled).await;
-
-        bam_url.store(Arc::new(Some(format!("http://{}", server2.addr))));
+        manager
+            .bam_url
+            .store(Arc::new(Some(format!("http://{}", server2.addr))));
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        wait_for_bam_connection(&bam_enabled).await;
+        wait_for_bam_connection(&manager.bam_enabled).await;
 
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
+        manager.shutdown();
     }
 
     #[tokio::test]
     async fn test_identity_change_disconnects_before_cluster_info_updates() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server =
-            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
-        let (dependencies, outbound_receiver) =
-            create_test_bam_dependencies(cluster_info.clone(), bank_forks);
-        let bam_enabled = dependencies.bam_enabled.clone();
+        let manager = TestManager::start(Some(server.addr));
 
-        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
-            "http://{}",
-            server.addr
-        ))));
-        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
-
-        let _manager = BamManager::new(
-            exit.clone(),
-            bam_url,
-            dependencies,
-            outbound_receiver,
-            poh_recorder,
-            identity_notifiers.clone(),
-        );
-
-        wait_for_bam_connection(&bam_enabled).await;
+        wait_for_bam_connection(&manager.bam_enabled).await;
 
         let new_identity = Keypair::new();
         {
-            let notifiers = identity_notifiers.read().unwrap();
+            let notifiers = manager.identity_notifiers.read().unwrap();
             let (_, notifier) = (&*notifiers)
                 .into_iter()
                 .find(|(updater_type, _)| **updater_type == KeyUpdaterType::BamConnection)
@@ -962,55 +829,33 @@ mod bam_manager_tests {
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
-            if bam_state(&bam_enabled) == BamConnectionState::Disconnected {
+            if bam_state(&manager.bam_enabled) == BamConnectionState::Disconnected {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert_eq!(
-            bam_state(&bam_enabled),
+            bam_state(&manager.bam_enabled),
             BamConnectionState::Disconnected,
             "bam_enabled should flip to disconnected immediately after identity change"
         );
 
-        cluster_info.set_keypair(Arc::new(new_identity));
+        manager.cluster_info.set_keypair(Arc::new(new_identity));
 
-        wait_for_bam_connection(&bam_enabled).await;
+        wait_for_bam_connection(&manager.bam_enabled).await;
 
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
+        manager.shutdown();
     }
 
     #[tokio::test]
     async fn test_block_builder_fee_info_updated() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server =
-            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
-        let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
-        let (dependencies, outbound_receiver) =
-            create_test_bam_dependencies(cluster_info, bank_forks);
-        let block_builder_fee_info = dependencies.block_builder_fee_info.clone();
-        let bam_enabled = dependencies.bam_enabled.clone();
+        let manager = TestManager::start(Some(server.addr));
+        let block_builder_fee_info = &manager.block_builder_fee_info;
 
-        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
-            "http://{}",
-            server.addr
-        ))));
-        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
-
-        let _manager = BamManager::new(
-            exit.clone(),
-            bam_url,
-            dependencies,
-            outbound_receiver,
-            poh_recorder,
-            identity_notifiers,
-        );
-
-        wait_for_bam_connection(&bam_enabled).await;
+        wait_for_bam_connection(&manager.bam_enabled).await;
         assert_eq!(block_builder_fee_info.load().block_builder_commission, 10);
 
         server.config.lock().unwrap().builder_commission = 20;
@@ -1022,7 +867,6 @@ mod bam_manager_tests {
         }
         assert_eq!(block_builder_fee_info.load().block_builder_commission, 20);
 
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
+        manager.shutdown();
     }
 }

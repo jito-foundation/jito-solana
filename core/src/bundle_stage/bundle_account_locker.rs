@@ -73,21 +73,15 @@ impl BundleAccountLocks {
     ) {
         for transaction_lock in transaction_locks {
             for (acc, writable) in transaction_lock {
-                if writable {
-                    let entry = self.write_locks.entry(*acc);
-                    if let Entry::Occupied(mut entry) = entry {
-                        *entry.get_mut() = entry.get().saturating_sub(1);
-                        if *entry.get() == 0 {
-                            entry.remove();
-                        }
-                    }
+                let locks = if writable {
+                    &mut self.write_locks
                 } else {
-                    let entry = self.read_locks.entry(*acc);
-                    if let Entry::Occupied(mut entry) = entry {
-                        *entry.get_mut() = entry.get().saturating_sub(1);
-                        if *entry.get() == 0 {
-                            entry.remove();
-                        }
+                    &mut self.read_locks
+                };
+                if let Entry::Occupied(mut entry) = locks.entry(*acc) {
+                    *entry.get_mut() = entry.get().saturating_sub(1);
+                    if *entry.get() == 0 {
+                        entry.remove();
                     }
                 }
             }
@@ -165,10 +159,14 @@ impl BundleAccountLocker {
 mod tests {
     use {
         crate::{
-            banking_stage::transaction_scheduler::receive_and_buffer::TransactionViewReceiveAndBuffer,
+            banking_stage::transaction_scheduler::{
+                receive_and_buffer::TransactionViewReceiveAndBuffer,
+                transaction_state_container::RuntimeTransactionView,
+            },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         ahash::HashMap,
+        solana_genesis_config::GenesisConfig,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::BytesPacket,
@@ -177,8 +175,39 @@ mod tests {
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::versioned::VersionedTransaction,
-        std::{collections::HashSet, sync::Arc},
+        std::collections::HashSet,
     };
+
+    fn scheduled_transfer(
+        bank: &Bank,
+        genesis_config: &GenesisConfig,
+        from: &Keypair,
+        to: &Pubkey,
+    ) -> Vec<RuntimeTransactionView> {
+        let tx = VersionedTransaction::from(transfer(from, to, 1, genesis_config.hash()));
+        let packet = BytesPacket::from_data(&tx).unwrap();
+        let mut tx = TransactionViewReceiveAndBuffer::try_handle_packet(
+            bytes::Bytes::copy_from_slice(packet.data(..).unwrap()),
+            bank,
+            bank,
+            bank.get_transaction_account_lock_limits(),
+            &HashSet::default(),
+        )
+        .unwrap();
+        vec![tx.take_transaction_for_scheduling().0]
+    }
+
+    fn assert_locks<const N: usize>(locker: &BundleAccountLocker, write_locks: [Pubkey; N]) {
+        let locks = locker.account_locks();
+        assert_eq!(
+            locks.write_locks().keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from_iter(write_locks)
+        );
+        assert_eq!(
+            locks.read_locks().keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from_iter([solana_system_interface::program::id()])
+        );
+    }
 
     #[test]
     fn test_simple_lock_bundles() {
@@ -193,117 +222,21 @@ mod tests {
 
         let kp0 = Keypair::new();
         let kp1 = Keypair::new();
+        let mint = mint_keypair.pubkey();
 
-        let tx0 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp0.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
-        let tx1 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp1.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
-
-        let tx0_data = Arc::new(
-            BytesPacket::from_data(&tx0)
-                .unwrap()
-                .data(..)
-                .unwrap()
-                .to_vec(),
-        );
-
-        let tx1_data = Arc::new(
-            BytesPacket::from_data(&tx1)
-                .unwrap()
-                .data(..)
-                .unwrap()
-                .to_vec(),
-        );
-
-        let mut tx0 = TransactionViewReceiveAndBuffer::try_handle_packet(
-            bytes::Bytes::from(tx0_data.as_ref().clone()),
-            &bank,
-            &bank,
-            bank.get_transaction_account_lock_limits(),
-            &HashSet::default(),
-        )
-        .unwrap();
-        let tx0 = vec![tx0.take_transaction_for_scheduling().0];
-
-        let mut tx1 = TransactionViewReceiveAndBuffer::try_handle_packet(
-            bytes::Bytes::from(tx1_data.as_ref().clone()),
-            &bank,
-            &bank,
-            bank.get_transaction_account_lock_limits(),
-            &HashSet::default(),
-        )
-        .unwrap();
-        let tx1 = vec![tx1.take_transaction_for_scheduling().0];
+        let tx0 = scheduled_transfer(&bank, &genesis_config, &mint_keypair, &kp0.pubkey());
+        let tx1 = scheduled_transfer(&bank, &genesis_config, &mint_keypair, &kp1.pubkey());
 
         bundle_account_locker.lock_bundle(&tx0, &bank).unwrap();
 
-        assert_eq!(
-            bundle_account_locker
-                .account_locks()
-                .write_locks()
-                .keys()
-                .cloned()
-                .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey()])
-        );
-        assert_eq!(
-            bundle_account_locker
-                .account_locks()
-                .read_locks()
-                .keys()
-                .cloned()
-                .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([solana_system_interface::program::id()])
-        );
+        assert_locks(&bundle_account_locker, [mint, kp0.pubkey()]);
 
         bundle_account_locker.lock_bundle(&tx1, &bank).unwrap();
-        assert_eq!(
-            bundle_account_locker
-                .account_locks()
-                .write_locks()
-                .keys()
-                .cloned()
-                .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp1.pubkey()])
-        );
-        assert_eq!(
-            bundle_account_locker
-                .account_locks()
-                .read_locks()
-                .keys()
-                .cloned()
-                .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([solana_system_interface::program::id()])
-        );
+        assert_locks(&bundle_account_locker, [mint, kp0.pubkey(), kp1.pubkey()]);
 
         bundle_account_locker.unlock_bundle(&tx0, &bank).unwrap();
 
-        assert_eq!(
-            bundle_account_locker
-                .account_locks()
-                .write_locks()
-                .keys()
-                .cloned()
-                .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
-        );
-        assert_eq!(
-            bundle_account_locker
-                .account_locks()
-                .read_locks()
-                .keys()
-                .cloned()
-                .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([solana_system_interface::program::id()])
-        );
+        assert_locks(&bundle_account_locker, [mint, kp1.pubkey()]);
 
         bundle_account_locker.unlock_bundle(&tx1, &bank).unwrap();
 
@@ -335,51 +268,8 @@ mod tests {
         let kp0 = Keypair::new();
         let kp1 = Keypair::new();
 
-        let tx0 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp0.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
-        let tx1 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp1.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
-        let tx0_data = Arc::new(
-            BytesPacket::from_data(&tx0)
-                .unwrap()
-                .data(..)
-                .unwrap()
-                .to_vec(),
-        );
-        let tx1_data = Arc::new(
-            BytesPacket::from_data(&tx1)
-                .unwrap()
-                .data(..)
-                .unwrap()
-                .to_vec(),
-        );
-
-        let mut tx0 = TransactionViewReceiveAndBuffer::try_handle_packet(
-            bytes::Bytes::from(tx0_data.as_ref().clone()),
-            &bank,
-            &bank,
-            bank.get_transaction_account_lock_limits(),
-            &HashSet::default(),
-        )
-        .unwrap();
-        let tx0 = vec![tx0.take_transaction_for_scheduling().0];
-        let mut tx1 = TransactionViewReceiveAndBuffer::try_handle_packet(
-            bytes::Bytes::from(tx1_data.as_ref().clone()),
-            &bank,
-            &bank,
-            bank.get_transaction_account_lock_limits(),
-            &HashSet::default(),
-        )
-        .unwrap();
-        let tx1 = vec![tx1.take_transaction_for_scheduling().0];
+        let tx0 = scheduled_transfer(&bank, &genesis_config, &mint_keypair, &kp0.pubkey());
+        let tx1 = scheduled_transfer(&bank, &genesis_config, &mint_keypair, &kp1.pubkey());
 
         bundle_account_locker.lock_bundle(&tx0, &bank).unwrap();
         bundle_account_locker.lock_bundle(&tx1, &bank).unwrap();
