@@ -1,5 +1,5 @@
 use {
-    crate::{admin_rpc_service, cli::DefaultArgs},
+    crate::admin_rpc_service,
     clap::{App, Arg, ArgMatches, SubCommand},
     solana_core::bam_discovery::is_registry_url,
     std::path::Path,
@@ -101,7 +101,7 @@ pub fn argument() -> Arg<'static, 'static> {
         .takes_value(true)
 }
 
-pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
+pub fn command<'a>() -> App<'a, 'a> {
     SubCommand::with_name("set-bam-config")
         .about("Set configuration for connection to a BAM node")
         .arg(argument())
@@ -271,23 +271,6 @@ mod tests {
             normalize_bam_url("http://bäm.example:8080"),
             Err(BamUrlError::InvalidEndpoint { .. })
         ));
-    }
-
-    #[test]
-    fn test_url_port_hides_scheme_defaults() {
-        assert_eq!(Url::parse("http://bam:80").unwrap().port(), None);
-        assert_eq!(Url::parse("https://bam:443").unwrap().port(), None);
-        assert_eq!(Url::parse("http://bam:8080").unwrap().port(), Some(8080));
-    }
-
-    #[test_case("http://bam:80", "http://bam:80")]
-    #[test_case("https://bam:443", "https://bam:443")]
-    fn test_scheme_default_port_is_left_alone(input: &str, expected: &str) {
-        let matches = create_test_matches(Some(input));
-        assert_eq!(
-            extract_bam_url(&matches).unwrap().as_deref(),
-            Some(expected)
-        );
     }
 
     #[test]

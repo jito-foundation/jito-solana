@@ -1,7 +1,15 @@
 use {
-    solana_bundle::derive_bundle_id,
-    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
+    itertools::Itertools, solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
 };
+
+pub fn derive_bundle_id(transactions: &[impl TransactionWithMeta]) -> String {
+    let signatures = transactions.iter().map(|tx| tx.signature()).join(",");
+    solana_sha256_hasher::hash(signatures.as_bytes())
+        .to_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 #[derive(Debug)]
 pub struct SanitizedBundle<Tx: TransactionWithMeta> {

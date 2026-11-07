@@ -1,20 +1,19 @@
 use {
     crate::{
         admin_rpc_service,
-        cli::DefaultArgs,
         commands::{Result, jito_args},
     },
     clap::{App, ArgMatches, SubCommand, values_t_or_exit},
     std::path::Path,
 };
 
-pub fn shred_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
+pub fn shred_receiver_command<'a>() -> App<'a, 'a> {
     SubCommand::with_name("set-shred-receiver-address")
         .about("Set leader-broadcast shred receiver address(es)")
         .arg(jito_args::shred_receiver_address().required(true))
 }
 
-pub fn shred_retransmit_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
+pub fn shred_retransmit_receiver_command<'a>() -> App<'a, 'a> {
     SubCommand::with_name("set-shred-retransmit-receiver-address")
         .about("Set TVU retransmit-stage shred receiver address(es)")
         .arg(jito_args::shred_retransmit_receiver_address().required(true))

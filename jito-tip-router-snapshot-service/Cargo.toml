@@ -31,7 +31,5 @@ solana-vote = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-agave-feature-set = { path = "../feature-set", features = ["agave-unstable-api"] }
 solana-runtime = { path = "../runtime", features = ["agave-unstable-api", "dev-context-only-utils"] }
-solana-signer = { workspace = true }
 tempfile = { workspace = true }

@@ -11,7 +11,6 @@ use {
     },
     solana_perf::packet::PacketBatch,
     std::{
-        fmt,
         net::SocketAddr,
         sync::{
             Arc,
@@ -54,48 +53,18 @@ impl FetchStageManager {
         my_fallback_contact_info: contact_info::ContactInfo,
         bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
     ) -> Self {
-        let t_hdl = Self::start(
-            cluster_info,
-            relayer_heartbeat_rx,
-            packet_intercept_rx,
-            packet_tx,
-            exit,
-            bam_enabled,
-            my_fallback_contact_info,
-            bam_tpu_info,
-        );
-
-        Self { t_hdl }
-    }
-
-    fn start(
-        cluster_info: Arc<ClusterInfo>,
-        relayer_heartbeat_rx: Receiver<HeartbeatEvent>,
-        packet_intercept_rx: Receiver<PacketBatch>,
-        packet_tx: agave_wake_channel::Sender<PacketBatch>,
-        exit: Arc<AtomicBool>,
-        bam_enabled: Arc<AtomicU8>,
-        my_fallback_contact_info: contact_info::ContactInfo,
-        bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
-    ) -> JoinHandle<()> {
-        Builder::new()
+        let t_hdl = Builder::new()
             .name("fetch-stage-manager".into())
             .spawn(move || {
-                // Save original TPU info.
-                let original_tpu_info = (
-                    my_fallback_contact_info.tpu(Protocol::QUIC).unwrap(),
-                    my_fallback_contact_info
-                        .tpu_forwards(Protocol::QUIC)
-                        .unwrap(),
-                );
-
                 // Initialize the 'brain of the operation'
                 let mut tpu_state_machine = FetchStageTpuStateMachine::new(
                     packet_tx,
                     bam_enabled.clone(),
                     TpuAddresses {
-                        tpu_addr: original_tpu_info.0,
-                        tpu_forward_addr: original_tpu_info.1,
+                        tpu_addr: my_fallback_contact_info.tpu(Protocol::QUIC).unwrap(),
+                        tpu_forward_addr: my_fallback_contact_info
+                            .tpu_forwards(Protocol::QUIC)
+                            .unwrap(),
                     },
                     bam_tpu_info,
                     cluster_info,
@@ -127,7 +96,9 @@ impl FetchStageManager {
                     }
                 }
             })
-            .unwrap()
+            .unwrap();
+
+        Self { t_hdl }
     }
 
     pub fn join(self) -> thread::Result<()> {
@@ -175,17 +146,6 @@ enum TpuConnectionType {
     Original,
     Relayer,
     Bam,
-}
-
-impl fmt::Display for TpuConnectionType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            TpuConnectionType::Original => "Original",
-            TpuConnectionType::Relayer => "Relayer",
-            TpuConnectionType::Bam => "Bam",
-        };
-        write!(f, "{s}")
-    }
 }
 
 struct FetchStageTpuStateMachine {
@@ -344,10 +304,10 @@ impl FetchStageTpuStateMachine {
                 "tpu_state_machine_tick",
                 (
                     "current_tpu",
-                    self.current_tpu_state.tpu_type.to_string(),
+                    format!("{:?}", self.current_tpu_state.tpu_type),
                     String
                 ),
-                ("previous_tpu", prev_state.tpu_type.to_string(), String)
+                ("previous_tpu", format!("{:?}", prev_state.tpu_type), String)
             );
             self.last_tpu_report = Instant::now();
         }
@@ -467,44 +427,32 @@ mod tests {
         ))
     }
 
-    fn check_brain(
-        brain: &FetchStageTpuStateMachine,
-        expected_tpu_type: TpuConnectionType,
-        expected_addr: &SocketAddr,
-        expected_fwd_addr: &SocketAddr,
-    ) {
-        assert_eq!(brain.current_tpu_state.tpu_type, expected_tpu_type);
-        assert_eq!(brain.current_tpu_state.addr, *expected_addr);
-        assert_eq!(brain.current_tpu_state.fwd_addr, *expected_fwd_addr);
-    }
-
-    fn check_cluster_info(
+    fn check_state(
+        brain: &mut FetchStageTpuStateMachine,
         cluster_info: &ClusterInfo,
-        expected_addr: &SocketAddr,
-        expected_fwd_addr: &SocketAddr,
+        packet_rx: &agave_wake_channel::Receiver<PacketBatch>,
+        expected: TpuState,
     ) {
+        assert_eq!(brain.current_tpu_state.tpu_type, expected.tpu_type);
+        assert_eq!(brain.current_tpu_state.addr, expected.addr);
+        assert_eq!(brain.current_tpu_state.fwd_addr, expected.fwd_addr);
+
         assert_eq!(
             cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap(),
-            *expected_addr
+            expected.addr
         );
         assert_eq!(
             cluster_info
                 .my_contact_info()
                 .tpu_forwards(Protocol::QUIC)
                 .unwrap(),
-            *expected_fwd_addr
+            expected.fwd_addr
         );
-    }
 
-    fn check_sending_packet(
-        brain: &mut FetchStageTpuStateMachine,
-        packet_rx: &agave_wake_channel::Receiver<PacketBatch>,
-        should_send: bool,
-    ) {
         let packets_forwarded = brain.metrics.packets_forwarded;
         let pkt = PacketBatch::from(vec![BytesPacket::empty(); 3]);
         assert!(brain.handle_packet_batch(Ok(pkt.clone())));
-        if should_send {
+        if expected.tpu_type == TpuConnectionType::Original {
             assert_eq!(packet_rx.recv().unwrap(), pkt);
             assert_eq!(brain.metrics.packets_forwarded, packets_forwarded + 3);
         } else {
@@ -567,29 +515,22 @@ mod tests {
     fn test_original_to_relayer_and_back_switch() {
         let TestContext {
             cluster_info,
-            bam_enabled: _,
             original_tpu_info,
-            bam_tpu_info: _,
             heartbeat_check_interval,
             relayer_tpu_enable_delay,
             _packet_tx,
             packet_rx,
             mut brain,
+            ..
         } = setup_test();
+        let original = TpuState {
+            tpu_type: TpuConnectionType::Original,
+            addr: original_tpu_info.tpu_addr,
+            fwd_addr: original_tpu_info.tpu_forward_addr,
+        };
 
         // Initially should be original and packets should be forwarded
-        check_brain(
-            &brain,
-            TpuConnectionType::Original,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, true);
+        check_state(&mut brain, &cluster_info, &packet_rx, original);
 
         // Simulate relayer heartbeat
         let relayer_tpu_addr: SocketAddr = "127.0.0.1:6000".parse().unwrap();
@@ -600,18 +541,7 @@ mod tests {
         // Should not switch yet (however we should start tracking it and packets should still be forwarded
         assert!(brain.state_machine_tick());
         assert!(brain.relayer_info.is_some());
-        check_brain(
-            &brain,
-            TpuConnectionType::Original,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, true);
+        check_state(&mut brain, &cluster_info, &packet_rx, original);
 
         // Wait enough time to exceed relayer_tpu_enable_delay
         thread::sleep(relayer_tpu_enable_delay.saturating_mul(2));
@@ -619,39 +549,18 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
-        let expected_relayer_addr =
-            SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
-        let expected_relayer_fwd_addr =
-            SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
-        check_brain(
-            &brain,
-            TpuConnectionType::Relayer,
-            &expected_relayer_addr,
-            &expected_relayer_fwd_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &expected_relayer_addr,
-            &expected_relayer_fwd_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, false);
+        let expected_relayer = TpuState {
+            tpu_type: TpuConnectionType::Relayer,
+            addr: SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6),
+            fwd_addr: SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6),
+        };
+        check_state(&mut brain, &cluster_info, &packet_rx, expected_relayer);
 
         // Simulate relayer heartbeat timeout by waiting longer than heartbeat_check_interval
         thread::sleep(heartbeat_check_interval.saturating_mul(2));
         assert!(brain.state_machine_tick());
         // Should have switched back to original and packets should be forwarded
-        check_brain(
-            &brain,
-            TpuConnectionType::Original,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, true);
+        check_state(&mut brain, &cluster_info, &packet_rx, original);
     }
 
     #[test]
@@ -661,26 +570,19 @@ mod tests {
             bam_enabled,
             original_tpu_info,
             bam_tpu_info,
-            heartbeat_check_interval: _,
-            relayer_tpu_enable_delay: _,
             _packet_tx,
             packet_rx,
             mut brain,
+            ..
         } = setup_test();
+        let original = TpuState {
+            tpu_type: TpuConnectionType::Original,
+            addr: original_tpu_info.tpu_addr,
+            fwd_addr: original_tpu_info.tpu_forward_addr,
+        };
 
         // Initially should be original and packets should be forwarded
-        check_brain(
-            &brain,
-            TpuConnectionType::Original,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, true);
+        check_state(&mut brain, &cluster_info, &packet_rx, original);
 
         // Enable BAM and set BAM TPU info
         bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
@@ -690,35 +592,19 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to BAM and packets should NOT be forwarded
-        let expected_bam_addr = SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6);
-        let expected_bam_fwd_addr =
-            SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
-        check_brain(
-            &brain,
-            TpuConnectionType::Bam,
-            &expected_bam_addr,
-            &expected_bam_fwd_addr,
-        );
-        check_cluster_info(&cluster_info, &expected_bam_addr, &expected_bam_fwd_addr);
-        check_sending_packet(&mut brain, &packet_rx, false);
+        let expected_bam = TpuState {
+            tpu_type: TpuConnectionType::Bam,
+            addr: SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6),
+            fwd_addr: SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6),
+        };
+        check_state(&mut brain, &cluster_info, &packet_rx, expected_bam);
 
         // Disable BAM
         bam_enabled.store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
         assert!(brain.state_machine_tick());
 
         // Should have switched back to original and packets should be forwarded
-        check_brain(
-            &brain,
-            TpuConnectionType::Original,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &original_tpu_info.tpu_addr,
-            &original_tpu_info.tpu_forward_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, true);
+        check_state(&mut brain, &cluster_info, &packet_rx, original);
     }
 
     #[test]
@@ -726,13 +612,12 @@ mod tests {
         let TestContext {
             cluster_info,
             bam_enabled,
-            original_tpu_info: _,
             bam_tpu_info,
-            heartbeat_check_interval: _,
             relayer_tpu_enable_delay,
             _packet_tx,
             packet_rx,
             mut brain,
+            ..
         } = setup_test();
 
         // Enable BAM and set BAM TPU info
@@ -743,17 +628,12 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should be BAM and packets should NOT be forwarded
-        let expected_bam_addr = SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6);
-        let expected_bam_fwd_addr =
-            SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
-        check_brain(
-            &brain,
-            TpuConnectionType::Bam,
-            &expected_bam_addr,
-            &expected_bam_fwd_addr,
-        );
-        check_cluster_info(&cluster_info, &expected_bam_addr, &expected_bam_fwd_addr);
-        check_sending_packet(&mut brain, &packet_rx, false);
+        let expected_bam = TpuState {
+            tpu_type: TpuConnectionType::Bam,
+            addr: SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6),
+            fwd_addr: SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6),
+        };
+        check_state(&mut brain, &cluster_info, &packet_rx, expected_bam);
 
         // Simulate relayer heartbeat
         let relayer_tpu_addr: SocketAddr = "127.0.0.1:7002".parse().unwrap();
@@ -765,36 +645,19 @@ mod tests {
         std::thread::sleep(relayer_tpu_enable_delay.saturating_mul(2));
         assert!(brain.handle_relayer_message(relayer_heartbeat));
         assert!(brain.state_machine_tick());
-        check_brain(
-            &brain,
-            TpuConnectionType::Bam,
-            &expected_bam_addr,
-            &expected_bam_fwd_addr,
-        );
-        check_cluster_info(&cluster_info, &expected_bam_addr, &expected_bam_fwd_addr);
-        check_sending_packet(&mut brain, &packet_rx, false);
+        check_state(&mut brain, &cluster_info, &packet_rx, expected_bam);
 
         // Disable BAM
         bam_enabled.store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
-        let expected_relayer_addr =
-            SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
-        let expected_relayer_fwd_addr =
-            SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
-        check_brain(
-            &brain,
-            TpuConnectionType::Relayer,
-            &expected_relayer_addr,
-            &expected_relayer_fwd_addr,
-        );
-        check_cluster_info(
-            &cluster_info,
-            &expected_relayer_addr,
-            &expected_relayer_fwd_addr,
-        );
-        check_sending_packet(&mut brain, &packet_rx, false);
+        let expected_relayer = TpuState {
+            tpu_type: TpuConnectionType::Relayer,
+            addr: SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6),
+            fwd_addr: SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6),
+        };
+        check_state(&mut brain, &cluster_info, &packet_rx, expected_relayer);
     }
 
     #[test]

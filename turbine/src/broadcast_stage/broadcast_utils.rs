@@ -335,6 +335,23 @@ mod tests {
     const LAST_TICK_HEIGHT: u64 = 1;
     const MAX_TICK_HEIGHT: u64 = 10;
 
+    // Upstream's tests all treat bank1 as the slot being broadcast.
+    fn recv_slot_components(
+        receiver: &Receiver<WorkingBankMessage>,
+        carryover_message: &mut Option<WorkingBankMessage>,
+        process_stats: &mut ProcessShredsStats,
+    ) -> Result<ReceiveResults> {
+        super::recv_slot_components(receiver, carryover_message, process_stats, 1)
+    }
+
+    fn recv_slot_components_maybe_empty(
+        receiver: &Receiver<WorkingBankMessage>,
+        carryover_message: &mut Option<WorkingBankMessage>,
+        process_stats: &mut ProcessShredsStats,
+    ) -> Result<Option<ReceiveResults>> {
+        super::recv_slot_components_maybe_empty(receiver, carryover_message, process_stats, 1)
+    }
+
     #[test]
     fn test_recv_slot_components_1() {
         let (genesis_config, bank0, bank_forks, tx) = setup_test();
@@ -361,12 +378,9 @@ mod tests {
 
         let mut res_entries = vec![];
         let mut last_tick_height = 0;
-        while let Ok(result) = recv_slot_components(
-            &r,
-            &mut None,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        ) {
+        while let Ok(result) =
+            recv_slot_components(&r, &mut None, &mut ProcessShredsStats::default())
+        {
             assert_eq!(result.bank.slot(), bank1.slot());
             last_tick_height = result.last_tick_height;
             if let BroadcastItem::Component(BlockComponent::EntryBatch(entries)) = result.item {
@@ -400,7 +414,7 @@ mod tests {
         let mut process_stats = ProcessShredsStats::default();
         // current_slot != bank.slot() means this is the first entry of a new slot.
         let result =
-            recv_slot_components(&r, &mut carryover, &mut process_stats, Slot::MAX).unwrap();
+            super::recv_slot_components(&r, &mut carryover, &mut process_stats, Slot::MAX).unwrap();
 
         assert!(matches!(
             result.item,
@@ -417,7 +431,8 @@ mod tests {
         drop(s);
         let mut process_stats = ProcessShredsStats::default();
         let result =
-            recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot()).unwrap();
+            super::recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot())
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
@@ -461,7 +476,8 @@ mod tests {
             let mut carryover = None;
             let mut process_stats = ProcessShredsStats::default();
             let result =
-                recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot()).unwrap();
+                super::recv_slot_components(&r, &mut carryover, &mut process_stats, bank1.slot())
+                    .unwrap();
             assert_eq!(result.bank.slot(), bank2.slot());
             assert_eq!(result.last_tick_height, 2);
             assert!(matches!(
@@ -498,13 +514,8 @@ mod tests {
             .collect();
 
         let mut carryover = None;
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
 
         assert_eq!(result.last_tick_height, 1);
         assert!(matches!(
@@ -562,12 +573,9 @@ mod tests {
         let mut res_entries = vec![];
         let mut last_tick_height = 0;
         let mut bank_slot = 0;
-        while let Ok(result) = recv_slot_components(
-            &r,
-            &mut None,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        ) {
+        while let Ok(result) =
+            recv_slot_components(&r, &mut None, &mut ProcessShredsStats::default())
+        {
             bank_slot = result.bank.slot();
             last_tick_height = result.last_tick_height;
             if let BroadcastItem::Component(BlockComponent::EntryBatch(entries)) = result.item {
@@ -604,13 +612,8 @@ mod tests {
             .unwrap();
 
         let mut carryover = None;
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
 
         assert!(matches!(
             result.item,
@@ -619,13 +622,8 @@ mod tests {
         assert_eq!(result.last_tick_height, 2);
         assert!(carryover.is_some());
 
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::BlockMarker(_))
@@ -662,13 +660,8 @@ mod tests {
         let mut carryover = None;
 
         // First call should return only entry1
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 1
@@ -679,13 +672,8 @@ mod tests {
         assert_eq!(result.last_tick_height, 1);
 
         // Second call should return the marker
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::BlockMarker(_))
@@ -693,13 +681,8 @@ mod tests {
         assert_eq!(result.last_tick_height, 2);
 
         // Third call should return entry2
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 1
@@ -752,7 +735,6 @@ mod tests {
             &r,
             &mut carryover,
             &mut ProcessShredsStats::default(),
-            bank1.slot(),
         )
         .unwrap();
         assert!(result.is_none());
@@ -766,13 +748,8 @@ mod tests {
 
         // Verify that the outer function returns the carried-over marker.
         // last_tick_height must be 3 (from the marker), not 5 (stale value from bank1).
-        let result = recv_slot_components(
-            &r,
-            &mut carryover,
-            &mut ProcessShredsStats::default(),
-            bank1.slot(),
-        )
-        .unwrap();
+        let result =
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::BlockMarker(_))

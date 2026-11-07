@@ -91,20 +91,10 @@ instead of staying at slot 0. Invalid or conflicting overrides and missing
 prerequisites are also rejected. Without `--features-config`, genesis enables
 every feature in the build, with Alpenglow at genesis.
 
-## How It Works
-
-The tool spawns `agave-validator` processes as subprocesses, automatically handling:
-
-1. Genesis configuration with SPL programs
-2. Keypair generation and ledger setup
-3. Bootstrap node startup and coordination
-4. Validator process spawning and monitoring
-5. Shutdown on Ctrl+C or SIGTERM, which exits 0, or when a validator process exits, which exits 1
-
 ## Usage
 
-The cluster runs until you press Ctrl+C, send SIGTERM, or a validator process exits; a signal during startup stops it once
-startup finishes. All validator output is streamed to the console for debugging.
+The cluster runs until you press Ctrl+C or send SIGTERM, which exits 0, or a validator process exits, which exits 1; a
+signal during startup stops it once startup finishes. All validator output is streamed to the console for debugging.
 
 Use `--skip-last-validator` to omit starting the final validator (useful when running an alternate validator for testing
 purposes); the validator still receives stake/airdrop in genesis and remains in the leader schedule.

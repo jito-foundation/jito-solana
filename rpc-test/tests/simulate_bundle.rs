@@ -1,7 +1,7 @@
 use {
     reqwest::header::CONTENT_TYPE,
     serde_json::{Value, json},
-    solana_account_decoder::UiAccountEncoding,
+    solana_account_decoder::UiAccountEncoding::{self, Base58, Base64},
     solana_fee_calculator::FeeRateGovernor,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -21,7 +21,7 @@ use {
     solana_signer::Signer,
     solana_system_transaction as system_transaction,
     solana_test_validator::TestValidatorGenesis,
-    solana_transaction::TransactionError,
+    solana_transaction::{Transaction, TransactionError},
     solana_transaction_status::UiTransactionEncoding,
     std::assert_matches,
 };
@@ -35,6 +35,26 @@ fn bundle_transaction_inputs(rpc_client: &RpcClient) -> (Hash, u64) {
     )
 }
 
+fn single_transfer(rpc_client: &RpcClient, mint_keypair: &Keypair) -> Vec<Transaction> {
+    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
+    vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )]
+}
+
+fn accounts(
+    encoding: UiAccountEncoding,
+    addresses: &[impl ToString],
+) -> Option<RpcSimulateTransactionAccountsConfig> {
+    Some(RpcSimulateTransactionAccountsConfig {
+        encoding: Some(encoding),
+        addresses: addresses.iter().map(ToString::to_string).collect(),
+    })
+}
+
 fn bundle_config(transaction_count: usize) -> RpcSimulateBundleConfig {
     RpcSimulateBundleConfig {
         pre_execution_accounts_configs: vec![None; transaction_count],
@@ -46,7 +66,7 @@ fn bundle_config(transaction_count: usize) -> RpcSimulateBundleConfig {
     }
 }
 
-fn rpc_response_error(error: &ClientError) -> (i64, &str, &RpcResponseErrorData) {
+fn assert_invalid_params(error: &ClientError, expected_message: &str) {
     let ClientErrorKind::RpcError(RpcError::RpcResponseError {
         code,
         message,
@@ -55,7 +75,9 @@ fn rpc_response_error(error: &ClientError) -> (i64, &str, &RpcResponseErrorData)
     else {
         panic!("unexpected error: {error}");
     };
-    (*code, message, data)
+    assert_eq!(message, expected_message);
+    assert_eq!(*code, -32602);
+    assert_matches!(data, RpcResponseErrorData::Empty);
 }
 
 #[test]
@@ -75,7 +97,6 @@ fn test_simulate_bundle() {
     test_invalid_transaction_encoding(&rpc_client, &mint_keypair);
     test_wrong_pre_account_encoding(&rpc_client, &mint_keypair);
     test_wrong_post_account_encoding(&rpc_client, &mint_keypair);
-    test_replace_recent_blockhash_with_sig_verify(&rpc_client, &mint_keypair);
     test_bad_signature(&rpc_client, &mint_keypair);
     test_bad_pubkey_pre_accounts(&rpc_client, &mint_keypair);
     test_bad_pubkey_post_accounts(&rpc_client, &mint_keypair);
@@ -106,21 +127,14 @@ fn test_too_many_bundles(rpc_client: &RpcClient, mint_keypair: &Keypair) {
         .simulate_bundle_with_config(&transactions, RpcSimulateBundleConfig::default())
         .unwrap_err();
 
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(message, "bundle size too large, max 20 transactions");
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
+    assert_invalid_params(
+        &simulate_result,
+        "bundle size too large, max 20 transactions",
+    );
 }
 
 fn test_wrong_number_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
@@ -133,24 +147,14 @@ fn test_wrong_number_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair
         )
         .unwrap_err();
 
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "pre/post_execution_accounts_configs must be equal in length to the number of transactions"
+    assert_invalid_params(
+        &simulate_result,
+        "pre/post_execution_accounts_configs must be equal in length to the number of transactions",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_wrong_number_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
@@ -162,24 +166,14 @@ fn test_wrong_number_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypai
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "pre/post_execution_accounts_configs must be equal in length to the number of transactions"
+    assert_invalid_params(
+        &simulate_result,
+        "pre/post_execution_accounts_configs must be equal in length to the number of transactions",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_invalid_transaction_encoding(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
@@ -194,80 +188,48 @@ fn test_invalid_transaction_encoding(rpc_client: &RpcClient, mint_keypair: &Keyp
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "Base64 is the only supported encoding for transactions"
+    assert_invalid_params(
+        &simulate_result,
+        "Base64 is the only supported encoding for transactions",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_wrong_pre_account_encoding(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base58),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
+                pre_execution_accounts_configs: vec![accounts(Base58, &[mint_keypair.pubkey()])],
                 post_execution_accounts_configs: vec![None; transactions.len()],
                 ..bundle_config(transactions.len())
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "Base64 is the only supported encoding for pre-execution accounts"
+    assert_invalid_params(
+        &simulate_result,
+        "Base64 is the only supported encoding for pre-execution accounts",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_wrong_post_account_encoding(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
-                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base58),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
+                pre_execution_accounts_configs: vec![accounts(Base64, &[mint_keypair.pubkey()])],
+                post_execution_accounts_configs: vec![accounts(Base58, &[mint_keypair.pubkey()])],
                 ..bundle_config(transactions.len())
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "Base64 is the only supported encoding for post-execution accounts"
+    assert_invalid_params(
+        &simulate_result,
+        "Base64 is the only supported encoding for post-execution accounts",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_duplicate_transactions(rpc_client: &RpcClient, mint_keypair: &Keypair) {
@@ -282,154 +244,65 @@ fn test_duplicate_transactions(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     let simulate_result = rpc_client
         .simulate_bundle_with_config(&transactions, bundle_config(transactions.len()))
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(message, "duplicate transactions");
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
-}
-
-fn test_replace_recent_blockhash_with_sig_verify(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
-
-    let simulate_result = rpc_client
-        .simulate_bundle_with_config(
-            &transactions,
-            RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
-                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base58),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
-                transaction_encoding: Some(UiTransactionEncoding::Base64),
-                simulation_bank: Some(SimulationSlotConfig::Tip),
-                skip_sig_verify: true,
-                replace_recent_blockhash: true,
-            },
-        )
-        .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "Base64 is the only supported encoding for post-execution accounts"
-    );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
+    assert_invalid_params(&simulate_result, "duplicate transactions");
 }
 
 fn test_bad_signature(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let mut transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let mut transactions = single_transfer(rpc_client, mint_keypair);
     transactions.get_mut(0).unwrap().signatures[0] = Signature::default();
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
-                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
+                pre_execution_accounts_configs: vec![accounts(Base64, &[mint_keypair.pubkey()])],
+                post_execution_accounts_configs: vec![accounts(Base64, &[mint_keypair.pubkey()])],
                 ..bundle_config(transactions.len())
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "transaction signature is invalid: Transaction did not pass signature verification"
+    assert_invalid_params(
+        &simulate_result,
+        "transaction signature is invalid: Transaction did not pass signature verification",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_bad_pubkey_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec!["testing123".to_string()],
-                })],
-                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
+                pre_execution_accounts_configs: vec![accounts(Base64, &["testing123"])],
+                post_execution_accounts_configs: vec![accounts(Base64, &[mint_keypair.pubkey()])],
                 ..bundle_config(transactions.len())
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "invalid pubkey for pre/post accounts provided: testing123"
+    assert_invalid_params(
+        &simulate_result,
+        "invalid pubkey for pre/post accounts provided: testing123",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_bad_pubkey_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
-    let (latest_blockhash, rent) = bundle_transaction_inputs(rpc_client);
-
-    let transactions = vec![system_transaction::transfer(
-        mint_keypair,
-        &Pubkey::new_unique(),
-        rent,
-        latest_blockhash,
-    )];
+    let transactions = single_transfer(rpc_client, mint_keypair);
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string()],
-                })],
-                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec!["testing123".to_string()],
-                })],
+                pre_execution_accounts_configs: vec![accounts(Base64, &[mint_keypair.pubkey()])],
+                post_execution_accounts_configs: vec![accounts(Base64, &["testing123"])],
                 ..bundle_config(transactions.len())
             },
         )
         .unwrap_err();
-    let (code, message, data) = rpc_response_error(&simulate_result);
-    assert_eq!(
-        message,
-        "invalid pubkey for pre/post accounts provided: testing123"
+    assert_invalid_params(
+        &simulate_result,
+        "invalid pubkey for pre/post accounts provided: testing123",
     );
-    assert_eq!(code, -32602);
-    assert_matches!(data, &RpcResponseErrorData::Empty);
 }
 
 fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
@@ -445,18 +318,13 @@ fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
 
     let mint_balance = rpc_client.get_balance(&mint_keypair.pubkey()).unwrap();
 
+    let mint = mint_keypair.pubkey();
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string(), bob.pubkey().to_string()],
-                })],
-                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    addresses: vec![mint_keypair.pubkey().to_string(), bob.pubkey().to_string()],
-                })],
+                pre_execution_accounts_configs: vec![accounts(Base64, &[mint, bob.pubkey()])],
+                post_execution_accounts_configs: vec![accounts(Base64, &[mint, bob.pubkey()])],
                 ..bundle_config(transactions.len())
             },
         )
@@ -518,39 +386,18 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
 
     let mint_balance = rpc_client.get_balance(&mint_keypair.pubkey()).unwrap();
 
+    let mint = mint_keypair.pubkey();
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
                 pre_execution_accounts_configs: vec![
-                    Some(RpcSimulateTransactionAccountsConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        addresses: vec![mint_keypair.pubkey().to_string()],
-                    }),
-                    Some(RpcSimulateTransactionAccountsConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        addresses: vec![
-                            mint_keypair.pubkey().to_string(),
-                            bob.pubkey().to_string(),
-                        ],
-                    }),
+                    accounts(Base64, &[mint]),
+                    accounts(Base64, &[mint, bob.pubkey()]),
                 ],
                 post_execution_accounts_configs: vec![
-                    Some(RpcSimulateTransactionAccountsConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        addresses: vec![
-                            mint_keypair.pubkey().to_string(),
-                            bob.pubkey().to_string(),
-                        ],
-                    }),
-                    Some(RpcSimulateTransactionAccountsConfig {
-                        encoding: Some(UiAccountEncoding::Base64),
-                        addresses: vec![
-                            mint_keypair.pubkey().to_string(),
-                            bob.pubkey().to_string(),
-                            alice.pubkey().to_string(),
-                        ],
-                    }),
+                    accounts(Base64, &[mint, bob.pubkey()]),
+                    accounts(Base64, &[mint, bob.pubkey(), alice.pubkey()]),
                 ],
                 ..bundle_config(transactions.len())
             },
