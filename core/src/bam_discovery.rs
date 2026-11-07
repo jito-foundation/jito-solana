@@ -623,28 +623,12 @@ mod tests {
         assert_eq!(BamDiscovery::is_usable(&node), usable);
     }
 
-    #[test]
-    fn test_needs_pick_once_the_registry_drops_the_current_pick() {
-        let still_served = served_node("203.0.113.1");
-        assert!(BamDiscovery::needs_pick(
-            Some("https://203.0.113.9:50056"),
-            &[still_served]
-        ));
-    }
-
-    #[test]
-    fn test_no_pick_while_the_current_one_is_served() {
-        let served = served_node("203.0.113.1");
-        let url = served.url();
-        assert!(!BamDiscovery::needs_pick(Some(&url), &[served]));
-    }
-
-    #[test]
-    fn test_needs_pick_when_nothing_is_published() {
-        assert!(BamDiscovery::needs_pick(
-            None,
-            &[served_node("203.0.113.1")]
-        ));
+    #[test_case(Some("https://203.0.113.9:50056"), true ; "test_needs_pick_once_the_registry_drops_the_current_pick")]
+    #[test_case(Some("https://203.0.113.1:50056"), false ; "test_no_pick_while_the_current_one_is_served")]
+    #[test_case(None, true ; "test_needs_pick_when_nothing_is_published")]
+    fn test_needs_pick(current_url: Option<&str>, expected: bool) {
+        let served = [served_node("203.0.113.1")];
+        assert_eq!(BamDiscovery::needs_pick(current_url, &served), expected);
     }
 
     // BamManager alternates between these states when connection succeeds but the
@@ -756,61 +740,28 @@ mod tests {
 
     // After a re-probe the cursor is back at the best node while the published URL is still the
     // last node tried. Advancing then would skip the best node.
-    #[test]
-    fn test_rebuilt_ranking_is_not_the_current_pick() {
-        let ranked = vec![ranked_node("203.0.113.1"), ranked_node("203.0.113.2")];
-
-        assert!(!BamDiscovery::on_pick(
-            Some("https://203.0.113.9:50056"),
-            &ranked,
-            0
-        ));
-        assert!(BamDiscovery::on_pick(
-            Some("https://203.0.113.1:50056"),
-            &ranked,
-            0
-        ));
+    #[test_case(&["203.0.113.1", "203.0.113.2"], &[("https://203.0.113.9:50056", false), ("https://203.0.113.1:50056", true)] ; "test_rebuilt_ranking_is_not_the_current_pick")]
+    #[test_case(&[], &[("https://203.0.113.1:50056", false)] ; "test_empty_ranking_has_no_pick")]
+    fn test_on_pick(ranked_ips: &[&str], picks: &[(&str, bool)]) {
+        let ranked: Vec<_> = ranked_ips.iter().map(|ip| ranked_node(ip)).collect();
+        for (url, expected) in picks {
+            assert_eq!(BamDiscovery::on_pick(Some(url), &ranked, 0), *expected);
+        }
     }
 
-    #[test]
-    fn test_empty_ranking_has_no_pick() {
-        assert!(!BamDiscovery::on_pick(
-            Some("https://203.0.113.1:50056"),
-            &[],
-            0
-        ));
+    #[test_case(&[(0, 3, 1), (1, 3, 2)] ; "test_advance_steps_through_the_ranking")]
+    #[test_case(&[(2, 3, 0), (0, 1, 0)] ; "test_advance_wraps_at_the_end_of_the_ranking")]
+    #[test_case(&[(0, 0, 0)] ; "test_advance_on_an_empty_ranking_does_not_panic")]
+    fn test_advance(steps: &[(usize, usize, usize)]) {
+        for &(cursor, len, expected) in steps {
+            assert_eq!(BamDiscovery::advance(cursor, len), expected);
+        }
     }
 
-    #[test]
-    fn test_advance_steps_through_the_ranking() {
-        assert_eq!(BamDiscovery::advance(0, 3), 1);
-        assert_eq!(BamDiscovery::advance(1, 3), 2);
-    }
-
-    #[test]
-    fn test_advance_wraps_at_the_end_of_the_ranking() {
-        assert_eq!(BamDiscovery::advance(2, 3), 0);
-        assert_eq!(BamDiscovery::advance(0, 1), 0);
-    }
-
-    #[test]
-    fn test_advance_on_an_empty_ranking_does_not_panic() {
-        assert_eq!(BamDiscovery::advance(0, 0), 0);
-    }
-
-    #[test]
-    fn test_publish_stores_the_selected_url() {
-        let bam_url = ArcSwap::from_pointee(None);
-        BamDiscovery::publish(&bam_url, &ranked_node("203.0.113.1"));
-        assert_eq!(
-            bam_url.load_full().as_deref(),
-            Some("https://203.0.113.1:50056"),
-        );
-    }
-
-    #[test]
-    fn test_publish_replaces_a_different_url() {
-        let bam_url = ArcSwap::from_pointee(Some("https://203.0.113.9:50056".to_string()));
+    #[test_case(None ; "test_publish_stores_the_selected_url")]
+    #[test_case(Some("https://203.0.113.9:50056") ; "test_publish_replaces_a_different_url")]
+    fn test_publish_stores_the_url(current_url: Option<&str>) {
+        let bam_url = ArcSwap::from_pointee(current_url.map(str::to_string));
         BamDiscovery::publish(&bam_url, &ranked_node("203.0.113.1"));
         assert_eq!(
             bam_url.load_full().as_deref(),

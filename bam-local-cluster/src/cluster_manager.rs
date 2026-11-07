@@ -14,7 +14,6 @@ use {
         blockstore::create_new_ledger, blockstore_options::LedgerColumnOptions,
         genesis_utils::GenesisConfigInfo,
     },
-    solana_local_cluster::integration_tests::DEFAULT_NODE_STAKE,
     solana_native_token::LAMPORTS_PER_SOL,
     solana_program_binaries::spl_programs,
     solana_pubkey::Pubkey,
@@ -40,6 +39,9 @@ use {
         signal::unix::{Signal, SignalKind, signal},
     },
 };
+
+const DEFAULT_NODE_STAKE: u64 = 10 * LAMPORTS_PER_SOL;
+const DEFAULT_MINT_LAMPORTS: u64 = 10_000_000 * LAMPORTS_PER_SOL;
 
 pub struct BamValidator {
     process: Child,
@@ -385,7 +387,7 @@ impl BamLocalCluster {
                 })
             })
             .transpose()?
-            .unwrap_or(solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS);
+            .unwrap_or(DEFAULT_MINT_LAMPORTS);
         let genesis_config_info = Self::create_genesis_config_with_vote_accounts_and_cluster_type(
             mint_lamports,
             &vote_keypairs,

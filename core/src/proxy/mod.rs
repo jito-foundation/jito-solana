@@ -16,13 +16,12 @@ pub mod fetch_stage_manager;
 pub mod relayer_stage;
 
 use {
-    crate::tonic_endpoint,
     std::{
         net::{AddrParseError, SocketAddr},
         result,
     },
     thiserror::Error,
-    tonic::{Status, transport::Endpoint},
+    tonic::Status,
 };
 
 type Result<T> = result::Result<T, ProxyError>;
@@ -81,9 +80,6 @@ pub enum ProxyError {
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,
 
-    #[error("RelayerTimeout")]
-    RelayerEngineTimeout,
-
     #[error("RelayerConnectionError: {0:?}")]
     RelayerConnectionError(String),
 
@@ -111,14 +107,6 @@ fn sanitize_status_message_for_influx(input: &str) -> String {
         .filter(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | ' '))
         .take(SANITIZED_MESSAGE_LIMIT)
         .collect()
-}
-
-fn endpoint_from_url(
-    url: &str,
-    invalid_error: impl FnOnce() -> ProxyError,
-    tls_error: impl FnOnce() -> ProxyError,
-) -> Result<Endpoint> {
-    tonic_endpoint::endpoint_from_url_with_error(url, invalid_error, tls_error)
 }
 
 impl From<Status> for ProxyError {

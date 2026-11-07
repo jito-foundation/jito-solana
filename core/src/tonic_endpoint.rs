@@ -9,19 +9,6 @@ pub(crate) fn endpoint_from_url(url: &str) -> Result<Endpoint, tonic::transport:
     endpoint_from_url_with_tls_config(url, ClientTlsConfig::new().with_enabled_roots())
 }
 
-pub(crate) fn endpoint_from_url_with_error<E>(
-    url: &str,
-    invalid_error: impl FnOnce() -> E,
-    tls_error: impl FnOnce() -> E,
-) -> Result<Endpoint, E> {
-    endpoint_from_url_with_tls_config_and_error(
-        url,
-        ClientTlsConfig::new().with_enabled_roots(),
-        invalid_error,
-        tls_error,
-    )
-}
-
 fn endpoint_from_url_with_tls_config(
     url: &str,
     tls_config: ClientTlsConfig,
@@ -29,21 +16,6 @@ fn endpoint_from_url_with_tls_config(
     let mut endpoint = Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(TCP_KEEPALIVE));
     if url.starts_with("https") {
         endpoint = endpoint.tls_config(tls_config)?;
-    }
-    Ok(endpoint)
-}
-
-fn endpoint_from_url_with_tls_config_and_error<E>(
-    url: &str,
-    tls_config: ClientTlsConfig,
-    invalid_error: impl FnOnce() -> E,
-    tls_error: impl FnOnce() -> E,
-) -> Result<Endpoint, E> {
-    let mut endpoint = Endpoint::from_shared(url.to_owned())
-        .map_err(|_| invalid_error())?
-        .tcp_keepalive(Some(TCP_KEEPALIVE));
-    if url.starts_with("https") {
-        endpoint = endpoint.tls_config(tls_config).map_err(|_| tls_error())?;
     }
     Ok(endpoint)
 }
@@ -58,7 +30,6 @@ mod tests {
             auth_service_client::AuthServiceClient,
             auth_service_server::{AuthService, AuthServiceServer},
         },
-        rcgen::{CertifiedKey, generate_simple_self_signed},
         tokio::time::{Duration, timeout},
         tonic::{
             Request, Response, Status,
@@ -95,10 +66,33 @@ mod tests {
         }
     }
 
+    // Self-signed for `localhost`, valid until 2126. Generated once for these tests only.
+    const LOCALHOST_CERT_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBkzCCATigAwIBAgIUPHjJfWnCorCz23kjfpSUBe0plqUwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEwNzA1MzQzNloYDzIxMjYxMDE0
+MDUzNDM2WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAATQAGvtXceGym5oFZ6v1+wmuF0AFt7dFjbM62CHmc++iReKhOtQ1WmO
+XIKSqrVAPYjstqh40akSHCjwTG6iKgwwo2YwZDAdBgNVHQ4EFgQUUdjGCpc8xhHU
+tCdl5aw9Bug3wEkwHwYDVR0jBBgwFoAUUdjGCpc8xhHUtCdl5aw9Bug3wEkwFAYD
+VR0RBA0wC4IJbG9jYWxob3N0MAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwIDSQAw
+RgIhAJbeLEu94kxUEu5K4br2HltVMEw2A4/BJ4UrmmVQiyBZAiEA8RFoIvYJaLEK
+JNbHP9PXNBVUIvFzbiHdIefmOhz/iVM=
+-----END CERTIFICATE-----
+";
+    const LOCALHOST_KEY_PEM: &str = "\
+-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg552SooAK8VEMHHjc
+fhJPpSbrjmv0jJGgVtuATFWID2ehRANCAATQAGvtXceGym5oFZ6v1+wmuF0AFt7d
+FjbM62CHmc++iReKhOtQ1WmOXIKSqrVAPYjstqh40akSHCjwTG6iKgww
+-----END PRIVATE KEY-----
+";
+
     fn localhost_cert() -> (String, String) {
-        let CertifiedKey { cert, signing_key } =
-            generate_simple_self_signed(["localhost".to_string()]).unwrap();
-        (cert.pem(), signing_key.serialize_pem())
+        (
+            LOCALHOST_CERT_PEM.to_string(),
+            LOCALHOST_KEY_PEM.to_string(),
+        )
     }
 
     async fn start_tls_probe_server(cert_pem: String, key_pem: String) -> String {
@@ -185,14 +179,10 @@ mod tests {
         std::fs::write(std::env::var_os("SSL_CERT_FILE").unwrap(), &cert_pem).unwrap();
         let url = start_tls_probe_server(cert_pem, key_pem).await;
 
-        for endpoint in [
-            endpoint_from_url(&url).unwrap(),
-            endpoint_from_url_with_error(&url, || "invalid URL", || "invalid TLS config").unwrap(),
-        ] {
-            timeout(Duration::from_secs(5), endpoint.connect())
-                .await
-                .expect("timed out connecting to local TLS server")
-                .expect("production endpoint failed to load TLS roots");
-        }
+        let endpoint = endpoint_from_url(&url).unwrap();
+        timeout(Duration::from_secs(5), endpoint.connect())
+            .await
+            .expect("timed out connecting to local TLS server")
+            .expect("production endpoint failed to load TLS roots");
     }
 }

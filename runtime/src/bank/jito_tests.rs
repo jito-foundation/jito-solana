@@ -133,7 +133,7 @@ fn store_loader_v3_program(
     bank.store_account(&programdata_key, &programdata_account);
 }
 
-fn program_cache_state(bank: &Bank, program_key: &Pubkey) -> (usize, bool) {
+pub(super) fn program_cache_state(bank: &Bank, program_key: &Pubkey) -> (usize, bool) {
     let program_cache = bank
         .transaction_processor
         .global_program_cache

@@ -22,7 +22,6 @@ agave-unstable-api = []
 agave-votor = { workspace = true }
 agave-votor-messages = { workspace = true }
 agave-worker-pool = { workspace = true }
-agave-xdp = { workspace = true }
 arc-swap = { workspace = true }
 bytes = { workspace = true }
 crossbeam-channel = { workspace = true }

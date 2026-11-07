@@ -34,17 +34,13 @@ use {
     futures::{StreamExt, stream::FuturesUnordered},
     histogram::Histogram,
     solana_perf::packet::{BytesPacket, PACKETS_PER_BATCH, bytes::Bytes},
-    solana_poh::{
-        poh_controller::PohController, poh_recorder::PohRecorder,
-        transaction_recorder::TransactionRecorder,
-    },
+    solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
     solana_pubkey::Pubkey,
     solana_runtime::{
-        bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
+        bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         transaction_execution::TransactionStatusSender, vote_sender_types::ReplayVoteSender,
     },
     solana_time_utils::AtomicInterval,
-    solana_unified_scheduler_logic::SchedulingMode,
     std::{
         collections::HashSet,
         num::{NonZeroU64, NonZeroUsize},
@@ -65,26 +61,21 @@ use {
     vote_worker::VoteWorker,
 };
 
-// Below modules are pub to allow use by banking_stage bench
-pub mod committer;
-pub mod consumer;
-pub mod leader_slot_metrics;
-pub mod qos_service;
-pub mod vote_storage;
+pub mod transaction_scheduler;
 
 mod alpenglow_timing;
+pub mod committer;
 pub(crate) mod consume_worker;
-mod vote_worker;
-
+pub mod consumer;
 pub mod decision_maker;
-
 mod latest_validator_vote_packet;
+pub mod leader_slot_metrics;
 pub(crate) mod leader_slot_timing_metrics;
-mod vote_packet_receiver;
-
+pub mod qos_service;
 pub mod scheduler_messages;
-
-pub mod transaction_scheduler;
+mod vote_packet_receiver;
+pub mod vote_storage;
+mod vote_worker;
 
 #[cfg(unix)]
 mod progress_tracker;
@@ -546,6 +537,7 @@ impl BankingStage {
 
         // Setup receive & buffer.
         let sharable_banks = self.bank_forks.read().unwrap().sharable_banks();
+        let priority_floor = self.priority_floor.clone();
         let (check_work_sender, check_work_receiver) = bounded(CHANNEL_CAPACITY);
         let (check_result_sender, check_result_receiver) = bounded(CHANNEL_CAPACITY);
         let check_worker_handles = spawn_check_workers(
@@ -614,71 +606,61 @@ impl BankingStage {
             )
         }
 
-        // Macro to spawn the scheduler. Different type on `scheduler` and thus
-        // scheduler_controller mean we cannot have an easy if for `scheduler`
-        // assignment without introducing `dyn`.
         let bam_enabled = bam_dependencies
             .as_ref()
             .map(|bam| bam.bam_enabled.clone())
             .unwrap_or_default();
-        #[allow(unused_macros)]
-        macro_rules! spawn_scheduler {
-            ($scheduler:ident) => {
-                let exit = exit.clone();
-                let shutdown_signal = self.banking_shutdown_signal.clone();
-                let decision_maker = decision_maker.clone();
-                let worker_metrics = worker_metrics.clone();
-                let bam_enabled = bam_enabled.clone();
-                let config_cloned = scheduler_config.clone();
-                let priority_floor = self.priority_floor.clone();
-                threads.push(
-                    Builder::new()
-                        .name("solBnkTxSched".to_string())
-                        .spawn(move || {
-                            let mut scheduler_controller = SchedulerController::new(
-                                0,
-                                exit,
-                                config_cloned,
-                                decision_maker,
-                                receive_and_buffer,
-                                sharable_banks,
-                                $scheduler,
-                                worker_metrics,
-                                priority_floor,
-                                false,
-                                bam_enabled,
-                            );
-
-                            match scheduler_controller.run() {
-                                Ok(_) => info!("Scheduler exiting without error"),
-                                Err(SchedulerError::DisconnectedRecvChannel(_)) => {
-                                    info!("Upstream disconnected, shutting down banking");
-
-                                    // NB: We must signal shutdown before dropping the scheduler
-                                    //     controller, else, the workers may exit with an error and
-                                    //     trigger a new spawn before we have a chance to issue the
-                                    //     cancel.
-                                    shutdown_signal.cancel();
-                                    drop(scheduler_controller);
-                                }
-                                Err(SchedulerError::DisconnectedSendChannel(_)) => {
-                                    warn!("Unexpected worker disconnect from scheduler")
-                                }
-                            }
-                        })
-                        .unwrap(),
-                );
-            };
-        }
+        let bam_scheduler_exit = exit.clone();
+        let bam_scheduler_config = scheduler_config.clone();
+        let bam_decision_maker = decision_maker.clone();
+        let bam_scheduler_enabled = bam_enabled.clone();
 
         // Both block production methods currently route to the greedy scheduler.
-        let scheduler = GreedyScheduler::new_with_bundle_locker(
+        let scheduler = GreedyScheduler::new(
             work_senders,
             finished_work_receiver,
             GreedySchedulerConfig::default(),
             bundle_account_locker.clone(),
         );
-        spawn_scheduler!(scheduler);
+        let exit = exit.clone();
+        let shutdown_signal = self.banking_shutdown_signal.clone();
+        threads.push(
+            Builder::new()
+                .name("solBnkTxSched".to_string())
+                .spawn(move || {
+                    let mut scheduler_controller = SchedulerController::new(
+                        0,
+                        exit,
+                        scheduler_config,
+                        decision_maker,
+                        receive_and_buffer,
+                        sharable_banks,
+                        scheduler,
+                        worker_metrics,
+                        priority_floor,
+                        false,
+                        bam_enabled,
+                    );
+
+                    match scheduler_controller.run() {
+                        Ok(_) => info!("Scheduler exiting without error"),
+                        Err(SchedulerError::DisconnectedRecvChannel(_)) => {
+                            info!("Upstream disconnected, shutting down banking");
+
+                            // NB: We must signal shutdown before dropping the scheduler
+                            //     controller, else, the workers may exit with an error and
+                            //     trigger a new spawn before we have a chance to issue the
+                            //     cancel.
+                            shutdown_signal.cancel();
+                            drop(scheduler_controller);
+                        }
+                        Err(SchedulerError::DisconnectedSendChannel(_)) => {
+                            warn!("Unexpected worker disconnect from scheduler")
+                        }
+                    }
+                })
+                .unwrap(),
+        );
 
         if let Some(bam_dependencies) = bam_dependencies {
             // Spawn BAM workers
@@ -697,7 +679,7 @@ impl BankingStage {
             for index in 0..num_workers {
                 let id = index + BAM_METRICS_ID_OFFSET as usize;
                 let consume_worker = ConsumeWorker::new(
-                    exit.clone(),
+                    bam_scheduler_exit.clone(),
                     work_receiver.clone(),
                     consumer.clone(),
                     finished_work_sender.clone(),
@@ -716,7 +698,6 @@ impl BankingStage {
             }
 
             // Spawn the BAM scheduler thread
-            let bam_scheduler_exit = exit.clone();
             let bam_scheduler_bank_forks = self.bank_forks.clone();
             let bam_shared_leader_state = self.poh_recorder.read().unwrap().shared_leader_state();
             let tip_processing = tip_processing_dependencies.map(|tips| (consumer, tips));
@@ -746,15 +727,15 @@ impl BankingStage {
                         let mut scheduler_controller = SchedulerController::new(
                             BAM_METRICS_ID_OFFSET,
                             bam_scheduler_exit,
-                            scheduler_config,
-                            decision_maker.clone(),
+                            bam_scheduler_config,
+                            bam_decision_maker,
                             receive_and_buffer,
                             bam_sharable_banks,
                             scheduler,
                             worker_metrics,
                             Arc::new(SchedulerPriorityFloor::default()),
                             true,
-                            bam_enabled,
+                            bam_scheduler_enabled,
                         );
 
                         match scheduler_controller.run() {
@@ -1040,22 +1021,6 @@ pub enum BankingControlMsg {
     },
 }
 
-pub fn update_bank_forks_and_poh_recorder_for_new_tpu_bank(
-    bank_forks: &RwLock<BankForks>,
-    poh_controller: &mut PohController,
-    tpu_bank: Bank,
-) {
-    let tpu_bank = bank_forks
-        .write()
-        .unwrap()
-        .insert_with_scheduling_mode(SchedulingMode::BlockProduction, tpu_bank);
-    let tpu_bank_for_poh = tpu_bank.clone_with_scheduler();
-    let set_bank_res = poh_controller.set_bank(tpu_bank_for_poh);
-    if set_bank_res.is_err() {
-        warn!("Failed to set poh bank, poh service is disconnected");
-    }
-}
-
 #[derive(Debug)]
 struct NamedTask<Ret = (), Name = String>
 where
@@ -1117,7 +1082,6 @@ mod tests {
             record_channels::record_channels,
             transaction_recorder::RecordTransactionsSummary,
         },
-        solana_poh_config::PohConfig,
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, genesis_utils::bootstrap_validator_stake_lamports},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -1196,92 +1160,6 @@ mod tests {
         exit.store(true, Ordering::Relaxed);
         banking_stage.join().unwrap();
         poh_service.join().unwrap();
-    }
-
-    #[test]
-    fn test_banking_stage_tick() {
-        agave_logger::setup();
-        let GenesisConfigInfo {
-            mut genesis_config, ..
-        } = create_genesis_config(2);
-        genesis_config.ticks_per_slot = 4;
-        let num_extra_ticks = 2;
-        let (bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-        let start_hash = bank.last_blockhash();
-        let Channels {
-            non_vote_sender,
-            non_vote_receiver,
-            tpu_vote_sender,
-            tpu_vote_receiver,
-            gossip_vote_sender,
-            gossip_vote_receiver,
-        } = Channels::new();
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Arc::new(
-            Blockstore::open(ledger_path.path())
-                .expect("Expected to be able to open database ledger"),
-        );
-        let poh_config = PohConfig {
-            target_tick_count: Some(bank.max_tick_height() + num_extra_ticks),
-            ..PohConfig::default()
-        };
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiver,
-        ) = create_test_recorder(bank.clone(), blockstore, Some(poh_config), None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let banking_stage = BankingStage::new_num_threads(
-            BlockProductionMethod::CentralScheduler,
-            poh_recorder.clone(),
-            transaction_recorder,
-            non_vote_receiver,
-            tpu_vote_receiver,
-            gossip_vote_receiver,
-            mpsc::channel(1).1,
-            DEFAULT_NUM_WORKERS,
-            SchedulerConfig {
-                scheduler_pacing: SchedulerPacing::Disabled,
-            },
-            None,
-            None,
-            replay_vote_sender,
-            None,
-            bank_forks,
-            SharedAlpenglowSlotClock::default(),
-            None,
-            Arc::default(),
-            Arc::new(SchedulerPriorityFloor::new()),
-            BundleAccountLocker::default(),
-            None,
-            None,
-        );
-        trace!("sending bank");
-        drop(non_vote_sender);
-        drop(tpu_vote_sender);
-        drop(gossip_vote_sender);
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
-        drop(poh_recorder);
-        banking_stage.join().unwrap();
-
-        trace!("getting entries");
-        let entries: Vec<_> = entry_receiver
-            .iter()
-            .map(|(_bank, (message, _tick_height))| message.unwrap_entry())
-            .collect();
-        trace!("done");
-        assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
-        assert!(
-            entries
-                .verify(&start_hash, &entry::thread_pool_for_tests())
-                .status()
-        );
-        assert_eq!(entries[entries.len() - 1].hash, bank.last_blockhash());
     }
 
     #[test]

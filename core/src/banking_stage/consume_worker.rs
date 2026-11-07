@@ -1,3 +1,6 @@
+// `FinishedConsumeWork` only travels in the error on the terminal disconnect path.
+#![allow(clippy::result_large_err)]
+
 use {
     super::{
         consumer::{Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
@@ -27,17 +30,11 @@ use {
 };
 
 #[derive(Debug, Error)]
-pub enum ConsumeWorkerError {
+pub enum ConsumeWorkerError<Tx> {
     #[error("Failed to receive work from scheduler: {0}")]
     Recv(#[from] TryRecvError),
-    #[error("Scheduler channel disconnected")]
-    Send,
-}
-
-impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError {
-    fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
-        Self::Send
-    }
+    #[error("Failed to send finalized consume work to scheduler: {0}")]
+    Send(#[from] SendError<FinishedConsumeWork<Tx>>),
 }
 
 enum ProcessingStatus<Tx> {
@@ -78,7 +75,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError> {
+    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
         let mut did_work = false;
         let mut last_empty_time = Instant::now();
         let mut sleep_duration = STARTING_SLEEP_DURATION;
@@ -116,7 +113,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn consume(
         &self,
         mut work: ConsumeWork<Tx>,
-    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError> {
+    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let leader_state = self.shared_leader_state.load();
         let Some(bank) = leader_state
             .working_bank()
@@ -175,7 +172,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Retry current batch and all outstanding batches.
-    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
+    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
         for work in try_drain_iter(work, &self.consume_receiver) {
             if self.exit.load(Ordering::Relaxed) {
                 return Ok(());
@@ -186,7 +183,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Send transactions back to scheduler as retryable.
-    fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
+    fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
         let retryable_indexes: Vec<_> = (0..work.transactions.len())
             .map(|index| RetryableIndex {
                 index,
@@ -693,7 +690,6 @@ pub(crate) mod external {
             translate_to_runtime_view(
                 transaction_ptr,
                 bank,
-                bank.vote_only_bank(),
                 transaction_account_lock_limits,
                 enable_implicit_read_locks,
             )
@@ -1140,7 +1136,6 @@ pub(crate) mod external {
                     translate_to_runtime_view(
                         &simple_tx[..],
                         &bank,
-                        bank.vote_only_bank(),
                         bank.get_transaction_account_lock_limits(),
                         !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
                     )
@@ -1248,7 +1243,6 @@ pub(crate) mod external {
             let tx = translate_to_runtime_view(
                 &simple_tx[..],
                 &bank,
-                bank.vote_only_bank(),
                 bank.get_transaction_account_lock_limits(),
                 !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
             )
@@ -1355,8 +1349,9 @@ pub(crate) mod external {
             );
         }
 
-        #[test]
-        fn test_translate_transaction_blacklisted_account() {
+        #[test_case(true; "test_translate_transaction_blacklisted_account")]
+        #[test_case(false; "test_translate_transaction_non_blacklisted_account")]
+        fn test_translate_transaction_filter_keys(blacklisted: bool) {
             let genesis = genesis_utils::create_genesis_config(1_000_000_000);
             let bank = Bank::new_for_tests(&genesis.genesis_config);
             let recipient = Pubkey::new_unique();
@@ -1373,35 +1368,10 @@ pub(crate) mod external {
                     serialized_tx.len(),
                 )
             };
-
-            let result = ExternalWorker::translate_transaction(
-                transaction_ptr,
-                &bank,
-                bank.get_transaction_account_lock_limits(),
-                !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
-                &HashSet::from_iter([recipient]),
-            );
-
-            assert!(matches!(result, Err(PacketHandlingError::FilterKey)));
-        }
-
-        #[test]
-        fn test_translate_transaction_non_blacklisted_account() {
-            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
-            let bank = Bank::new_for_tests(&genesis.genesis_config);
-            let recipient = Pubkey::new_unique();
-            let tx = transfer(
-                &solana_keypair::Keypair::new(),
-                &recipient,
-                1,
-                bank.confirmed_last_blockhash(),
-            );
-            let serialized_tx = bincode::serialize(&tx).unwrap();
-            let transaction_ptr = unsafe {
-                TransactionPtr::from_raw_parts(
-                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
-                    serialized_tx.len(),
-                )
+            let blacklisted_accounts = if blacklisted {
+                HashSet::from_iter([recipient])
+            } else {
+                HashSet::default()
             };
 
             let result = ExternalWorker::translate_transaction(
@@ -1409,10 +1379,14 @@ pub(crate) mod external {
                 &bank,
                 bank.get_transaction_account_lock_limits(),
                 !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
-                &HashSet::default(),
+                &blacklisted_accounts,
             );
 
-            assert!(result.is_ok());
+            if blacklisted {
+                assert!(matches!(result, Err(PacketHandlingError::FilterKey)));
+            } else {
+                assert!(result.is_ok());
+            }
         }
 
         // An external scheduler doesn't know about implicit locks, so the worker's bank lock is what
@@ -2630,7 +2604,7 @@ mod tests {
             },
         },
         arc_swap::ArcSwap,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::bounded,
         solana_account::{Account, AccountSharedData},
         solana_clock::Slot,
         solana_cost_model::cost_tracker::CostTrackerLimits,
@@ -2741,8 +2715,8 @@ mod tests {
             ))
         };
 
-        let (consume_sender, consume_receiver) = unbounded();
-        let (consumed_sender, consumed_receiver) = unbounded();
+        let (consume_sender, consume_receiver) = bounded(1024);
+        let (consumed_sender, consumed_receiver) = bounded(1024);
         let worker = ConsumeWorker::new(
             Arc::new(AtomicBool::new(false)),
             consume_receiver,

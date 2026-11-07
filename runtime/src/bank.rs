@@ -180,7 +180,6 @@ use {
         account_loader::LoadedTransaction,
         account_overrides::AccountOverrides,
         rent_calculator::RENT_EXEMPT_RENT_EPOCH,
-        rollback_accounts::RollbackAccounts,
         transaction_balances::{BalanceCollector, SvmTokenInfo},
         transaction_commit_result::{CommittedTransaction, TransactionCommitResult},
         transaction_error_metrics::TransactionErrorMetrics,
@@ -234,7 +233,6 @@ use {
             },
         },
         time::{Duration, Instant},
-        vec,
     },
     thiserror::Error,
     wincode::{SchemaRead, SchemaWrite},
@@ -244,7 +242,9 @@ use {
     dashmap::DashSet,
     qualifier_attr::{field_qualifiers, qualifiers},
     rayon::iter::{IntoParallelRefIterator, ParallelIterator},
-    solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
+    solana_accounts_db::accounts_db::{
+        ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
+    },
     solana_nonce as nonce,
     solana_nonce_account::{SystemAccountKind, get_system_account_kind},
     solana_program_runtime::sysvar_cache::SysvarCache,
@@ -373,7 +373,6 @@ impl BankRc {
     }
 }
 
-#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     // Vector of results indicating whether a transaction was processed or could not
     // be processed. Note processed transactions can still have failed!
@@ -939,7 +938,7 @@ pub struct Bank {
     inflation: Arc<RwLock<Inflation>>,
 
     /// cache of vote_account and stake_account state for this fork
-    pub stakes_cache: StakesCache,
+    stakes_cache: StakesCache,
 
     /// staked nodes on epoch boundaries, saved off when a bank.slot() is at
     ///   a leader schedule calculation boundary
@@ -1104,8 +1103,6 @@ pub struct BankTestConfig {
 #[cfg(feature = "dev-context-only-utils")]
 impl Default for BankTestConfig {
     fn default() -> Self {
-        use solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING;
-
         Self {
             accounts_db_config: ACCOUNTS_DB_CONFIG_FOR_TESTING,
         }
@@ -4086,7 +4083,7 @@ impl Bank {
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
-            mut processing_results,
+            processing_results,
             balance_collector,
             ..
         } = self.load_and_execute_transactions(
@@ -4118,6 +4115,14 @@ impl Bank {
 
         debug!("simulate_transaction: {timings:?}");
 
+        Self::simulation_result(processing_results, balance_collector, number_of_accounts)
+    }
+
+    fn simulation_result(
+        mut processing_results: Vec<TransactionProcessingResult>,
+        balance_collector: Option<BalanceCollector>,
+        number_of_accounts: usize,
+    ) -> TransactionSimulationResult {
         let processing_result = processing_results
             .pop()
             .unwrap_or(Err(TransactionError::InvalidProgramForExecution));
@@ -4213,10 +4218,7 @@ impl Bank {
         }
     }
 
-    pub fn get_account_overrides_for_simulation(
-        &self,
-        account_keys: &AccountKeys,
-    ) -> AccountOverrides {
+    fn get_account_overrides_for_simulation(&self, account_keys: &AccountKeys) -> AccountOverrides {
         let mut account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
@@ -4241,7 +4243,7 @@ impl Bank {
         &self,
         txs_and_results: impl Iterator<Item = (&'a Tx, &'a Result<()>)> + Clone,
     ) {
-        self.rc.accounts.unlock_accounts(txs_and_results);
+        self.rc.accounts.unlock_accounts(txs_and_results)
     }
 
     pub fn mark_banks_removed(&self, slots: &[(Slot, BankId)]) {
@@ -4315,7 +4317,6 @@ impl Bank {
         error_counters: &mut TransactionErrorMetrics,
         processing_config: TransactionProcessingConfig,
         program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
-        replenish_program_cache: bool,
     ) -> LoadAndExecuteTransactionsOutput {
         let Some(_execution_guard) = self.try_enter_transaction_execution() else {
             return Self::cancelled_load_and_execute_tx_batch(batch);
@@ -4327,7 +4328,6 @@ impl Bank {
             error_counters,
             processing_config,
             Some(program_cache_for_tx_batch),
-            replenish_program_cache,
         )
     }
 
@@ -4346,7 +4346,6 @@ impl Bank {
             error_counters,
             processing_config,
             None,
-            true,
         )
     }
 
@@ -4358,7 +4357,6 @@ impl Bank {
         error_counters: &mut TransactionErrorMetrics,
         processing_config: TransactionProcessingConfig,
         program_cache_for_tx_batch: Option<&mut ProgramCacheForTxBatch>,
-        replenish_program_cache: bool,
     ) -> LoadAndExecuteTransactionsOutput {
         let sanitized_txs = batch.sanitized_transactions();
 
@@ -4406,7 +4404,7 @@ impl Bank {
                     &processing_environment,
                     &processing_config,
                     program_cache_for_tx_batch,
-                    replenish_program_cache,
+                    false,
                 )
         } else {
             self.transaction_processor
@@ -6935,13 +6933,6 @@ impl Bank {
     pub fn clear_accounts_lt_hash_async_progress_is_at_end(&self) {
         self.accounts_lt_hash_async_progress
             .clear_is_at_end_of_slot();
-    }
-
-    /// Total priority fees (lamports) that this bank collected
-    /// **Only populated once the bank is Executed. Always call
-    /// it after the bank is rooted.**
-    pub fn priority_fee_total(&self) -> u64 {
-        self.collector_fee_details.read().unwrap().priority_fee
     }
 }
 
