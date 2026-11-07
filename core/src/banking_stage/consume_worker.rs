@@ -1415,6 +1415,91 @@ pub(crate) mod external {
             assert!(result.is_ok());
         }
 
+        // An external scheduler doesn't know about implicit locks, so the worker's bank lock is what
+        // stops a transaction from running alongside a writer of its ProgramData address.
+        #[test_case::test_case(false, false, true; "root_inactive_keeps_lock")]
+        #[test_case::test_case(false, true, true; "working_active_root_inactive_keeps_lock")]
+        #[test_case::test_case(true, true, false; "root_active_drops_lock")]
+        fn test_run_execute_implicit_programdata_lock(
+            root_active: bool,
+            working_active: bool,
+            expect_lock: bool,
+        ) {
+            let feature_id = agave_feature_set::loaderv3_programdata_size_floor::id();
+            let mut test_frame = if root_active {
+                setup_external_test_frame()
+            } else {
+                setup_external_test_frame_disable_features(&[feature_id])
+            };
+            if working_active && !root_active {
+                let mut working_bank = Bank::new_from_parent(
+                    test_frame.bank.clone(),
+                    SlotLeader::new_unique(),
+                    test_frame.bank.slot() + 1,
+                );
+                working_bank.activate_feature(&feature_id);
+                test_frame.bank = test_frame
+                    .bank_forks
+                    .write()
+                    .unwrap()
+                    .insert(working_bank)
+                    .clone_without_scheduler();
+            }
+            let floor_active =
+                |bank: &Bank| bank.feature_set.snapshot().loaderv3_programdata_size_floor;
+            assert_eq!(
+                floor_active(&test_frame.bank_forks.read().unwrap().root_bank()),
+                root_active,
+            );
+            assert_eq!(floor_active(&test_frame.bank), working_active);
+            test_frame.enable_execution();
+
+            let program = Pubkey::new_unique();
+            let programdata = Pubkey::find_program_address(
+                &[program.as_ref()],
+                &solana_sdk_ids::bpf_loader_upgradeable::id(),
+            )
+            .0;
+            let writer = RuntimeTransaction::from_transaction_for_tests(transfer(
+                &solana_keypair::Keypair::new(),
+                &programdata,
+                1,
+                solana_hash::Hash::default(),
+            ));
+            let bank = test_frame.bank.clone();
+            let writer_batch = bank.prepare_sanitized_batch(std::slice::from_ref(&writer));
+            assert_eq!(writer_batch.lock_results()[0], Ok(()));
+
+            let batch = test_frame.allocate_batch(&[wincode::serialize(&transfer(
+                &test_frame.mint_keypair,
+                &program,
+                1,
+                test_frame.bank.confirmed_last_blockhash(),
+            ))
+            .unwrap()]);
+            test_frame.send_message(PackToExecutionWorkerMessage {
+                flags: 0,
+                max_working_slot: test_frame.bank.slot(),
+                batch: batch.region,
+            });
+            test_frame.iterate().unwrap();
+            let response = test_frame.recv_response();
+            assert_eq!(response.processed_code, processed_codes::PROCESSED);
+            let responses = test_frame.execution_responses(&response.responses);
+            assert_eq!(responses.len(), 1);
+            assert_eq!(
+                responses[0].not_included_reason,
+                if expect_lock {
+                    not_included_reasons::ACCOUNT_IN_USE
+                } else {
+                    not_included_reasons::NONE
+                },
+            );
+
+            drop(writer_batch);
+            test_frame.free_batch(batch);
+        }
+
         #[test]
         fn test_run_invalid_message() {
             let mut test_frame = setup_external_test_frame();
