@@ -30,14 +30,12 @@ the correct version if it is not already installed.
 On Linux systems you may need to install libssl-dev, pkg-config, zlib1g-dev, protobuf etc.
 
 On Ubuntu:
-
 ```bash
 $ sudo apt-get update
 $ sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang cmake make libprotobuf-dev protobuf-compiler libclang-dev
 ```
 
 On Fedora:
-
 ```bash
 $ sudo dnf install openssl-devel systemd-devel pkg-config zlib-devel llvm clang cmake make protobuf-devel protobuf-compiler perl-core clang-devel
 ```
@@ -119,7 +117,7 @@ $ open target/cov/lcov-local/index.html
 
 Why coverage? While most see coverage as a code quality metric, we see it primarily as a developer
 productivity metric. When a developer makes a change to the codebase, presumably it's a *solution* to
-some problem. Our unit-test suite is how we encode the set of *problems* the codebase solves. Running
+some problem.  Our unit-test suite is how we encode the set of *problems* the codebase solves. Running
 the test suite should indicate that your change didn't *infringe* on anyone else's solutions. Adding a
 test *protects* your solution from future changes. Say you don't understand why a line of code exists,
 try deleting it and running the unit-tests. The nearest test failure should tell you what problem
@@ -128,4 +126,3 @@ problem is solved by this code?" On the other hand, if a test does fail and you 
 better way to solve the same problem, a Pull Request with your solution would most certainly be
 welcome! Likewise, if rewriting a test can better communicate what code it's protecting, please
 send us that patch!
-

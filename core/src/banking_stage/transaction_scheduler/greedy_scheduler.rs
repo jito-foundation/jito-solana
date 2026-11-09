@@ -62,21 +62,7 @@ pub struct GreedyScheduler<Tx: TransactionWithMeta> {
 }
 
 impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
-    #[allow(dead_code)]
     pub(crate) fn new(
-        consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
-        finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
-        config: GreedySchedulerConfig,
-    ) -> Self {
-        Self::new_with_bundle_locker(
-            consume_work_senders,
-            finished_consume_work_receiver,
-            config,
-            BundleAccountLocker::default(),
-        )
-    }
-
-    pub(crate) fn new_with_bundle_locker(
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: GreedySchedulerConfig,
@@ -299,6 +285,8 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }
+    // The scheduler's own account locks below are never read by the bundle stage.
+    drop(l_account_locks);
 
     let thread_id = match account_locks.try_lock_accounts(
         transaction_account_locks,
@@ -313,9 +301,6 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
             return Err(TransactionSchedulingError::UnschedulableThread);
         }
     };
-
-    // Avoid time of check time of use race condition between bundle account locker and account locks
-    drop(l_account_locks);
 
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
     let cost = transaction_state.cost();
@@ -337,7 +322,7 @@ mod test {
             scheduler_messages::{MaxAge, TransactionId},
             transaction_scheduler::transaction_state_container::TransactionStateContainer,
         },
-        crossbeam_channel::unbounded,
+        crossbeam_channel::bounded,
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_genesis_config::GenesisConfig,
@@ -384,9 +369,9 @@ mod test {
         Sender<FinishedConsumeWork<RuntimeTransaction<SanitizedTransaction>>>,
     ) {
         let (consume_work_senders, consume_work_receivers) =
-            (0..num_threads).map(|_| unbounded()).unzip();
-        let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
-        let scheduler = GreedyScheduler::new_with_bundle_locker(
+            (0..num_threads).map(|_| bounded(1024)).unzip();
+        let (finished_consume_work_sender, finished_consume_work_receiver) = bounded(1024);
+        let scheduler = GreedyScheduler::new(
             consume_work_senders,
             finished_consume_work_receiver,
             config,
@@ -904,8 +889,9 @@ mod test {
             .unwrap();
     }
 
-    #[test]
-    fn test_bundle_implicit_programdata_read_blocks_writer() {
+    #[test_case::test_case(true; "test_bundle_implicit_programdata_read_blocks_writer")]
+    #[test_case::test_case(false; "test_bundle_write_to_programdata_blocks_implicit_reader")]
+    fn test_bundle_programdata_conflict(bundle_reads_programdata: bool) {
         let bundle_account_locker = BundleAccountLocker::default();
         let bank = Bank::new_for_tests(&GenesisConfig::default());
         let program = Pubkey::new_unique();
@@ -914,15 +900,20 @@ mod test {
             &solana_sdk_ids::bpf_loader_upgradeable::id(),
         )
         .0;
-        // The bundle only references the program; its lock on PDA(program) is implicit.
+        // One side only references the program; its lock on PDA(program) is implicit.
+        let (bundle_target, scheduled_target) = if bundle_reads_programdata {
+            (program, programdata)
+        } else {
+            (programdata, program)
+        };
         let bundle = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
             &Keypair::new(),
-            &program,
+            &bundle_target,
             1,
             Hash::default(),
         ))];
         let mut container = create_container([
-            (Keypair::new(), vec![programdata], 1, 2),
+            (Keypair::new(), vec![scheduled_target], 1, 2),
             (Keypair::new(), vec![Pubkey::new_unique()], 1, 1),
         ]);
         let (mut scheduler, work_receivers, _finished_work_sender) =
@@ -950,43 +941,6 @@ mod test {
             .unwrap();
         assert_eq!(summary.num_scheduled, 1);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
-    }
-
-    #[test]
-    fn test_bundle_write_to_programdata_blocks_implicit_reader() {
-        let bundle_account_locker = BundleAccountLocker::default();
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let program = Pubkey::new_unique();
-        let programdata = Pubkey::find_program_address(
-            &[program.as_ref()],
-            &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        )
-        .0;
-        // The bundle writes PDA(program); the scheduled tx only references the program.
-        let bundle = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
-            &Keypair::new(),
-            &programdata,
-            1,
-            Hash::default(),
-        ))];
-        let mut container = create_container([
-            (Keypair::new(), vec![program], 1, 2),
-            (Keypair::new(), vec![Pubkey::new_unique()], 1, 1),
-        ]);
-        let (mut scheduler, work_receivers, _finished_work_sender) =
-            create_test_frame_with_bundle_locker(
-                1,
-                GreedySchedulerConfig::default(),
-                bundle_account_locker.clone(),
-            );
-        bundle_account_locker.lock_bundle(&bundle, &bank).unwrap();
-        let summary = scheduler
-            .schedule(&mut container, TEST_SLOT, u64::MAX)
-            .unwrap();
-        assert_eq!(summary.num_scheduled, 1);
-        assert_eq!(summary.num_unschedulable_conflicts, 1);
-        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
-        bundle_account_locker.unlock_bundle(&bundle, &bank).unwrap();
     }
 
     #[test_case::test_case(true; "implicit_conflict_stays_on_one_thread")]

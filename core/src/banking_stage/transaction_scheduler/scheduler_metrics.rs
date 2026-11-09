@@ -8,20 +8,11 @@ use {
     },
 };
 
+#[derive(Default)]
 pub struct SchedulerCountMetrics {
     id: String,
     interval: IntervalSchedulerCountMetrics,
     slot: SlotSchedulerCountMetrics,
-}
-
-impl Default for SchedulerCountMetrics {
-    fn default() -> Self {
-        Self {
-            id: 0u32.to_string(),
-            interval: IntervalSchedulerCountMetrics::default(),
-            slot: SlotSchedulerCountMetrics::default(),
-        }
-    }
 }
 
 impl SchedulerCountMetrics {
@@ -290,20 +281,11 @@ impl SchedulerCountMetricsInner {
     }
 }
 
+#[derive(Default)]
 pub struct SchedulerTimingMetrics {
     id: String,
     interval: IntervalSchedulerTimingMetrics,
     slot: SlotSchedulerTimingMetrics,
-}
-
-impl Default for SchedulerTimingMetrics {
-    fn default() -> Self {
-        Self {
-            id: 0u32.to_string(),
-            interval: IntervalSchedulerTimingMetrics::default(),
-            slot: SlotSchedulerTimingMetrics::default(),
-        }
-    }
 }
 
 impl SchedulerTimingMetrics {

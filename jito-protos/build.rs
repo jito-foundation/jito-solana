@@ -42,13 +42,5 @@ fn main() -> Result<(), std::io::Error> {
         .build_server(true)
         .server_mod_attribute(".", "#[allow(clippy::default_trait_access)]")
         .server_mod_attribute(".", "#[allow(clippy::mixed_attributes_style)]")
-        .type_attribute(
-            "TransactionErrorType",
-            "#[cfg_attr(test, derive(enum_iterator::Sequence))]",
-        )
-        .type_attribute(
-            "InstructionErrorType",
-            "#[cfg_attr(test, derive(enum_iterator::Sequence))]",
-        )
         .compile_protos(&protos, &[proto_base_path, proto_base_path_jds])
 }

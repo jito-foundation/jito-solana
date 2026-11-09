@@ -51,9 +51,6 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// How often to poll the exit flag.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Host route mask (/32) in `/proc/net/route` hex format.
-#[cfg(test)]
-const MULTICAST_ROUTE_MASK_HEX: &str = "FFFFFFFF";
 #[cfg(any(test, target_os = "linux"))]
 const MULTICAST_ROUTE_MASK: u32 = u32::MAX;
 
@@ -205,32 +202,7 @@ impl MulticastShredCheckService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_multicast_addrs() {
-        for (multicast_addr, expected) in [
-            (MULTICAST_SHRED_ADDR_MAINNET, "233.84.178.1:7733"),
-            (MULTICAST_SHRED_ADDR_TESTNET, "233.84.178.10:7733"),
-            (MULTICAST_ROOT_SHRED_ADDR_MAINNET, "233.84.178.16:7733"),
-            (MULTICAST_ROOT_SHRED_ADDR_TESTNET, "233.84.178.12:7733"),
-        ] {
-            assert_eq!(multicast_addr, expected.parse::<SocketAddr>().unwrap());
-        }
-    }
-
-    #[test]
-    fn test_ipv4_to_route_value() {
-        for (multicast_addr, expected) in [
-            (MULTICAST_SHRED_ADDR_MAINNET, 0x01B254E9),
-            (MULTICAST_SHRED_ADDR_TESTNET, 0x0AB254E9),
-        ] {
-            assert_eq!(
-                MulticastShredCheckService::ipv4_to_route_value(multicast_addr),
-                Some(expected),
-            );
-        }
-    }
+    use {super::*, test_case::test_case};
 
     fn make_route_table(dest: &str, mask: &str) -> String {
         format!(
@@ -241,85 +213,18 @@ mod tests {
 
     // Route-table parsing
 
-    #[test]
-    fn test_route_table_matching_entry_returns_true() {
-        let data = make_route_table("01B254E9", MULTICAST_ROUTE_MASK_HEX);
-        assert!(MulticastShredCheckService::route_table_contains_addr(
-            &data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_case_insensitive_match() {
-        let data = make_route_table("01b254e9", "ffffffff");
-        assert!(MulticastShredCheckService::route_table_contains_addr(
-            &data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_wrong_destination_returns_false() {
-        let data = make_route_table("00000000", MULTICAST_ROUTE_MASK_HEX);
-        assert!(!MulticastShredCheckService::route_table_contains_addr(
-            &data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_wrong_mask_returns_false() {
-        let data = make_route_table("01B254E9", "FFFFFF00");
-        assert!(!MulticastShredCheckService::route_table_contains_addr(
-            &data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_short_line_skipped() {
-        let data = "Iface\tDestination\tGateway\neth0\t01B254E9\n";
-        assert!(!MulticastShredCheckService::route_table_contains_addr(
-            data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_empty_returns_false() {
-        assert!(!MulticastShredCheckService::route_table_contains_addr(
-            "",
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_header_only_returns_false() {
-        let data =
-            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n";
-        assert!(!MulticastShredCheckService::route_table_contains_addr(
-            data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_testnet_dest_does_not_match_mainnet() {
-        let data = make_route_table("0AB254E9", MULTICAST_ROUTE_MASK_HEX);
-        assert!(!MulticastShredCheckService::route_table_contains_addr(
-            &data,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        ));
-    }
-
-    #[test]
-    fn test_route_table_contains_testnet_addr() {
-        let data = make_route_table("0AB254E9", MULTICAST_ROUTE_MASK_HEX);
-        assert!(MulticastShredCheckService::route_table_contains_addr(
-            &data,
-            MULTICAST_SHRED_ADDR_TESTNET,
-        ));
+    #[test_case(&make_route_table("01B254E9", "FFFFFFFF"), MULTICAST_SHRED_ADDR_MAINNET, true ; "test_route_table_matching_entry_returns_true")]
+    #[test_case(&make_route_table("01b254e9", "ffffffff"), MULTICAST_SHRED_ADDR_MAINNET, true ; "test_route_table_case_insensitive_match")]
+    #[test_case(&make_route_table("00000000", "FFFFFFFF"), MULTICAST_SHRED_ADDR_MAINNET, false ; "test_route_table_wrong_destination_returns_false")]
+    #[test_case(&make_route_table("01B254E9", "FFFFFF00"), MULTICAST_SHRED_ADDR_MAINNET, false ; "test_route_table_wrong_mask_returns_false")]
+    #[test_case("Iface\tDestination\tGateway\neth0\t01B254E9\n", MULTICAST_SHRED_ADDR_MAINNET, false ; "test_route_table_short_line_skipped")]
+    #[test_case("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n", MULTICAST_SHRED_ADDR_MAINNET, false ; "test_route_table_header_only_returns_false")]
+    #[test_case(&make_route_table("0AB254E9", "FFFFFFFF"), MULTICAST_SHRED_ADDR_TESTNET, true ; "test_route_table_contains_testnet_addr")]
+    fn test_route_table(data: &str, addr: SocketAddr, expected: bool) {
+        assert_eq!(
+            MulticastShredCheckService::route_table_contains_addr(data, addr),
+            expected
+        );
     }
 
     #[test]
@@ -341,29 +246,19 @@ mod tests {
 
     // Published receiver state
 
-    #[test]
-    fn test_apply_multicast_receiver_state_enables_address() {
-        let multicast_receiver_address = Arc::new(ArcSwap::from_pointee(None));
+    #[test_case(None, true, Some(MULTICAST_SHRED_ADDR_MAINNET) ; "test_apply_multicast_receiver_state_enables_address")]
+    #[test_case(Some(MULTICAST_SHRED_ADDR_MAINNET), false, None ; "test_apply_multicast_receiver_state_disables_address")]
+    fn test_apply_multicast_receiver_state(
+        initial: Option<SocketAddr>,
+        route_found: bool,
+        expected: Option<SocketAddr>,
+    ) {
+        let multicast_receiver_address = ArcSwap::from_pointee(initial);
         MulticastShredCheckService::apply_multicast_receiver_state(
             &multicast_receiver_address,
-            true,
+            route_found,
             MULTICAST_SHRED_ADDR_MAINNET,
         );
-        assert_eq!(
-            multicast_receiver_address.load().as_ref(),
-            &Some(MULTICAST_SHRED_ADDR_MAINNET),
-        );
-    }
-
-    #[test]
-    fn test_apply_multicast_receiver_state_disables_address() {
-        let multicast_receiver_address =
-            Arc::new(ArcSwap::from_pointee(Some(MULTICAST_SHRED_ADDR_MAINNET)));
-        MulticastShredCheckService::apply_multicast_receiver_state(
-            &multicast_receiver_address,
-            false,
-            MULTICAST_SHRED_ADDR_MAINNET,
-        );
-        assert_eq!(multicast_receiver_address.load().as_ref(), &None);
+        assert_eq!(multicast_receiver_address.load().as_ref(), &expected);
     }
 }

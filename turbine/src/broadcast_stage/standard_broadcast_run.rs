@@ -370,7 +370,7 @@ impl StandardBroadcastRun {
             last_tick_height,
         } = receive_results;
         let slot = bank.slot();
-        if self.skipped_bank_id == Some(bank.bank_id()) || self.is_broadcast_blacklisted(slot) {
+        if self.is_broadcast_blacklisted(slot) {
             return Ok(());
         }
         let component = match item {
@@ -691,7 +691,6 @@ impl BroadcastRun for StandardBroadcastRun {
             receiver,
             &mut self.carryover_message,
             &mut process_stats,
-            self.slot,
         )?;
         // TODO: Confirm that last chunk of coding shreds
         // will not be lost or delayed for too long.
