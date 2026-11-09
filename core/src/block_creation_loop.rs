@@ -1535,7 +1535,7 @@ mod tests {
         solana_ledger::{blockstore::Blockstore, get_tmp_ledger_path_auto_delete},
         solana_poh::{
             poh_recorder::{PohRecorder, Record, SharedLeaderState, WorkingBankMessage},
-            record_channels::{RecordSender, record_channels},
+            record_channels::record_channels,
             transaction_recorder::TransactionRecorder,
         },
         solana_poh_config::PohConfig,
@@ -1623,74 +1623,6 @@ mod tests {
             bank_forks,
             shared_leader_state: None,
         })
-    }
-
-    struct TestContext {
-        ctx: LeaderContext,
-        record_sender: RecordSender,
-        entry_receiver: Receiver<WorkingBankMessage>,
-        banking_stage_receiver: BankingPacketReceiver,
-        leader_window_info_sender: Sender<LeaderWindowInfo>,
-        _reward_requests: Receiver<rewards::msg_types::RewardRequest>,
-    }
-
-    fn test_context(
-        my_pubkey: Pubkey,
-        bank_forks: Arc<RwLock<BankForks>>,
-        blockstore: Arc<Blockstore>,
-        leader_slots: (Slot, Slot),
-    ) -> TestContext {
-        let root_bank = bank_forks.read().unwrap().root_bank();
-        let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
-        let exit = Arc::new(AtomicBool::new(false));
-        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
-            root_bank.tick_height(),
-            root_bank.last_blockhash(),
-            root_bank.clone(),
-            Some(leader_slots),
-            root_bank.ticks_per_slot(),
-            blockstore.clone(),
-            &leader_schedule_cache,
-            &PohConfig::default(),
-            exit.clone(),
-        );
-        poh_recorder.enable_alpenglow();
-        let (record_sender, record_receiver) = record_channels(false);
-        let (leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
-        let (banking_stage_sender, banking_stage_receiver) = banking_channels::channel_for_test();
-        let (reward_certs_requestor, reward_requests) = CertsRequestor::new();
-        let ctx = LeaderContext {
-            exit,
-            my_pubkey,
-            leader_window_info_receiver,
-            pending_parent_ready: None,
-            highest_parent_ready: Arc::new(RwLock::new((0, Block::new_unique(0)))),
-            highest_finalized: Arc::new(RwLock::new(None)),
-            blockstore,
-            record_receiver,
-            poh_recorder: Arc::new(RwLock::new(poh_recorder)),
-            leader_schedule_cache,
-            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
-            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
-            bank_forks: bank_forks.clone(),
-            bank_forks_controller: test_bank_forks_controller(bank_forks.clone()),
-            rpc_subscriptions: None,
-            slot_status_notifier: None,
-            entry_notification_sender: None,
-            transaction_status_sender: None,
-            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
-            reward_certs_requestor,
-            banking_stage_sender,
-            metrics: LoopMetrics::default(),
-        };
-        TestContext {
-            ctx,
-            record_sender,
-            entry_receiver,
-            banking_stage_receiver,
-            leader_window_info_sender,
-            _reward_requests: reward_requests,
-        }
     }
 
     fn transaction_history_purge_responder() -> (
@@ -1818,12 +1750,56 @@ mod tests {
         root_bank.freeze();
         let bank_forks = BankForks::new_rw_arc(root_bank);
         let root_bank = bank_forks.read().unwrap().root_bank();
-        let mut context = test_context(new_identity, bank_forks, blockstore, (1, 1));
-        let ctx = &mut context.ctx;
-        ctx.my_pubkey = old_identity;
+        let leader_schedule_cache = fixed_leader_schedule(new_identity, &root_bank);
+
+        let exit = Arc::new(AtomicBool::new(false));
+        let poh_config = PohConfig::default();
+        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
+            root_bank.tick_height(),
+            root_bank.last_blockhash(),
+            root_bank.clone(),
+            Some((1, 1)),
+            root_bank.ticks_per_slot(),
+            blockstore.clone(),
+            &leader_schedule_cache,
+            &poh_config,
+            exit.clone(),
+        );
+        poh_recorder.enable_alpenglow();
+        let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+
+        let (_record_sender, record_receiver) = record_channels(false);
+        let (_leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
+        let (banking_stage_sender, _banking_stage_receiver) = banking_channels::channel_for_test();
+        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
+        let (reward_certs_requestor, _receiver) = CertsRequestor::new();
+
+        let mut ctx = LeaderContext {
+            exit,
+            my_pubkey: old_identity,
+            leader_window_info_receiver,
+            pending_parent_ready: None,
+            highest_parent_ready: Arc::new(RwLock::new((0, Block::new_unique(0)))),
+            highest_finalized: Arc::new(RwLock::new(None)),
+            blockstore,
+            record_receiver,
+            poh_recorder,
+            leader_schedule_cache,
+            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
+            bank_forks: bank_forks.clone(),
+            bank_forks_controller,
+            rpc_subscriptions: None,
+            slot_status_notifier: None,
+            entry_notification_sender: None,
+            transaction_status_sender: None,
+            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
+            reward_certs_requestor,
+            banking_stage_sender,
+            metrics: LoopMetrics::default(),
+        };
         let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
         let initial_leader_state = shared_leader_state.load();
-
         // A window for the new identity can arrive before the loop refreshes its cached identity.
         let err = produce_window(
             fast_leader_handover,
@@ -1834,7 +1810,7 @@ mod tests {
                 block_id: parent_block_id,
             },
             Instant::now(),
-            ctx,
+            &mut ctx,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1848,7 +1824,7 @@ mod tests {
             root_bank.bank_id()
         );
         assert!(ctx.bank_forks.read().unwrap().get(1).is_none());
-        assert!(context.entry_receiver.is_empty());
+        assert!(entry_receiver.is_empty());
         assert!(ctx.record_receiver.is_shutdown());
         assert!(ctx.record_receiver.is_safe_to_restart());
         assert!(!ctx.exit.load(Ordering::Relaxed));
@@ -1860,7 +1836,7 @@ mod tests {
         // After refreshing the identity, a later window can still start a bank.
         ctx.my_pubkey = new_identity;
         let bank = start_leader_wait_for_parent_replay(
-            ctx,
+            &mut ctx,
             &mut SlotMetrics::new(4, fast_leader_handover),
             4,
             0,
@@ -1888,7 +1864,7 @@ mod tests {
         );
         assert_eq!(leader_state.bank_slot(), Some(4));
         assert_eq!(leader_state.atomic_batches_enabled(), !fast_leader_handover);
-        let (announced_bank, (message, _)) = context.entry_receiver.try_recv().unwrap();
+        let (announced_bank, (message, _)) = entry_receiver.try_recv().unwrap();
         assert_eq!(announced_bank.bank_id(), bank.bank_id());
         assert!(matches!(message, RecorderMessage::SlotStart));
     }
@@ -1990,15 +1966,54 @@ mod tests {
         root_bank.freeze();
         let bank_forks = BankForks::new_rw_arc(root_bank);
         let root_bank = bank_forks.read().unwrap().root_bank();
+        let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
 
-        let TestContext {
-            mut ctx,
-            record_sender: _record_sender,
-            entry_receiver: _entry_receiver,
-            banking_stage_receiver: _banking_stage_receiver,
-            leader_window_info_sender: _leader_window_info_sender,
-            _reward_requests,
-        } = test_context(my_pubkey, bank_forks.clone(), blockstore, (1, 1));
+        let exit = Arc::new(AtomicBool::new(false));
+        let poh_config = PohConfig::default();
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            root_bank.tick_height(),
+            root_bank.last_blockhash(),
+            root_bank.clone(),
+            Some((1, 1)),
+            root_bank.ticks_per_slot(),
+            blockstore.clone(),
+            &leader_schedule_cache,
+            &poh_config,
+            exit.clone(),
+        );
+        poh_recorder.enable_alpenglow();
+        let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+
+        let (_record_sender, record_receiver) = record_channels(false);
+        let (_leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
+        let (banking_stage_sender, _banking_stage_receiver) = banking_channels::channel_for_test();
+        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
+        let (reward_certs_requestor, _receiver) = CertsRequestor::new();
+
+        let mut ctx = LeaderContext {
+            exit,
+            my_pubkey,
+            leader_window_info_receiver,
+            pending_parent_ready: None,
+            highest_parent_ready: Arc::new(RwLock::new((0, Block::new_unique(0)))),
+            highest_finalized: Arc::new(RwLock::new(None)),
+            blockstore,
+            record_receiver,
+            poh_recorder,
+            leader_schedule_cache,
+            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
+            bank_forks: bank_forks.clone(),
+            bank_forks_controller,
+            rpc_subscriptions: None,
+            slot_status_notifier: None,
+            entry_notification_sender: None,
+            transaction_status_sender: None,
+            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
+            reward_certs_requestor,
+            banking_stage_sender,
+            metrics: LoopMetrics::default(),
+        };
 
         create_and_insert_leader_bank(1, root_bank.clone(), 0, true, &mut ctx).unwrap();
         assert!(ctx.poh_recorder.read().unwrap().has_bank());
@@ -2051,6 +2066,7 @@ mod tests {
         root_bank.freeze();
         let bank_forks = BankForks::new_rw_arc(root_bank);
         let root_bank = bank_forks.read().unwrap().root_bank();
+        let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
         let parent_bank = Bank::new_from_parent(
             root_bank.clone(),
             SlotLeader {
@@ -2063,15 +2079,53 @@ mod tests {
         bank_forks.write().unwrap().insert(parent_bank);
         let parent_bank = bank_forks.read().unwrap().get(1).unwrap();
 
-        let TestContext {
-            mut ctx,
-            record_sender: _record_sender,
-            entry_receiver,
-            banking_stage_receiver: _banking_stage_receiver,
-            leader_window_info_sender: _leader_window_info_sender,
-            _reward_requests,
-        } = test_context(my_pubkey, bank_forks.clone(), blockstore, (2, 2));
+        let exit = Arc::new(AtomicBool::new(false));
+        let poh_config = PohConfig::default();
+        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
+            root_bank.tick_height(),
+            root_bank.last_blockhash(),
+            root_bank,
+            Some((2, 2)),
+            parent_bank.ticks_per_slot(),
+            blockstore.clone(),
+            &leader_schedule_cache,
+            &poh_config,
+            exit.clone(),
+        );
+        poh_recorder.enable_alpenglow();
         drop(entry_receiver);
+        let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+
+        let (_record_sender, record_receiver) = record_channels(false);
+        let (_leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
+        let (banking_stage_sender, _banking_stage_receiver) = banking_channels::channel_for_test();
+        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
+        let (reward_certs_requestor, _receiver) = CertsRequestor::new();
+
+        let mut ctx = LeaderContext {
+            exit,
+            my_pubkey,
+            leader_window_info_receiver,
+            pending_parent_ready: None,
+            highest_parent_ready: Arc::new(RwLock::new((0, Block::new_unique(0)))),
+            highest_finalized: Arc::new(RwLock::new(None)),
+            blockstore,
+            record_receiver,
+            poh_recorder,
+            leader_schedule_cache,
+            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
+            bank_forks: bank_forks.clone(),
+            bank_forks_controller,
+            rpc_subscriptions: None,
+            slot_status_notifier: None,
+            entry_notification_sender: None,
+            transaction_status_sender: None,
+            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
+            reward_certs_requestor,
+            banking_stage_sender,
+            metrics: LoopMetrics::default(),
+        };
 
         let err = create_and_insert_leader_bank(2, parent_bank, 0, true, &mut ctx).unwrap_err();
         assert!(matches!(
@@ -2094,16 +2148,54 @@ mod tests {
         root_bank.freeze();
         let bank_forks = BankForks::new_rw_arc(root_bank);
         let root_bank = bank_forks.read().unwrap().root_bank();
+        let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
 
-        let TestContext {
-            mut ctx,
-            record_sender,
-            entry_receiver: _entry_receiver,
-            banking_stage_receiver: _banking_stage_receiver,
-            leader_window_info_sender: _leader_window_info_sender,
-            _reward_requests,
-        } = test_context(my_pubkey, bank_forks.clone(), blockstore, (1, 1));
-        *ctx.highest_parent_ready.write().unwrap() = (2, Block::new_unique(0));
+        let exit = Arc::new(AtomicBool::new(false));
+        let poh_config = PohConfig::default();
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            root_bank.tick_height(),
+            root_bank.last_blockhash(),
+            root_bank.clone(),
+            Some((1, 1)),
+            root_bank.ticks_per_slot(),
+            blockstore.clone(),
+            &leader_schedule_cache,
+            &poh_config,
+            exit.clone(),
+        );
+        poh_recorder.enable_alpenglow();
+        let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+
+        let (record_sender, record_receiver) = record_channels(false);
+        let (_leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
+        let (banking_stage_sender, _banking_stage_receiver) = banking_channels::channel_for_test();
+        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
+        let (reward_certs_requestor, _reward_request_receiver) = CertsRequestor::new();
+
+        let mut ctx = LeaderContext {
+            exit,
+            my_pubkey,
+            leader_window_info_receiver,
+            pending_parent_ready: None,
+            highest_parent_ready: Arc::new(RwLock::new((2, Block::new_unique(0)))),
+            highest_finalized: Arc::new(RwLock::new(None)),
+            blockstore,
+            record_receiver,
+            poh_recorder,
+            leader_schedule_cache,
+            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
+            bank_forks: bank_forks.clone(),
+            bank_forks_controller,
+            rpc_subscriptions: None,
+            slot_status_notifier: None,
+            entry_notification_sender: None,
+            transaction_status_sender: None,
+            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
+            reward_certs_requestor,
+            banking_stage_sender,
+            metrics: LoopMetrics::default(),
+        };
 
         create_and_insert_leader_bank(1, root_bank, 0, true, &mut ctx).unwrap();
         let bank_id = ctx.poh_recorder.read().unwrap().bank().unwrap().bank_id();
@@ -2160,6 +2252,8 @@ mod tests {
         let bank_forks = BankForks::new_rw_arc(root_bank);
         let root_bank = bank_forks.read().unwrap().root_bank();
 
+        let leader_schedule_cache = fixed_leader_schedule(my_pubkey, &root_bank);
+
         let new_parent_slot = 1;
         let new_parent_block_id = BlockId::new_unique();
         let optimistic_parent_block_id = BlockId::new_unique();
@@ -2179,27 +2273,62 @@ mod tests {
         let optimistic_parent_bank_id = optimistic_parent.bank_id();
         let optimistic_parent_blockhash = optimistic_parent.last_blockhash();
 
-        let TestContext {
-            mut ctx,
-            record_sender,
-            entry_receiver,
-            banking_stage_receiver,
-            leader_window_info_sender,
-            _reward_requests,
-        } = test_context(my_pubkey, bank_forks.clone(), blockstore, (4, 7));
-        let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
-        *ctx.highest_parent_ready.write().unwrap() = (
-            4,
-            Block {
-                slot: new_parent_slot,
-                block_id: new_parent_block_id,
-            },
+        let exit = Arc::new(AtomicBool::new(false));
+        let poh_config = PohConfig::default();
+        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
+            root_bank.tick_height(),
+            root_bank.last_blockhash(),
+            root_bank.clone(),
+            Some((4, 7)),
+            root_bank.ticks_per_slot(),
+            blockstore.clone(),
+            &leader_schedule_cache,
+            &poh_config,
+            exit.clone(),
         );
+        poh_recorder.enable_alpenglow();
+        let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+
+        let (record_sender, record_receiver) = record_channels(false);
+        let (leader_window_info_sender, leader_window_info_receiver) = bounded(1024);
+        let (banking_stage_sender, banking_stage_receiver) = banking_channels::channel_for_test();
+        let bank_forks_controller = test_bank_forks_controller(bank_forks.clone());
+        let (reward_certs_requestor, _receiver) = CertsRequestor::new();
         let (entry_notification_sender, entry_notification_receiver) = bounded(1);
         let (transaction_status_sender, purge_response_thread) =
             transaction_history_purge_responder();
-        ctx.entry_notification_sender = Some(entry_notification_sender);
-        ctx.transaction_status_sender = Some(transaction_status_sender);
+
+        let mut ctx = LeaderContext {
+            exit,
+            my_pubkey,
+            leader_window_info_receiver,
+            pending_parent_ready: None,
+            highest_parent_ready: Arc::new(RwLock::new((
+                4,
+                Block {
+                    slot: new_parent_slot,
+                    block_id: new_parent_block_id,
+                },
+            ))),
+            highest_finalized: Arc::new(RwLock::new(None)),
+            blockstore,
+            record_receiver,
+            poh_recorder,
+            leader_schedule_cache,
+            sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            alpenglow_slot_clock: SharedAlpenglowSlotClock::default(),
+            bank_forks: bank_forks.clone(),
+            bank_forks_controller,
+            rpc_subscriptions: None,
+            slot_status_notifier: None,
+            entry_notification_sender: Some(entry_notification_sender),
+            transaction_status_sender: Some(transaction_status_sender),
+            replay_highest_frozen: Arc::new(ReplayHighestFrozen::default()),
+            reward_certs_requestor,
+            banking_stage_sender,
+            metrics: LoopMetrics::default(),
+        };
+        let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
 
         let leader_slot = 4;
         create_and_insert_leader_bank(leader_slot, optimistic_parent, 0, false, &mut ctx).unwrap();
@@ -2413,7 +2542,7 @@ mod tests {
             finished_work_sender,
             shared_leader_state,
         );
-        let worker_handle = thread::spawn(move || worker.run());
+        let worker_handle = thread::spawn(move || worker.run().unwrap());
 
         let replacement_decision = BufferedPacketsDecision::Consume(new_bank.clone());
         let control_recipient = Pubkey::new_unique();
@@ -2472,7 +2601,7 @@ mod tests {
             }
         }
         worker_exit.store(true, Ordering::Relaxed);
-        worker_handle.join().unwrap().unwrap();
+        worker_handle.join().unwrap();
 
         assert_eq!(new_bank.get_balance(&first_recipient), 0);
         assert_eq!(new_bank.get_balance(&control_recipient), 1);

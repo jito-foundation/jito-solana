@@ -111,7 +111,6 @@ pub(crate) fn precheck_transaction(
     let (view, deactivation_slot) = translate_to_runtime_view(
         bytes,
         root_bank,
-        working_bank.vote_only_bank(),
         transaction_account_lock_limits,
         !root_bank
             .feature_set
@@ -163,7 +162,6 @@ pub(crate) fn precheck_transaction(
 pub(crate) fn translate_to_runtime_view<D: AsRef<[u8]>>(
     data: D,
     bank: &Bank,
-    vote_only: bool,
     transaction_account_lock_limits: TransactionAccountLockLimits,
     enable_implicit_read_locks: bool,
 ) -> Result<(RuntimeTransaction<ResolvedTransactionView<D>>, u64), PacketHandlingError> {
@@ -174,7 +172,6 @@ pub(crate) fn translate_to_runtime_view<D: AsRef<[u8]>>(
     translate_sanitized_to_runtime_view(
         view,
         bank,
-        vote_only,
         transaction_account_lock_limits,
         None,
         enable_implicit_read_locks,
@@ -187,7 +184,6 @@ pub(crate) fn translate_to_runtime_view<D: AsRef<[u8]>>(
 pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
     view: SanitizedTransactionView<D>,
     bank: &Bank,
-    vote_only: bool,
     transaction_account_lock_limits: TransactionAccountLockLimits,
     preloaded_addresses: Option<(Option<LoadedAddresses>, Slot)>,
     enable_implicit_read_locks: bool,
@@ -204,7 +200,7 @@ pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
         return Err(PacketHandlingError::Sanitization);
     }
 
-    if vote_only && !view.is_simple_vote_transaction() {
+    if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
         return Err(PacketHandlingError::Sanitization);
     }
 
@@ -239,7 +235,7 @@ pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
     Ok((view, deactivation_slot))
 }
 
-pub(crate) fn load_addresses_for_view<D: AsRef<[u8]>>(
+fn load_addresses_for_view<D: AsRef<[u8]>>(
     view: &SanitizedTransactionView<D>,
     bank: &Bank,
 ) -> Result<(Option<LoadedAddresses>, Slot), PacketHandlingError> {
@@ -512,7 +508,6 @@ impl TransactionViewReceiveAndBuffer {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
             root_bank,
-            working_bank.vote_only_bank(),
             transaction_account_lock_limits,
             !root_bank
                 .feature_set

@@ -44,7 +44,7 @@ use {
     solana_measure::{measure::Measure, measure_us},
     solana_message::v1::{MAX_TRANSACTION_SIZE, V1_PREFIX},
     solana_packet::PACKET_DATA_SIZE,
-    solana_perf::sigverify::verify_transaction_view,
+    solana_perf::sigverify::{is_simple_vote_transaction_view, verify_transaction_view_signatures},
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -73,6 +73,20 @@ enum PacketVerificationError {
     Oversized,
     Failed,
     Consumed,
+}
+
+fn deserialization_error(index: usize, reason: DeserializationErrorReason) -> Reason {
+    Reason::DeserializationError(jito_protos::proto::bam_types::DeserializationError {
+        index: index as u32,
+        reason: reason as i32,
+    })
+}
+
+fn transaction_error(index: usize, reason: TransactionErrorReason) -> Reason {
+    Reason::TransactionError(jito_protos::proto::bam_types::TransactionError {
+        index: index as u32,
+        reason: reason as i32,
+    })
 }
 
 pub struct BamReceiveAndBuffer {
@@ -250,26 +264,18 @@ impl BamReceiveAndBuffer {
                         if let Some(index) =
                             verified_batch.iter().position(|result| result.is_err())
                         {
-                            metrics
-                                .sigverify_metrics
-                                .increment_total_packets_verified(index);
+                            metrics.sigverify_metrics.total_packets_verified += index;
                             return Err((
-                                Reason::DeserializationError(
-                                    jito_protos::proto::bam_types::DeserializationError {
-                                        index: index as u32,
-                                        reason: DeserializationErrorReason::SanitizeError as i32,
-                                    },
+                                deserialization_error(
+                                    index,
+                                    DeserializationErrorReason::SanitizeError,
                                 ),
                                 seq_id,
                             ));
                         }
 
-                        metrics
-                            .sigverify_metrics
-                            .increment_total_packets_verified(packet_count);
-                        metrics
-                            .sigverify_metrics
-                            .increment_total_batches_verified(1);
+                        metrics.sigverify_metrics.total_packets_verified += packet_count;
+                        metrics.sigverify_metrics.total_batches_verified += 1;
 
                         let ((parse_result, parse_stats), duration_us) =
                             measure_us!(Self::parse_batch(
@@ -371,20 +377,7 @@ impl BamReceiveAndBuffer {
         let alt_resolved_slot = root_bank.slot();
         let sanitized_epoch = root_bank.epoch();
         let transaction_account_lock_limits = working_bank.get_transaction_account_lock_limits();
-        let vote_only = working_bank.vote_only_bank();
         let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
-
-        if vote_only {
-            return (
-                Err(Reason::DeserializationError(
-                    jito_protos::proto::bam_types::DeserializationError {
-                        index: 0,
-                        reason: DeserializationErrorReason::SanitizeError as i32,
-                    },
-                )),
-                stats,
-            );
-        }
 
         // Checks are taken from receive_and_buffer.rs:
         // SanitizedTransactionReceiveAndBuffer::buffer_packets
@@ -403,11 +396,9 @@ impl BamReceiveAndBuffer {
                 Some(is_simple_vote_transaction),
             ) else {
                 return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::SanitizeError as i32,
-                        },
+                    Err(deserialization_error(
+                        index,
+                        DeserializationErrorReason::SanitizeError,
                     )),
                     stats,
                 );
@@ -421,11 +412,9 @@ impl BamReceiveAndBuffer {
             if view.is_simple_vote_transaction() {
                 stats.num_dropped_on_parsing_and_sanitization += 1;
                 return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::VoteTransactionFailure as i32,
-                        },
+                    Err(deserialization_error(
+                        index,
+                        DeserializationErrorReason::VoteTransactionFailure,
                     )),
                     stats,
                 );
@@ -443,11 +432,9 @@ impl BamReceiveAndBuffer {
             };
             let Ok((loaded_addresses, deactivation_slot)) = load_addresses_result else {
                 return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::SanitizeError as i32,
-                        },
+                    Err(deserialization_error(
+                        index,
+                        DeserializationErrorReason::SanitizeError,
                     )),
                     stats,
                 );
@@ -459,11 +446,9 @@ impl BamReceiveAndBuffer {
                 root_bank.get_reserved_account_keys(),
             ) else {
                 return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::SanitizeError as i32,
-                        },
+                    Err(deserialization_error(
+                        index,
+                        DeserializationErrorReason::SanitizeError,
                     )),
                     stats,
                 );
@@ -480,15 +465,7 @@ impl BamReceiveAndBuffer {
             {
                 let reason = convert_txn_error_to_proto(err);
                 stats.num_dropped_on_lock_validation += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+                return (Err(transaction_error(index, reason)), stats);
             }
             metrics.lock_validation_us += start.elapsed().as_micros() as u64;
 
@@ -499,15 +476,7 @@ impl BamReceiveAndBuffer {
             if let Err(err) = result {
                 let reason = convert_txn_error_to_proto(err);
                 stats.num_dropped_on_compute_budget += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+                return (Err(transaction_error(index, reason)), stats);
             }
 
             // Fork-dependent checks wait for resolution. The scheduler and worker validate
@@ -527,15 +496,7 @@ impl BamReceiveAndBuffer {
                 if let Some(Err(err)) = check_results.first() {
                     let reason = convert_txn_error_to_proto(err.clone());
                     stats.num_dropped_on_age += 1;
-                    return (
-                        Err(Reason::TransactionError(
-                            jito_protos::proto::bam_types::TransactionError {
-                                index: index as u32,
-                                reason: reason as i32,
-                            },
-                        )),
-                        stats,
-                    );
+                    return (Err(transaction_error(index, reason)), stats);
                 }
             }
 
@@ -551,15 +512,7 @@ impl BamReceiveAndBuffer {
                 if let Err(err) = result {
                     let reason = convert_txn_error_to_proto(err);
                     stats.num_dropped_on_fee_payer += 1;
-                    return (
-                        Err(Reason::TransactionError(
-                            jito_protos::proto::bam_types::TransactionError {
-                                index: index as u32,
-                                reason: reason as i32,
-                            },
-                        )),
-                        stats,
-                    );
+                    return (Err(transaction_error(index, reason)), stats);
                 }
             }
 
@@ -572,11 +525,9 @@ impl BamReceiveAndBuffer {
             if is_blacklisted {
                 stats.num_dropped_on_filter_key += 1;
                 return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: TransactionErrorReason::SanitizeFailure as i32,
-                        },
+                    Err(transaction_error(
+                        index,
+                        TransactionErrorReason::SanitizeFailure,
                     )),
                     stats,
                 );
@@ -663,12 +614,7 @@ impl BamReceiveAndBuffer {
                 if atomic_txn_batch.packets.is_empty() {
                     stats.num_dropped_without_parsing += 1;
                     prevalidated.push(Err((
-                        Reason::DeserializationError(
-                            jito_protos::proto::bam_types::DeserializationError {
-                                index: 0,
-                                reason: DeserializationErrorReason::Empty as i32,
-                            },
-                        ),
+                        deserialization_error(0, DeserializationErrorReason::Empty),
                         atomic_txn_batch.seq_id,
                     )));
                     continue;
@@ -677,12 +623,7 @@ impl BamReceiveAndBuffer {
                 if atomic_txn_batch.packets.len() > MAX_PACKETS_PER_BUNDLE {
                     stats.num_dropped_without_parsing += 1;
                     prevalidated.push(Err((
-                        Reason::DeserializationError(
-                            jito_protos::proto::bam_types::DeserializationError {
-                                index: 0,
-                                reason: DeserializationErrorReason::SanitizeError as i32,
-                            },
-                        ),
+                        deserialization_error(0, DeserializationErrorReason::SanitizeError),
                         atomic_txn_batch.seq_id,
                     )));
                     continue;
@@ -704,12 +645,7 @@ impl BamReceiveAndBuffer {
                 else {
                     stats.num_dropped_without_parsing += 1;
                     prevalidated.push(Err((
-                        Reason::DeserializationError(
-                            jito_protos::proto::bam_types::DeserializationError {
-                                index: 0,
-                                reason: DeserializationErrorReason::InconsistentBundle as i32,
-                            },
-                        ),
+                        deserialization_error(0, DeserializationErrorReason::InconsistentBundle),
                         atomic_txn_batch.seq_id,
                     )));
                     continue;
@@ -776,12 +712,11 @@ impl BamReceiveAndBuffer {
                     let Ok(view) = SanitizedTransactionView::try_new_sanitized(data) else {
                         return Err(PacketVerificationError::Failed);
                     };
-                    let (is_simple_vote_transaction, is_valid) =
-                        verify_transaction_view(&view, false);
-                    if !is_valid {
+                    if !verify_transaction_view_signatures(&view) {
                         return Err(PacketVerificationError::Failed);
                     }
 
+                    let is_simple_vote_transaction = is_simple_vote_transaction_view(&view);
                     Ok((view, is_simple_vote_transaction))
                 })
                 .collect_into_vec(verification_results);
@@ -794,15 +729,11 @@ impl BamReceiveAndBuffer {
         metrics
             .sigverify_metrics
             .increment_batch_packets_len(packet_count);
-        metrics
-            .sigverify_metrics
-            .increment_total_verify_time(verify_packet_batch_time_us.as_us());
-        metrics.sigverify_metrics.increment_oversized_packets(
-            verification_results
-                .iter()
-                .filter(|result| matches!(result, Err(PacketVerificationError::Oversized)))
-                .count(),
-        );
+        metrics.sigverify_metrics.total_verify_time_us += verify_packet_batch_time_us.as_us();
+        metrics.sigverify_metrics.oversized_packets += verification_results
+            .iter()
+            .filter(|result| matches!(result, Err(PacketVerificationError::Oversized)))
+            .count();
 
         stats
     }
@@ -1071,22 +1002,6 @@ impl SigverifyMetrics {
                 .unwrap();
         }
     }
-
-    pub fn increment_total_verify_time(&mut self, us: u64) {
-        self.total_verify_time_us += us;
-    }
-
-    pub fn increment_total_packets_verified(&mut self, count: usize) {
-        self.total_packets_verified += count;
-    }
-
-    pub fn increment_total_batches_verified(&mut self, count: usize) {
-        self.total_batches_verified += count;
-    }
-
-    pub fn increment_oversized_packets(&mut self, count: usize) {
-        self.oversized_packets += count;
-    }
 }
 
 #[cfg(test)]
@@ -1350,6 +1265,30 @@ pub(super) mod tests {
             })
             .collect();
         (results, stats)
+    }
+
+    /// Verifies a batch that must pass sigverify, then parses it with fork checks enabled.
+    fn parse_single_batch(
+        batch: AtomicTxnBatch,
+        banks: (&Bank, &Bank),
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> (Result<ParsedBatch, Reason>, ReceivingStats) {
+        let mut metrics = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut metrics);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+        let (mut verified_packets, revert_on_error, seq_id, max_schedule_slot) =
+            results.into_iter().next().unwrap().unwrap();
+        BamReceiveAndBuffer::parse_batch(
+            &mut verified_packets,
+            seq_id,
+            revert_on_error,
+            max_schedule_slot,
+            banks,
+            blacklisted_accounts,
+            true,
+            &mut metrics,
+        )
     }
 
     #[test]
@@ -1689,22 +1628,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn test_batch_deserialize_success() {
-        let (bank_forks, mint_keypair) = test_bank_forks();
-        let bundle = transfer_batch(&mint_keypair, &bank_forks.read().unwrap().root_bank(), 1);
-
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![bundle], Slot::MAX, &mut stats);
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_ok());
-        if let Ok((deserialized_packets, _, seq_id, _max_schedule_slot)) = &results[0] {
-            assert_eq!(deserialized_packets.len(), 1);
-            assert_eq!(*seq_id, 1);
-        }
-    }
-
-    #[test]
     fn test_receive_and_buffer_accepts_large_v1_when_feature_active() {
         let (bank_forks, mint_keypair) = test_bank_forks_with_tx_v1();
         let (sender, receiver) = unbounded();
@@ -1739,74 +1662,21 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn test_batch_deserialize_empty() {
-        let (_bank_forks, _mint_keypair) = test_bank_forks();
-        let batch = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![],
-            max_schedule_slot: Slot::MAX,
-        };
-
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_err());
-        assert_eq!(batch_stats.num_dropped_without_parsing, 1);
-        if let Err((reason, seq_id)) = &results[0] {
-            assert_eq!(*seq_id, 1);
-            assert!(matches!(reason, Reason::DeserializationError(_)));
-        }
-    }
-
-    #[test]
-    fn test_batch_deserialize_invalid_packet() {
-        let (_bank_forks, _mint_keypair) = test_bank_forks();
-        let batch =
-            batch_with_packet_data(vec![0; solana_message::v1::MAX_TRANSACTION_SIZE + 1].into());
-
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_err());
-        if let Err((reason, seq_id)) = &results[0] {
-            assert_eq!(*seq_id, 1);
-            assert!(matches!(reason, Reason::DeserializationError(_)));
-        }
-    }
-
-    #[test]
     fn test_batch_deserialize_fee_payer_doesnt_exist() {
         let (bank_forks, _) = test_bank_forks();
         let fee_payer = Keypair::new();
         let batch = transfer_batch(&fee_payer, &bank_forks.read().unwrap().root_bank(), 1);
 
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let bank_forks = bank_forks.read().unwrap();
+        let (result, stats) = parse_single_batch(
+            batch,
+            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            &HashSet::new(),
+        );
 
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_ok());
-
-        if let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
-            results.into_iter().next().unwrap()
-        {
-            let bank_forks = bank_forks.read().unwrap();
-            let (result, stats) = BamReceiveAndBuffer::parse_batch(
-                &mut verified_packets,
-                seq_id,
-                revert_on_error,
-                max_schedule_slot,
-                (&bank_forks.root_bank(), &bank_forks.working_bank()),
-                &HashSet::new(),
-                true,
-                &mut stats,
-            );
-
-            assert!(result.is_err());
-            assert_eq!(stats.num_dropped_on_fee_payer, 1);
-            assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
-        }
+        assert!(result.is_err());
+        assert_eq!(stats.num_dropped_on_fee_payer, 1);
+        assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
     }
 
     #[test]
@@ -1962,92 +1832,76 @@ pub(super) mod tests {
             max_schedule_slot: Slot::MAX,
         };
 
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let bank_forks = bank_forks.read().unwrap();
+        let (result, stats) = parse_single_batch(
+            batch,
+            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            &HashSet::new(),
+        );
 
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_ok());
+        assert!(result.is_ok());
+        assert_eq!(stats.num_dropped_on_fee_payer, 0);
+        let parsed_batch = result.unwrap();
+        assert_eq!(parsed_batch.txns_max_age.len(), 2);
+    }
 
-        if let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
-            results.into_iter().next().unwrap()
-        {
-            let bank_forks = bank_forks.read().unwrap();
-            let (result, stats) = BamReceiveAndBuffer::parse_batch(
-                &mut verified_packets,
-                seq_id,
-                revert_on_error,
-                max_schedule_slot,
-                (&bank_forks.root_bank(), &bank_forks.working_bank()),
-                &HashSet::new(),
-                true,
-                &mut stats,
-            );
-
-            assert!(result.is_ok());
-            assert_eq!(stats.num_dropped_on_fee_payer, 0);
-            let parsed_batch = result.unwrap();
-            assert_eq!(parsed_batch.txns_max_age.len(), 2);
+    fn revert_on_error_packet() -> Packet {
+        Packet {
+            meta: Some(jito_protos::proto::bam_types::Meta {
+                flags: Some(jito_protos::proto::bam_types::PacketFlags {
+                    revert_on_error: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
         }
     }
 
-    #[test]
-    fn test_prevalidate_rejects_nonreverting_multi_packet_batch() {
+    #[test_case::test_case(
+        vec![],
+        Slot::MAX,
+        deserialization_error(0, DeserializationErrorReason::Empty);
+        "empty"
+    )]
+    #[test_case::test_case(
+        vec![Packet::default(), revert_on_error_packet()],
+        Slot::MAX,
+        deserialization_error(0, DeserializationErrorReason::InconsistentBundle);
+        "mixed_revert_flags"
+    )]
+    #[test_case::test_case(
+        vec![Packet::default(); 2],
+        Slot::MAX,
+        deserialization_error(0, DeserializationErrorReason::InconsistentBundle);
+        "nonreverting_multi_packet"
+    )]
+    #[test_case::test_case(
+        vec![Packet::default()],
+        0,
+        Reason::SchedulingError(SchedulingError::OutsideLeaderSlot as i32);
+        "expired"
+    )]
+    fn test_prevalidate_rejects_batch(
+        packets: Vec<Packet>,
+        max_schedule_slot: Slot,
+        expected: Reason,
+    ) {
         let batches = [MultipleAtomicTxnBatch {
             batches: vec![AtomicTxnBatch {
                 seq_id: 42,
-                packets: vec![Packet::default(), Packet::default()],
-                max_schedule_slot: Slot::MAX,
+                packets,
+                max_schedule_slot,
             }],
             ..Default::default()
         }];
         let mut prevalidated = Vec::new();
         let (stats, packet_count) =
-            BamReceiveAndBuffer::prevalidate_batches(&batches, 0, &mut prevalidated);
+            BamReceiveAndBuffer::prevalidate_batches(&batches, 1, &mut prevalidated);
 
         assert_eq!(packet_count, 0);
         assert_eq!(stats.num_dropped_without_parsing, 1);
-        let [Err((Reason::DeserializationError(error), seq_id))] = prevalidated.as_slice() else {
-            panic!("expected one deserialization error");
-        };
-        assert_eq!(*seq_id, 42);
-        assert_eq!(error.index, 0);
-        assert_eq!(
-            error.reason,
-            DeserializationErrorReason::InconsistentBundle as i32
-        );
-    }
-
-    #[test]
-    fn test_batch_deserialize_inconsistent() {
-        let (bank_forks, mint_keypair) = test_bank_forks();
-        let root_bank = bank_forks.read().unwrap().root_bank();
-        let bundle = AtomicTxnBatch {
-            seq_id: 1,
-            packets: vec![
-                transfer_packet(&mint_keypair, &Pubkey::new_unique(), &root_bank),
-                Packet {
-                    meta: Some(jito_protos::proto::bam_types::Meta {
-                        flags: Some(jito_protos::proto::bam_types::PacketFlags {
-                            revert_on_error: true,
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    ..transfer_packet(&mint_keypair, &Pubkey::new_unique(), &root_bank)
-                },
-            ],
-            max_schedule_slot: Slot::MAX,
-        };
-
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, batch_stats) = run_batch_verify(vec![bundle], Slot::MAX, &mut stats);
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_err());
-        assert_eq!(batch_stats.num_dropped_without_parsing, 1);
-        if let Err((reason, seq_id)) = &results[0] {
-            assert_eq!(*seq_id, 1);
-            assert!(matches!(reason, Reason::DeserializationError(_)));
-        }
+        assert_eq!(prevalidated, [Err((expected, 42))]);
     }
 
     #[test]
@@ -2066,31 +1920,16 @@ pub(super) mod tests {
             max_schedule_slot: Slot::MAX,
         };
 
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let bank_forks = bank_forks.read().unwrap();
+        let (result, stats) = parse_single_batch(
+            batch,
+            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            &blacklisted_accounts,
+        );
 
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_ok());
-
-        if let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
-            results.into_iter().next().unwrap()
-        {
-            let bank_forks = bank_forks.read().unwrap();
-            let (result, stats) = BamReceiveAndBuffer::parse_batch(
-                &mut verified_packets,
-                seq_id,
-                revert_on_error,
-                max_schedule_slot,
-                (&bank_forks.root_bank(), &bank_forks.working_bank()),
-                &blacklisted_accounts,
-                true,
-                &mut stats,
-            );
-
-            assert!(result.is_err());
-            assert_eq!(stats.num_dropped_on_filter_key, 1);
-            assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
-        }
+        assert!(result.is_err());
+        assert_eq!(stats.num_dropped_on_filter_key, 1);
+        assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
     }
 
     #[test]
@@ -2119,34 +1958,19 @@ pub(super) mod tests {
 
         let batch = batch_with_packet_data(vote_data.into());
 
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let bank_forks = bank_forks.read().unwrap();
+        let (result, stats) = parse_single_batch(
+            batch,
+            (&bank_forks.root_bank(), &bank_forks.working_bank()),
+            &HashSet::new(),
+        );
 
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_ok());
-
-        if let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
-            results.into_iter().next().unwrap()
-        {
-            let bank_forks = bank_forks.read().unwrap();
-            let (result, stats) = BamReceiveAndBuffer::parse_batch(
-                &mut verified_packets,
-                seq_id,
-                revert_on_error,
-                max_schedule_slot,
-                (&bank_forks.root_bank(), &bank_forks.working_bank()),
-                &HashSet::new(),
-                true,
-                &mut stats,
-            );
-
-            assert!(result.is_err());
-            assert_eq!(stats.num_dropped_on_parsing_and_sanitization, 1);
-            assert!(matches!(
-                result.err().unwrap(),
-                Reason::DeserializationError(_)
-            ));
-        }
+        assert!(result.is_err());
+        assert_eq!(stats.num_dropped_on_parsing_and_sanitization, 1);
+        assert!(matches!(
+            result.err().unwrap(),
+            Reason::DeserializationError(_)
+        ));
     }
 
     // Activation on the working bank isn't enough: a buffered batch may still execute in a bank
@@ -2220,23 +2044,8 @@ pub(super) mod tests {
             max_schedule_slot: Slot::MAX,
         };
 
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
-        let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
-            results.into_iter().next().unwrap()
-        else {
-            panic!("batch verification should succeed");
-        };
-        let (result, _stats) = BamReceiveAndBuffer::parse_batch(
-            &mut verified_packets,
-            seq_id,
-            revert_on_error,
-            max_schedule_slot,
-            (&root_bank, &working_bank),
-            &HashSet::new(),
-            true,
-            &mut stats,
-        );
+        let (result, _stats) =
+            parse_single_batch(batch, (&root_bank, &working_bank), &HashSet::new());
         let parsed = result.expect("batch should parse");
         let (transaction, _max_age) = &parsed.txns_max_age[0];
         for program in [static_program, table_program] {
@@ -2249,28 +2058,11 @@ pub(super) mod tests {
         }
     }
 
-    #[test]
-    fn test_batch_deserialize_reject_wrong_slot() {
-        let (bank_forks, mint_keypair) = test_bank_forks();
-        let batch = AtomicTxnBatch {
-            max_schedule_slot: 0,
-            ..transfer_batch(&mint_keypair, &bank_forks.read().unwrap().root_bank(), 1)
-        };
-
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0].is_err());
-    }
-
-    #[test_case::test_case(false, false; "before_activation")]
-    #[test_case::test_case(false, true; "activation_not_rooted")]
-    #[test_case::test_case(true, true; "activation_rooted")]
-    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(
-        root_active: bool,
-        working_active: bool,
-    ) {
+    // `test_parse_batch_keeps_implicit_read_locks_until_floor_is_rooted` covers a feature active
+    // only on the working bank.
+    #[test_case::test_case(false; "before_activation")]
+    #[test_case::test_case(true; "activation_rooted")]
+    fn test_parse_batch_implicit_read_locks_follow_root_bank_gate(root_active: bool) {
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -2283,10 +2075,7 @@ pub(super) mod tests {
             root.deactivate_feature(&feature_id);
         }
         let (root, _bank_forks) = root.wrap_with_bank_forks_for_tests();
-        let mut working = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
-        if working_active {
-            Arc::make_mut(&mut working.feature_set).activate(&feature_id, 1);
-        }
+        let working = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
 
         let recipient = Pubkey::new_unique();
         let batch = AtomicTxnBatch {
@@ -2295,24 +2084,7 @@ pub(super) mod tests {
             max_schedule_slot: Slot::MAX,
         };
 
-        let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
-        let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
-            results.into_iter().next().unwrap()
-        else {
-            panic!("batch verification should succeed");
-        };
-
-        let (result, _stats) = BamReceiveAndBuffer::parse_batch(
-            &mut verified_packets,
-            seq_id,
-            revert_on_error,
-            max_schedule_slot,
-            (&root, &working),
-            &HashSet::new(),
-            true,
-            &mut stats,
-        );
+        let (result, _stats) = parse_single_batch(batch, (&root, &working), &HashSet::new());
         let parsed = result.expect("batch should parse");
         let (transaction, _max_age) = &parsed.txns_max_age[0];
         let implicit_locks = transaction.implicit_read_locks();

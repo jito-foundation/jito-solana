@@ -53,11 +53,6 @@ pub(super) fn report_worker_outcome(outcome: &WorkerOutcome, candidate: Candidat
         WorkerOutcome::Panicked => {
             report_candidate_failure(CandidateFailureEvent::Worker, "worker panicked", candidate);
         }
-        WorkerOutcome::MissingResult => report_candidate_failure(
-            CandidateFailureEvent::Worker,
-            "worker returned no result",
-            candidate,
-        ),
     }
 }
 

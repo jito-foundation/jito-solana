@@ -113,7 +113,6 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             receiver,
             &mut self.carryover_message,
             &mut stats,
-            self.current_slot,
         )?;
         let bank = receive_results.bank.clone();
         let last_tick_height = receive_results.last_tick_height;
@@ -140,7 +139,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             // This test only TowerBFT implementation does not use block markers
             return Ok(());
         };
-        // We are guaranteed by coalesce that this is not empty
+        // We are guarenteed by coalesce that this is not empty
         assert!(!entries.is_empty());
         // Update the recent blockhash based on transactions in the entries
         for entry in entries.iter() {

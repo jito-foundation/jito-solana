@@ -201,13 +201,9 @@ where
             .filter(|addresses| !addresses.is_empty())
         {
             leaders.extend(discovered_peers.into_iter().copied());
-        } else {
-            leaders.push(
-                self.cluster_info
-                    .my_contact_info()
-                    .tpu(Protocol::QUIC)
-                    .unwrap(),
-            );
+        } else if let Some(my_tpu_address) = self.cluster_info.my_contact_info().tpu(Protocol::QUIC)
+        {
+            leaders.push(my_tpu_address);
         }
     }
 }

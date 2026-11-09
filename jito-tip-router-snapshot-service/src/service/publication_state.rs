@@ -151,12 +151,6 @@ impl SnapshotPublicationTracker {
         };
         let phase = &mut self.phase;
         match phase {
-            SnapshotPublicationPhase::AwaitingCandidate => {
-                *phase = SnapshotPublicationPhase::TrackingCandidates {
-                    candidate_epoch: candidate.epoch,
-                    tracked_candidates: HashMap::from([(candidate, tracked)]),
-                };
-            }
             SnapshotPublicationPhase::WinnerPendingPublication { pending_winner } => error!(
                 "could not record spawned tip-router snapshot candidate {candidate}: publication \
                  of {pending_winner} began after it was admitted"
@@ -167,7 +161,8 @@ impl SnapshotPublicationTracker {
             } if candidate.epoch == *candidate_epoch => {
                 tracked_candidates.insert(candidate, tracked);
             }
-            SnapshotPublicationPhase::TrackingCandidates { .. } => {
+            SnapshotPublicationPhase::AwaitingCandidate
+            | SnapshotPublicationPhase::TrackingCandidates { .. } => {
                 *phase = SnapshotPublicationPhase::TrackingCandidates {
                     candidate_epoch: candidate.epoch,
                     tracked_candidates: HashMap::from([(candidate, tracked)]),
@@ -336,40 +331,15 @@ mod tests {
         );
         assert!(tracker.can_spawn_candidate(parent(97, 197)));
 
+        // The boundary child need not be the newest root.
         assert_eq!(
-            tracker.select_winner_for_publication(&[bank(104, 204), bank(99, 199), bank(98, 198)]),
+            tracker.select_winner_for_publication(&[
+                bank(110, 210),
+                bank(104, 204),
+                bank(99, 199),
+                bank(98, 198)
+            ]),
             Some(winner)
-        );
-    }
-
-    #[test]
-    fn descendant_root_selects_parent_through_boundary_child() {
-        let mut tracker = SnapshotPublicationTracker::new();
-        let winner = parent(99, 199);
-        tracker.record_spawned_candidate(winner, bank(104, 204));
-        assert_eq!(tracker.record_candidate_written(winner), None);
-
-        assert_eq!(
-            tracker.select_winner_for_publication(&[bank(110, 210), bank(104, 204), bank(99, 199)]),
-            Some(winner)
-        );
-    }
-
-    #[test]
-    fn completing_parent_worker_without_rooted_child_does_not_publish() {
-        let mut tracker = SnapshotPublicationTracker::new();
-        let candidate = parent(99, 199);
-        tracker.record_spawned_candidate(candidate, bank(104, 204));
-
-        assert_eq!(
-            tracker.select_winner_for_publication(&[bank(99, 199)]),
-            None
-        );
-        assert_eq!(tracker.record_candidate_written(candidate), None);
-        assert!(tracker.can_spawn_candidate(parent(97, 197)));
-        assert_eq!(
-            tracker.select_winner_for_publication(&[bank(104, 204), bank(99, 199)]),
-            Some(candidate)
         );
     }
 

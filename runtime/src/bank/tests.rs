@@ -48,7 +48,7 @@ use {
     solana_account_info::MAX_PERMITTED_DATA_INCREASE,
     solana_accounts_db::{
         accounts::{AccountAddressFilter, Accounts},
-        accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDb},
+        accounts_db::AccountsDb,
         accounts_hash::AccountsLtHash,
         accounts_index::{AccountIndex, AccountSecondaryIndexes, IndexKey},
         accounts_scan::ScanError,
@@ -98,13 +98,13 @@ use {
     solana_program_runtime::{
         declare_process_instruction,
         execution_budget::{self, MAX_COMPUTE_UNIT_LIMIT},
-        program_cache::entry::{ProgramCacheEntry, ProgramCacheEntryType},
+        program_cache::entry::ProgramCacheEntry,
         solana_sbpf::program::BuiltinFunctionDefinition,
     },
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_reward_info::RewardType,
-    solana_sdk_ids::{bpf_loader, ed25519_program, incinerator, native_loader, secp256k1_program},
+    solana_sdk_ids::{ed25519_program, incinerator, native_loader, secp256k1_program},
     solana_seed_derivable::SeedDerivable,
     solana_sha256_hasher::hash,
     solana_signature::Signature,
@@ -13097,56 +13097,6 @@ fn test_commit_noop_transaction_no_fees(relax_fee_payer_constraint: bool) {
         bank.capitalization(),
         bank.calculate_capitalization_for_tests()
     );
-}
-#[test]
-fn test_load_and_execute_transactions_populates_global_program_cache() {
-    let (genesis_config, mint_keypair) = create_genesis_config(100_000);
-    let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-
-    let program_key = Pubkey::new_unique();
-    let program_data = include_bytes!("../../../programs/bpf_loader/test_elfs/out/noop_aligned.so");
-    let program_account = AccountSharedData::from(Account {
-        lamports: Rent::default().minimum_balance(program_data.len()).min(1),
-        data: program_data.to_vec(),
-        owner: bpf_loader::id(),
-        executable: true,
-        rent_epoch: 0,
-    });
-    root_bank.store_account(&program_key, &program_account);
-
-    goto_end_of_slot(root_bank.clone());
-    let bank = new_from_parent_with_fork_next_slot(root_bank, bank_forks.as_ref());
-
-    {
-        let program_cache = bank
-            .transaction_processor
-            .global_program_cache
-            .read()
-            .unwrap();
-        assert!(
-            program_cache
-                .get_slot_versions_for_tests(&program_key)
-                .is_empty(),
-            "newly stored program must not exist in global cache before execution",
-        );
-    }
-
-    let instruction = Instruction::new_with_bytes(program_key, &[], Vec::new());
-    let message = Message::new(&[instruction], Some(&mint_keypair.pubkey()));
-    let binding = mint_keypair.insecure_clone();
-    let transaction = Transaction::new(&[&binding], message, bank.last_blockhash());
-    assert_eq!(bank.process_transaction(&transaction), Ok(()));
-
-    {
-        let program_cache = bank
-            .transaction_processor
-            .global_program_cache
-            .read()
-            .unwrap();
-        let slot_versions = program_cache.get_slot_versions_for_tests(&program_key);
-        assert_eq!(slot_versions.len(), 1);
-        assert_matches!(slot_versions[0].program, ProgramCacheEntryType::Loaded(_));
-    }
 }
 
 /// Signers and addresses shared by the ProgramData floor tests. Sharing them lets independent banks

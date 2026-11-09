@@ -13,8 +13,9 @@ use {
         proxy::{
             ProxyError,
             auth::{AuthInterceptor, AuthRefreshState, auth_client_from_endpoint},
-            endpoint_from_url, sanitize_status_message_for_influx,
+            call_with_timeout, sanitize_status_message_for_influx,
         },
+        tonic_endpoint,
     },
     ahash::HashMapExt,
     arc_swap::ArcSwap,
@@ -51,8 +52,8 @@ use {
     },
 };
 
-const CONNECTION_TIMEOUT_S: u64 = 10;
-const CONNECTION_BACKOFF_S: u64 = 5;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECTION_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct BlockEngineStageStats {
@@ -93,7 +94,7 @@ pub struct BlockEngineConfig {
 }
 
 pub struct BlockEngineStage {
-    t_hdls: Vec<JoinHandle<()>>,
+    t_hdl: JoinHandle<()>,
 }
 #[derive(Error, Debug)]
 enum ProbeError {
@@ -106,16 +107,11 @@ enum ProbeError {
     #[error("gRPC connect error: {0}")]
     Connect(#[from] tonic::transport::Error),
 
-    #[error("gRPC request error: {0}")]
-    Request(#[from] tonic::Status),
-
     #[error("no successful probe samples")]
     NoSuccessfulSamples,
 }
 
 impl BlockEngineStage {
-    const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
-    const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
     pub fn new(
         block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
         // Channel that bundles get piped through.
@@ -154,16 +150,11 @@ impl BlockEngineStage {
             })
             .unwrap();
 
-        Self {
-            t_hdls: vec![thread],
-        }
+        Self { t_hdl: thread }
     }
 
     pub fn join(self) -> thread::Result<()> {
-        for t in self.t_hdls {
-            t.join()?;
-        }
-        Ok(())
+        self.t_hdl.join()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -186,7 +177,7 @@ impl BlockEngineStage {
             let local_block_engine_config = block_engine_config.load();
             if !Self::is_valid_block_engine_config(&local_block_engine_config) {
                 shredstream_receiver_address.store(Arc::new(None));
-                sleep(Self::CONNECTION_BACKOFF).await;
+                sleep(CONNECTION_BACKOFF).await;
                 continue;
             }
 
@@ -221,7 +212,7 @@ impl BlockEngineStage {
                         );
                     }
                 }
-                sleep(Self::CONNECTION_BACKOFF).await;
+                sleep(CONNECTION_BACKOFF).await;
             }
         }
     }
@@ -305,7 +296,6 @@ impl BlockEngineStage {
             block_builder_fee_info,
             shredstream_receiver_address,
             Self::resolve_shredstream_receiver_address(&global.shredstream_receiver_address),
-            &Self::CONNECTION_TIMEOUT,
             bam_enabled,
         )
         .await
@@ -334,9 +324,7 @@ impl BlockEngineStage {
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        let endpoints = Self::get_block_engine_endpoints(&endpoint)
-            .await
-            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+        let endpoints = Self::get_block_engine_endpoints(&endpoint).await?;
         datapoint_info!(
             "block_engine_stage-autoconfig",
             ("regioned_count", endpoints.regioned_endpoints.len(), i64),
@@ -345,12 +333,8 @@ impl BlockEngineStage {
         let candidates = Self::probe_and_rank_endpoints(&endpoints.regioned_endpoints).await;
         let candidates = if candidates.is_empty() {
             let Some(global) = endpoints.global_endpoint else {
-                return Err(Self::map_bam_enabled(
-                    bam_enabled,
-                    ProxyError::BlockEngineEndpointError(
-                        "Block engine configuration failed: no reachable endpoints found"
-                            .to_owned(),
-                    ),
+                return Err(ProxyError::BlockEngineEndpointError(
+                    "Block engine configuration failed: no reachable endpoints found".to_owned(),
                 ));
             };
 
@@ -390,7 +374,6 @@ impl BlockEngineStage {
                 block_builder_fee_info,
                 shredstream_receiver_address,
                 maybe_shredstream_socket,
-                &Self::CONNECTION_TIMEOUT,
                 bam_enabled,
             )
             .await
@@ -426,7 +409,7 @@ impl BlockEngineStage {
                         }
                     }
 
-                    if connect_start.elapsed() > Self::CONNECTION_TIMEOUT * 3 {
+                    if connect_start.elapsed() > CONNECTION_TIMEOUT * 3 {
                         return Err(e); // run a new round of probes and connect to new best
                     }
                     // Otherwise, try next endpoint without delay; caller handles backoff on overall failure
@@ -461,7 +444,6 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         maybe_shredstream_socket: Option<SocketAddr>,
-        connection_timeout: &Duration,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
@@ -469,9 +451,8 @@ impl BlockEngineStage {
 
         debug!("connecting to auth: {}", backend_endpoint.uri());
         let auth_refresh_state =
-            auth_client_from_endpoint(backend_endpoint, connection_timeout, keypair.as_ref())
-                .await
-                .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+            auth_client_from_endpoint(backend_endpoint, &CONNECTION_TIMEOUT, keypair.as_ref())
+                .await?;
 
         let backend_url = backend_endpoint.uri().to_string();
         datapoint_info!(
@@ -481,16 +462,10 @@ impl BlockEngineStage {
         );
 
         debug!("connecting to block engine: {}", backend_endpoint.uri());
-        let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
+        let block_engine_channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect())
             .await
-            .map_err(|_| ProxyError::BlockEngineConnectionTimeout)
-            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-            .map_err(|err| {
-                Self::map_bam_enabled(
-                    bam_enabled,
-                    ProxyError::BlockEngineConnectionError(Box::new(err)),
-                )
-            })?;
+            .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
+            .map_err(|err| ProxyError::BlockEngineConnectionError(Box::new(err)))?;
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
             block_engine_channel,
             auth_refresh_state.interceptor(),
@@ -513,7 +488,6 @@ impl BlockEngineStage {
             shredstream_receiver_address,
             maybe_shredstream_socket,
             auth_refresh_state,
-            connection_timeout,
             cluster_info,
             &backend_url,
             bam_enabled,
@@ -523,19 +497,11 @@ impl BlockEngineStage {
 
     /// Build an Endpoint from the URL provided
     fn get_endpoint(block_engine_url: &str) -> Result<Endpoint, ProxyError> {
-        endpoint_from_url(
-            block_engine_url,
-            || {
-                ProxyError::BlockEngineEndpointError(format!(
-                    "invalid block engine url value: {block_engine_url}",
-                ))
-            },
-            || {
-                ProxyError::BlockEngineEndpointError(format!(
-                    "failed to set tls_config for block engine: {block_engine_url}",
-                ))
-            },
-        )
+        tonic_endpoint::endpoint_from_url(block_engine_url).map_err(|_| {
+            ProxyError::BlockEngineEndpointError(format!(
+                "invalid block engine url or tls config: {block_engine_url}",
+            ))
+        })
     }
 
     fn rank_candidate_endpoints(
@@ -562,7 +528,7 @@ impl BlockEngineStage {
 
         // Connect once and probe multiple times so we're not ranking on handshake costs.
         let endpoint = Self::get_endpoint(block_engine_url)?;
-        let channel = timeout(Self::CONNECTION_TIMEOUT, endpoint.connect())
+        let channel = timeout(CONNECTION_TIMEOUT, endpoint.connect())
             .await
             .map_err(|_| ProbeError::ConnectTimeout)??;
 
@@ -573,7 +539,7 @@ impl BlockEngineStage {
         for sample in 0..PROBE_COUNT {
             let start = Instant::now();
             let res = timeout(
-                Self::CONNECTION_TIMEOUT,
+                CONNECTION_TIMEOUT,
                 client.get_block_engine_endpoints(GetBlockEngineEndpointRequest {}),
             )
             .await;
@@ -690,20 +656,9 @@ impl BlockEngineStage {
                     }
                 }
                 Entry::Vacant(entry) => {
-                    let maybe_shredstream_socket = endpoint
-                        .shredstream_receiver_address
-                        .to_socket_addrs()
-                        .inspect_err(|e| {
-                            datapoint_warn!(
-                                "block_engine_stage-autoconfig_error",
-                                "type" => "shredstream_resolve",
-                                ("address", endpoint.block_engine_url.as_str(), String),
-                                ("count", 1, i64),
-                                ("err", e.to_string(), String),
-                            );
-                        })
-                        .ok()
-                        .and_then(|mut shredstream_sockets| shredstream_sockets.next());
+                    let maybe_shredstream_socket = Self::resolve_shredstream_receiver_address(
+                        &endpoint.shredstream_receiver_address,
+                    );
                     entry.insert((maybe_shredstream_socket, rtt_us));
                 }
             };
@@ -733,50 +688,26 @@ impl BlockEngineStage {
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         maybe_shredstream_socket: Option<SocketAddr>,
         auth_refresh_state: AuthRefreshState,
-        connection_timeout: &Duration,
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        let subscribe_packets_stream = timeout(
-            *connection_timeout,
+        let subscribe_packets_stream = call_with_timeout(
+            "block_engine_subscribe_packets",
+            CONNECTION_TIMEOUT,
             client.subscribe_packets(block_engine::SubscribePacketsRequest {}),
         )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))
-        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-        .map_err(|status| {
-            Self::map_bam_enabled(
-                bam_enabled,
-                ProxyError::MethodError {
-                    code: status.code(),
-                    message: sanitize_status_message_for_influx(status.message()),
-                },
-            )
-        })?
-        .into_inner();
+        .await?;
 
-        let subscribe_bundles_stream = timeout(
-            *connection_timeout,
+        let subscribe_bundles_stream = call_with_timeout(
+            "subscribe_bundles",
+            CONNECTION_TIMEOUT,
             client.subscribe_bundles(block_engine::SubscribeBundlesRequest {}),
         )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))
-        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-        .map_err(|status| {
-            Self::map_bam_enabled(
-                bam_enabled,
-                ProxyError::MethodError {
-                    code: status.code(),
-                    message: sanitize_status_message_for_influx(status.message()),
-                },
-            )
-        })?
-        .into_inner();
+        .await?;
 
         Self::refresh_block_builder_fee_info(
             &mut client,
-            connection_timeout,
             block_builder_fee_info,
             block_engine_url,
             bam_enabled,
@@ -799,7 +730,6 @@ impl BlockEngineStage {
             block_builder_fee_info,
             auth_refresh_state,
             cluster_info,
-            connection_timeout,
             block_engine_url,
             bam_enabled,
         )
@@ -822,7 +752,6 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         mut auth_refresh_state: AuthRefreshState,
         cluster_info: &Arc<ClusterInfo>,
-        connection_timeout: &Duration,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
@@ -848,15 +777,13 @@ impl BlockEngineStage {
                 maybe_packet = packet_stream.message() => {
                     let resp = maybe_packet
                         .map_err(ProxyError::from)?
-                        .ok_or(ProxyError::GrpcStreamDisconnected)
-                        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+                        .ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
                     let resp = maybe_bundles
                         .map_err(ProxyError::from)?
-                        .ok_or(ProxyError::GrpcStreamDisconnected)
-                        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+                        .ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_block_engine_bundles(resp, bundle_tx, &mut block_engine_stats)?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
@@ -870,9 +797,8 @@ impl BlockEngineStage {
                     }
 
                     let (access_token_refreshed, refresh_token_refreshed) = auth_refresh_state
-                        .maybe_refresh(cluster_info, connection_timeout, refresh_within_s)
-                        .await
-                        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+                        .maybe_refresh(cluster_info, &CONNECTION_TIMEOUT, refresh_within_s)
+                        .await?;
 
                     if access_token_refreshed {
                         num_refresh_access_token += 1;
@@ -894,7 +820,6 @@ impl BlockEngineStage {
                 _ = maintenance_tick.tick() => {
                     Self::refresh_block_builder_fee_info(
                         &mut client,
-                        connection_timeout,
                         block_builder_fee_info,
                         block_engine_url,
                         bam_enabled,
@@ -1027,28 +952,16 @@ impl BlockEngineStage {
 
     async fn refresh_block_builder_fee_info(
         client: &mut BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-        connection_timeout: &Duration,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        let block_builder_info = timeout(
-            *connection_timeout,
+        let block_builder_info = call_with_timeout(
+            "get_block_builder_fee_info",
+            CONNECTION_TIMEOUT,
             client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest {}),
         )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))
-        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-        .map_err(|status| {
-            Self::map_bam_enabled(
-                bam_enabled,
-                ProxyError::MethodError {
-                    code: status.code(),
-                    message: sanitize_status_message_for_influx(status.message()),
-                },
-            )
-        })?
-        .into_inner();
+        .await?;
         if block_builder_info.commission > 100 {
             return Err(ProxyError::BlockEngineEndpointError(
                 "block builder commission must be <= 100".to_string(),

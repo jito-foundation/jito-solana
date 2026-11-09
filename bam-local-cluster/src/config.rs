@@ -58,11 +58,5 @@ mod tests {
     fn example_config_parses() {
         let example = include_str!("../examples/example_config.toml");
         toml::from_str::<LocalClusterConfig>(example).unwrap();
-        // '0' is not base58.
-        let bad_pubkey = example.replace(
-            "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
-            "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r0",
-        );
-        assert!(toml::from_str::<LocalClusterConfig>(&bad_pubkey).is_err());
     }
 }

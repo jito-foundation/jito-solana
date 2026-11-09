@@ -103,10 +103,8 @@ solana-account = { workspace = true, features = ["wincode"] }
 solana-accounts-db = { workspace = true }
 solana-address-lookup-table-interface = { workspace = true }
 solana-bls-signatures = { workspace = true }
-solana-bundle = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
-solana-compute-budget = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
 solana-cost-model = { workspace = true }
 solana-ed25519-program = { workspace = true }
@@ -176,7 +174,6 @@ solana-validator-exit = { workspace = true }
 solana-version = { workspace = true }
 solana-vote = { workspace = true }
 solana-vote-program = { workspace = true }
-spl-memo-interface = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
@@ -186,7 +183,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
-tonic = { workspace = true, features = ["channel", "codegen", "router", "server", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+tonic = { workspace = true, features = ["channel", "codegen", "server", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
 trees = { workspace = true }
 wincode = { workspace = true }
 
@@ -201,7 +198,6 @@ agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["
 bencher = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
-rcgen = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["wincode"] }
@@ -219,21 +215,17 @@ solana-net-utils = { path = "../net-utils", features = ["agave-unstable-api", "d
 solana-nonce-account = { workspace = true, features = ["wincode"] }
 solana-poh = { path = "../poh", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-program-binaries = { path = "../program-binaries", features = ["agave-unstable-api"] }
-solana-program-runtime = { path = "../program-runtime", features = ["agave-unstable-api", "metrics"] }
-solana-program-test = { path = "../program-test", features = ["agave-unstable-api"] }
 solana-rent = { workspace = true }
 solana-rpc = { path = "../rpc", features = ["agave-unstable-api", "dev-context-only-utils"] }
-solana-runtime = { path = "../runtime", features = ["agave-unstable-api", "dev-context-only-utils"] }
-solana-runtime-transaction = { path = "../runtime-transaction", features = ["agave-unstable-api"] }
 solana-signer-store = { workspace = true }
 solana-system-program = { path = "../programs/system", features = ["agave-unstable-api"] }
 solana-unified-scheduler-pool = { path = "../unified-scheduler-pool", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-vote = { path = "../vote", features = ["agave-unstable-api", "dev-context-only-utils"] }
-solana-vote-interface = { workspace = true }
 solana-vote-program = { path = "../programs/vote", features = ["agave-unstable-api", "dev-context-only-utils"] }
 spl-memo-interface = { workspace = true }
 static_assertions = { workspace = true }
 test-case = { workspace = true }
+tonic = { workspace = true, features = ["router"] }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dev-dependencies]
 jemallocator = { workspace = true }

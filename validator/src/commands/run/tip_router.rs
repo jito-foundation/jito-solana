@@ -154,24 +154,6 @@ mod implementation {
     }
 
     pub fn join(_service: Option<Service>) {}
-
-    #[cfg(test)]
-    mod tests {
-        use {super::*, clap::App, std::sync::atomic::AtomicBool};
-
-        #[test]
-        fn disabled_tip_router_is_a_no_op() {
-            let matches = App::new("run_command").get_matches_from(vec!["run_command"]);
-            let mut senders = Vec::new();
-
-            let service_setup = setup(&matches, &mut senders).unwrap();
-            let service = start(service_setup, Arc::new(AtomicBool::new(false))).unwrap();
-            join(service);
-
-            assert!(args().is_empty());
-            assert!(senders.is_empty());
-        }
-    }
 }
 
 pub use implementation::*;

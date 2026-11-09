@@ -9,7 +9,7 @@ use {
         CandidateIdentity,
         artifact_store::{ArtifactStore, ArtifactStoreError, PublishError},
         config::TipRouterSnapshotConfig,
-        snapshot_worker::{SnapshotWorkerError, WorkerCompletion, WorkerOutcome},
+        snapshot_worker::{WorkerCompletion, WorkerOutcome},
     },
     crossbeam_channel::{Receiver, Sender},
     log::{debug, error, info, warn},
@@ -191,19 +191,6 @@ impl TipRouterSnapshotServiceContext {
                     return self.publish_winner(winner, artifact_store);
                 }
             }
-            WorkerOutcome::Failed(SnapshotWorkerError::ArtifactStore(
-                ArtifactStoreError::DirectoryUnavailable { path, source },
-            )) => {
-                error!(
-                    "candidate {candidate} failed because {} is unavailable",
-                    path.display()
-                );
-                self.publication_state.record_candidate_failure(candidate);
-                return Err(TipRouterSnapshotServiceError::ArtifactStoreUnavailable {
-                    path,
-                    source,
-                });
-            }
             WorkerOutcome::Failed(err) => {
                 error!("tip-router snapshot candidate {candidate} failed: {err}");
                 if self.publication_state.record_candidate_failure(candidate) {
@@ -212,12 +199,6 @@ impl TipRouterSnapshotServiceContext {
             }
             WorkerOutcome::Panicked => {
                 error!("tip-router snapshot worker panicked for {candidate}");
-                if self.publication_state.record_candidate_failure(candidate) {
-                    return self.rooted_candidate_failed(candidate);
-                }
-            }
-            WorkerOutcome::MissingResult => {
-                error!("tip-router snapshot worker returned no result for {candidate}");
                 if self.publication_state.record_candidate_failure(candidate) {
                     return self.rooted_candidate_failed(candidate);
                 }

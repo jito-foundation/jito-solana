@@ -64,12 +64,6 @@ mod tests {
     use {super::*, std::net::SocketAddr};
 
     #[test]
-    fn test_parse_empty() {
-        let addrs = parse_shred_receiver_addresses([""]).unwrap();
-        assert!(addrs.is_empty());
-    }
-
-    #[test]
     fn test_parse_multiple_empty_values_disable() {
         let addrs = parse_shred_receiver_addresses(["", "   "]).unwrap();
         assert!(addrs.is_empty());

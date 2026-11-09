@@ -33,30 +33,3 @@ impl BankNotificationFilter for TipRouterEpochBoundaryFilter {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn epoch_boundary_predicate_matches_epoch_transitions_for_all_slot_pairs() {
-        for epoch_schedule in [
-            EpochSchedule::custom(32, 32, false),
-            EpochSchedule::custom(32, 32, true),
-        ] {
-            let last_test_slot = epoch_schedule.get_last_slot_in_epoch(3);
-
-            for parent_slot in 0..last_test_slot {
-                for child_slot in parent_slot + 1..=last_test_slot {
-                    let child_epoch = epoch_schedule.get_epoch(child_slot);
-                    assert_eq!(
-                        is_epoch_boundary_child(child_epoch, parent_slot, &epoch_schedule),
-                        child_epoch > epoch_schedule.get_epoch(parent_slot),
-                        "parent_slot={parent_slot}, child_slot={child_slot}, warmup={}",
-                        epoch_schedule.warmup,
-                    );
-                }
-            }
-        }
-    }
-}

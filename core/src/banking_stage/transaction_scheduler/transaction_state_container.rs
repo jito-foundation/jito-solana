@@ -361,15 +361,6 @@ impl<Tx: StaticTransactionWithMeta> TransactionStateContainer<Tx> {
         TransactionPriorityId::new(priority, arrival_order, transaction_id)
     }
 
-    /// Insert into the map only if there is spare capacity, returning the id.
-    pub(crate) fn try_insert_map_only(
-        &mut self,
-        state: TransactionState<Tx>,
-    ) -> Option<TransactionId> {
-        (self.id_to_transaction_state.len() < self.id_to_transaction_state.capacity())
-            .then(|| self.insert_map_only(state).id)
-    }
-
     /// Will try to insert a new batch of transactions if there is enough
     /// free slab capacity for all transactions plus one batch metadata entry.
     /// If successful, returns the batch id; otherwise returns `None`.
@@ -829,27 +820,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_insert_new_batch_allows_exact_fit() {
+    #[test_case::test_case(2, true; "exact_fit")]
+    #[test_case::test_case(1, false; "over_capacity")]
+    fn test_insert_new_batch_capacity(free_entries: usize, fits: bool) {
         let mut container = TransactionStateContainer::with_capacity(1);
         let map_capacity = container.id_to_transaction_state.capacity();
-        let target_len = map_capacity - 2;
-        insert_dummy_batch_entries(&mut container, target_len);
-
-        let (transaction, max_age, _, _) = test_transaction(10);
-        let mut txns_max_age = SmallVec::new();
-        txns_max_age.push((transaction, max_age));
-
-        let batch_id = container.insert_new_batch(txns_max_age, 10, true, 0, 0);
-        assert!(batch_id.is_some());
-        assert_eq!(container.id_to_transaction_state.len(), map_capacity);
-    }
-
-    #[test]
-    fn test_insert_new_batch_rejects_when_over_capacity() {
-        let mut container = TransactionStateContainer::with_capacity(1);
-        let map_capacity = container.id_to_transaction_state.capacity();
-        let target_len = map_capacity - 1;
+        let target_len = map_capacity - free_entries;
         insert_dummy_batch_entries(&mut container, target_len);
         let initial_batch_map_len = container.batch_id_to_transaction_ids.len();
 
@@ -858,12 +834,15 @@ mod tests {
         txns_max_age.push((transaction, max_age));
 
         let batch_id = container.insert_new_batch(txns_max_age, 10, true, 0, 0);
-        assert!(batch_id.is_none());
-        assert_eq!(container.id_to_transaction_state.len(), target_len);
+        assert_eq!(batch_id.is_some(), fits);
+        assert_eq!(
+            container.id_to_transaction_state.len(),
+            if fits { map_capacity } else { target_len }
+        );
         assert_eq!(
             container.batch_id_to_transaction_ids.len(),
-            initial_batch_map_len
+            initial_batch_map_len + usize::from(fits)
         );
-        assert!(container.priority_queue.is_empty());
+        assert_eq!(container.priority_queue.is_empty(), !fits);
     }
 }
