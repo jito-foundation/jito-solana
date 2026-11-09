@@ -1465,7 +1465,7 @@ mod tests {
             bam_enabled.clone(),
             bundle_receiver,
             response_sender.clone(),
-            bank_forks.clone(),
+            bank_forks.read().unwrap().sharable_banks(),
             None,
             HashSet::default(),
         );

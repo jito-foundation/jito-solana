@@ -136,7 +136,11 @@ impl BlockEngineStage {
         let thread = Builder::new()
             .name("block-engine-stage".to_string())
             .spawn(move || {
+                // Stream handling runs in `block_on` on this thread. The workers only drive gRPC
+                // connections and the endpoint RTT probes, so two are enough.
                 let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_name("solBlockEngRt")
                     .enable_all()
                     .build()
                     .unwrap();
