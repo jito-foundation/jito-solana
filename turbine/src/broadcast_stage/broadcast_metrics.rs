@@ -1,4 +1,4 @@
-use {super::*, std::collections::HashMap};
+use super::*;
 
 pub(crate) trait BroadcastStats {
     fn update(&mut self, new_stats: &Self);

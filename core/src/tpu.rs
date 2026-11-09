@@ -211,8 +211,8 @@ impl Tpu {
         );
 
         let Channels {
-            non_vote_sender: banking_stage_sender,
-            non_vote_receiver: banking_stage_receiver,
+            non_vote_sender,
+            non_vote_receiver,
             ..
         } = banking_channels;
 
@@ -269,7 +269,7 @@ impl Tpu {
 
         let sigverify_stage = SigVerifyStage::new(
             sigverify_stage_receiver,
-            banking_stage_sender.clone(),
+            non_vote_sender.clone(),
             forward_stage_sender.clone(),
             tpu_sigverify_threads,
             enable_block_production_forwarding,
@@ -297,7 +297,7 @@ impl Tpu {
             unverified_bundle_sender,
             cluster_info.clone(),
             sigverify_stage_sender.clone(),
-            banking_stage_sender.clone(),
+            non_vote_sender.clone(),
             exit.clone(),
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
@@ -348,7 +348,6 @@ impl Tpu {
             cluster_info: cluster_info.clone(),
             block_builder_fee_info: block_builder_fee_info.clone(),
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
-            bank_forks: bank_forks.clone(),
             bam_tpu_info,
             bam_shred_receiver_addresses: bam_shred_receiver_addresses.clone(),
         };
@@ -360,7 +359,7 @@ impl Tpu {
             block_production_method,
             poh_recorder.clone(),
             transaction_recorder.clone(),
-            banking_stage_receiver,
+            non_vote_receiver,
             banking_control_receiver,
             block_production_num_workers,
             block_production_scheduler_config,

@@ -764,6 +764,7 @@ mod tests {
         std::{
             assert_matches,
             borrow::Cow,
+            slice,
             sync::{Arc, RwLock},
         },
         test_case::test_case,
@@ -1719,7 +1720,7 @@ mod tests {
         .unwrap();
 
         if invalidate_lookup {
-            let transactions = std::slice::from_ref(&sanitized_tx);
+            let transactions = slice::from_ref(&sanitized_tx);
             let max_age = MaxAge {
                 sanitized_epoch: bank.epoch(),
                 // Reload the lookup table during minimal resanitization.
@@ -1779,8 +1780,7 @@ mod tests {
 
         bank.transfer(1, &mint_keypair, &keypair.pubkey()).unwrap();
 
-        let _ =
-            consumer.process_and_record_transactions(&bank, std::slice::from_ref(&sanitized_tx));
+        let _ = consumer.process_and_record_transactions(&bank, slice::from_ref(&sanitized_tx));
         drop(consumer); // drop/disconnect transaction_status_sender
 
         let status_messages = transaction_status_receiver.into_iter().collect::<Vec<_>>();
