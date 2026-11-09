@@ -246,7 +246,7 @@ impl Consumer {
         )
     }
 
-    fn process_and_record_transactions_with_pre_results(
+    pub(crate) fn process_and_record_transactions_with_pre_results(
         &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
@@ -956,9 +956,8 @@ mod tests {
         account
     }
 
-    #[test_case(false; "ordinary")]
-    #[test_case(true; "revert_on_error")]
-    fn test_bank_process_and_record_transactions(revert_on_error: bool) {
+    #[test]
+    fn test_bank_process_and_record_transactions() {
         let TestFrame {
             mint_keypair,
             bank,
@@ -975,13 +974,9 @@ mod tests {
             bank.confirmed_last_blockhash(),
         )]);
 
-        let process_transactions_batch_output = consumer
-            .process_and_record_transactions_with_policy(
-                &bank,
-                &transactions,
-                None,
-                revert_on_error,
-            );
+        let process_transactions_batch_output =
+            consumer.process_and_record_transactions(&bank, &transactions);
+
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             commit_transactions_result,
@@ -1003,7 +998,7 @@ mod tests {
 
         let record = record_receiver.drain().next().unwrap();
         assert_eq!(record.bank_id, bank.bank_id());
-        assert_eq!(record.reschedule_on_sad_handover, !revert_on_error);
+        assert!(record.reschedule_on_sad_handover);
         assert_eq!(record.transactions.len(), 1);
 
         let transactions = sanitize_transactions(vec![system_transaction::transfer(
