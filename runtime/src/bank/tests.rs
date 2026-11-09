@@ -2043,6 +2043,106 @@ fn test_load_and_execute_commit_transactions_failure() {
 }
 
 #[test]
+fn test_commit_transactions_with_transaction_refs() {
+    use {
+        agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
+        solana_accounts_db::accounts_update_notifier_interface::{
+            AccountForGeyser, AccountsUpdateNotifierInterface,
+        },
+    };
+
+    /// Records the address of each transaction an account notification references.
+    #[derive(Debug, Default)]
+    struct Notifier(Mutex<Vec<usize>>);
+
+    impl AccountsUpdateNotifierInterface for Notifier {
+        fn snapshot_notifications_enabled(&self) -> bool {
+            false
+        }
+
+        fn notify_account_update(
+            &self,
+            _slot: Slot,
+            _bank_id: BankId,
+            _account: &AccountSharedData,
+            txn: &Option<&SanitizedTransaction>,
+            _pubkey: &Pubkey,
+            _write_version: u64,
+        ) {
+            if let Some(tx) = txn {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(std::ptr::from_ref(*tx) as usize);
+            }
+        }
+
+        fn notify_account_restore_from_snapshot(
+            &self,
+            _slot: Slot,
+            _write_version: u64,
+            _account: &AccountForGeyser<'_>,
+        ) {
+        }
+
+        fn notify_end_of_restore_from_snapshot(&self) {}
+    }
+
+    let (genesis_config, mint) = create_genesis_config(100 * LAMPORTS_PER_SOL);
+    let notifier = Arc::new(Notifier::default());
+    let bank = Bank::new_from_genesis(
+        &genesis_config,
+        Arc::default(),
+        vec![],
+        None,
+        ACCOUNTS_DB_CONFIG_FOR_TESTING,
+        Some(notifier.clone()),
+        None,
+        Arc::default(),
+        None,
+        None,
+    );
+    let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
+    let amount = bank.get_minimum_balance_for_rent_exemption(0);
+    // The first transfer fails to load, so the committed one is at index 1.
+    let blockhash = bank.last_blockhash();
+    let transactions: Vec<RuntimeTransaction<ResolvedTransactionView<Bytes>>> = vec![
+        system_transaction::transfer(&Keypair::new(), &mint.pubkey(), amount, blockhash).into(),
+        system_transaction::transfer(&mint, &Pubkey::new_unique(), amount, blockhash).into(),
+    ];
+    let prepared = transactions
+        .iter()
+        .map(|tx| tx.as_sanitized_transaction().into_owned())
+        .collect::<Vec<_>>();
+    let batch = bank.prepare_sanitized_batch(&transactions);
+    let output = bank.load_and_execute_transactions(
+        &batch,
+        bank.max_processing_age(),
+        &mut ExecuteTimings::default(),
+        &mut TransactionErrorMetrics::default(),
+        // Like block production, so the failed transfer isn't committed as a no-op.
+        TransactionProcessingConfig {
+            drop_noop_transactions: true,
+            ..Default::default()
+        },
+    );
+    let results = bank.commit_transactions_with_transaction_refs(
+        &transactions,
+        output.processing_results,
+        &output.processed_counts,
+        &mut ExecuteTimings::default(),
+        Some(&prepared),
+    );
+    assert!(results[0].is_err());
+    assert_eq!(results[1].as_ref().unwrap().status, Ok(()));
+
+    let notifications = notifier.0.lock().unwrap();
+    assert!(!notifications.is_empty());
+    let committed = std::ptr::from_ref(&prepared[1]) as usize;
+    assert!(notifications.iter().all(|address| *address == committed));
+}
+
+#[test]
 fn test_load_and_execute_commit_transactions_success() {
     let GenesisConfigInfo {
         mut genesis_config, ..

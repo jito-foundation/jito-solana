@@ -749,17 +749,18 @@ fn produce_window(
 struct AccumulatedTxs {
     /// Every recorded transaction. Sad handover purges their transaction history.
     recorded: Vec<VersionedTransaction>,
-    /// Recorded transactions that sad handover reschedules against the recreated bank.
-    reschedulable: Vec<VersionedTransaction>,
+    /// Whether sad handover reschedules the `recorded` transaction at the same index against the
+    /// recreated bank.
+    reschedulable: Vec<bool>,
 }
 
 impl AccumulatedTxs {
     fn extend(&mut self, record: &Record) {
         self.recorded.extend(record.transactions.iter().cloned());
-        if record.reschedule_on_sad_handover {
-            self.reschedulable
-                .extend(record.transactions.iter().cloned());
-        }
+        self.reschedulable.extend(std::iter::repeat_n(
+            record.reschedule_on_sad_handover,
+            record.transactions.len(),
+        ));
     }
 }
 
@@ -1104,7 +1105,7 @@ fn handle_parent_ready(
     ctx.poh_recorder.write().unwrap().clear_bank(false);
     let AccumulatedTxs {
         recorded: recorded_txs,
-        reschedulable: reschedulable_txs,
+        reschedulable,
     } = accumulated_txs;
     let recorded_txs = Arc::new(recorded_txs);
 
@@ -1153,9 +1154,11 @@ fn handle_parent_ready(
     update_leader_window_clock(ctx, slot, *block_timer);
 
     // Re-inject accumulated transactions back to banking stage for rescheduling
-    let packets: Vec<BytesPacket> = reschedulable_txs
+    let packets: Vec<BytesPacket> = recorded_txs
         .iter()
-        .filter_map(|tx| {
+        .zip(reschedulable)
+        .filter(|(_, reschedulable)| *reschedulable)
+        .filter_map(|(tx, _)| {
             let serialized = wincode::serialize(tx)
                 .inspect_err(|e| {
                     error!(
@@ -2346,7 +2349,7 @@ mod tests {
             },
             AccumulatedTxs {
                 recorded: vec![accumulated_tx.clone()],
-                reschedulable: vec![accumulated_tx.clone()],
+                reschedulable: vec![true],
             },
             &mut Instant::now(),
         );

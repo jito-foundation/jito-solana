@@ -20,7 +20,7 @@ use {
         },
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
-            fetch_stage_manager::FetchStageManager,
+            fetch_stage_manager::{FetchStageManager, TpuPacketSender},
             relayer_stage::{RelayerConfig, RelayerStage},
         },
         sigverify_stage::SigVerifyStage,
@@ -175,18 +175,18 @@ impl Tpu {
         // [----------]
         // [-- QUIC --] \
         // [----------]  \____     [-----------------------]     [--------------------]     [------------------]
-        //                    ---- [-- FetchStageManager --] --> [-- SigverifyStage --] --> [-- BankingStage --]
+        //                    ---- [--- TpuPacketSender ---] --> [-- SigverifyStage --] --> [-- BankingStage --]
         // [--------------]  /     [-----------------------]     [--------------------]     [------------------]
         // [-- Vortexor --] /
         // [--------------]
         //
-        //             fetch_stage_manager_*               sigverify_stage_*
+        //                                                 sigverify_stage_*
 
-        // Packets from fetch stage and quic server are intercepted and sent through fetch_stage_manager
-        // If relayer is connected, packets are dropped. If not, packets are forwarded to sigverify.
-        let (fetch_stage_manager_sender, fetch_stage_manager_receiver) = bounded(TPU_CHANNEL_SIZE);
+        // Packets from fetch stage and quic server go to sigverify, or are dropped while
+        // FetchStageManager advertises a relayer or BAM TPU.
         let (sigverify_stage_sender, sigverify_stage_receiver) =
             agave_wake_channel::bounded(TPU_CHANNEL_SIZE);
+        let tpu_packet_sender = TpuPacketSender::new(sigverify_stage_sender.clone());
 
         let (vote_packet_sender, vote_packet_receiver) = bounded(0); // TPU votes are not ingested
         let evicting_vote_sender =
@@ -196,7 +196,7 @@ impl Tpu {
         let fetch_stage = FetchStage::new_with_sender(
             Vec::new(),
             exit.clone(),
-            &fetch_stage_manager_sender,
+            &tpu_packet_sender,
             &evicting_vote_sender,
             forwarded_packet_receiver,
             poh_recorder,
@@ -232,7 +232,7 @@ impl Tpu {
             "quic_streamer_tpu",
             transactions_quic_sockets,
             keypair,
-            fetch_stage_manager_sender,
+            tpu_packet_sender.clone(),
             staked_nodes.clone(),
             tpu_quic_server_config.quic_streamer_config,
             tpu_quic_server_config.qos_config,
@@ -316,8 +316,7 @@ impl Tpu {
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),
             heartbeat_rx,
-            fetch_stage_manager_receiver,
-            sigverify_stage_sender.clone(),
+            tpu_packet_sender,
             exit.clone(),
             bam_enabled.clone(),
             cluster_info.my_contact_info().clone(),
