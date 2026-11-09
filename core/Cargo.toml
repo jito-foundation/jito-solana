@@ -96,6 +96,7 @@ qualifier_attr = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rolling-file = { workspace = true }
 rts-alloc = { workspace = true }
 rustls = { workspace = true }
@@ -217,6 +218,7 @@ bencher = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
 rcgen = { workspace = true }
+serde_json = { workspace = true }
 serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["bincode", "wincode"] }
 solana-bpf-loader-program = { path = "../programs/bpf_loader", default-features = false, features = ["agave-unstable-api", "svm-internal"] }
