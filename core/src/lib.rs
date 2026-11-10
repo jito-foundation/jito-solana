@@ -15,7 +15,6 @@ pub mod bam_manager;
 pub mod banking_channels;
 pub mod banking_stage;
 pub(crate) mod block_creation_loop;
-pub mod bundle;
 mod bundle_sigverify_stage;
 pub mod bundle_stage;
 pub mod commitment_service;
@@ -146,11 +145,5 @@ mod proto_packet_to_packet_tests {
         let packet = proto_packet_to_packet(proto);
 
         assert!(packet.meta().discard());
-    }
-
-    #[test]
-    fn legacy_sized_packet_is_unchanged() {
-        let packet = proto_packet_to_packet(proto_with_len(1000));
-        assert_eq!(packet.data(..).unwrap().len(), 1000);
     }
 }

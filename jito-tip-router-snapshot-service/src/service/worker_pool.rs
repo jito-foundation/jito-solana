@@ -5,7 +5,7 @@ use {
         config::TipRouterSnapshotConfig,
         snapshot_worker::{SnapshotWorkerHandle, WorkerCompletion},
     },
-    crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
+    crossbeam_channel::{Receiver, Sender},
     log::warn,
     solana_runtime::bank::Bank,
     std::{
@@ -89,21 +89,8 @@ impl SnapshotWorkerPool {
                         completions.push(completion);
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => {
-                    let finished = self
-                        .workers
-                        .iter()
-                        .filter_map(|(candidate, worker)| {
-                            worker.is_finished().then_some(*candidate)
-                        })
-                        .collect::<Vec<_>>();
-                    for candidate in finished {
-                        if let Some(worker) = self.workers.remove(&candidate) {
-                            completions.push(worker.join_without_report());
-                        }
-                    }
-                }
+                // The pool holds a completion sender, so only `Timeout` is possible.
+                Err(_) => continue,
             }
         }
 

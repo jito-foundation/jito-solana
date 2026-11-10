@@ -2,7 +2,6 @@
 pull_request_rules:
   - name: label changes from community
     conditions:
-      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -15,7 +14,6 @@ pull_request_rules:
           - need:merge-assist
   - name: request review for community changes
     conditions:
-      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -32,17 +30,6 @@ pull_request_rules:
       request_reviews:
         teams:
           - "@jito-foundation/jito-solana"
-  - name: label changes from monorepo-triage
-    conditions:
-      - author≠@anza
-      - author≠mergify[bot]
-      - author≠dependabot[bot]
-      - author≠github-actions[bot]
-      - author=@agave-external-triage
-    actions:
-      label:
-        add:
-          - need:merge-assist
   - name: v4.4 backport
     conditions:
       - label=disabled # backports handled by .github/workflows/backport.yml

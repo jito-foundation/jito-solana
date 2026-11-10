@@ -350,10 +350,6 @@ impl ClusterInfo {
         self.gossip.crds.write().set_contact_info_sender(sender);
     }
 
-    pub fn set_my_contact_info(&self, my_contact_info: ContactInfo) {
-        *self.my_contact_info.write() = my_contact_info;
-    }
-
     pub fn save_contact_info(&self) {
         let _st = ScopedTimer::from(&self.stats.save_contact_info_time);
         let nodes = {
@@ -2491,10 +2487,6 @@ impl ClusterInfo {
     pub fn set_client_id(&self, client_id: ClientId) {
         self.my_contact_info.write().version.set_client(client_id);
         self.refresh_my_gossip_contact_info();
-    }
-
-    pub fn get_client_id(&self) -> ClientId {
-        *self.my_contact_info.read().version.client()
     }
 }
 

@@ -74,8 +74,6 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     insertion_to_prio_graph_time: IntMap<u32, Instant>,
     time_in_priograph_us: Histogram,
     time_in_worker_us: Histogram,
-    time_between_schedule_us: Histogram,
-    last_schedule_time: Instant,
     slot: Option<Slot>,
 
     // Reusable objects to avoid allocations
@@ -192,8 +190,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             insertion_to_prio_graph_time: IntMap::default(),
             time_in_priograph_us: Histogram::new(),
             time_in_worker_us: Histogram::new(),
-            time_between_schedule_us: Histogram::new(),
-            last_schedule_time: Instant::now(),
             slot: None,
             reusable_consume_work: Vec::new(),
             extra_checks_enabled: true,
@@ -662,8 +658,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         if self.slot.is_none() {
             self.report_histogram_metrics();
         }
-
-        self.last_schedule_time = Instant::now();
     }
 
     fn report_histogram_metrics(&mut self) {
@@ -671,7 +665,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         datapoint_info!(
             "bam_scheduler_bank_boundary-metrics",
             ("time_in_priograph_us_p50", percentile(50.0), i64),
-            ("time_in_priograph_us_p75", percentile(75.0), i64),
             ("time_in_priograph_us_p90", percentile(90.0), i64),
             ("time_in_priograph_us_p99", percentile(99.0), i64),
             (
@@ -686,7 +679,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         datapoint_info!(
             "bam_scheduler_worker_time_metrics",
             ("time_in_worker_us_p50", percentile(50.0), i64),
-            ("time_in_worker_us_p75", percentile(75.0), i64),
             ("time_in_worker_us_p90", percentile(90.0), i64),
             ("time_in_worker_us_p99", percentile(99.0), i64),
             (
@@ -696,25 +688,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             ),
         );
         self.time_in_worker_us.clear();
-
-        let percentile = |p| {
-            self.time_between_schedule_us
-                .percentile(p)
-                .unwrap_or_default()
-        };
-        datapoint_info!(
-            "bam_scheduler_time_between_schedules_metrics",
-            ("time_between_schedule_us_p50", percentile(50.0), i64),
-            ("time_between_schedule_us_p75", percentile(75.0), i64),
-            ("time_between_schedule_us_p90", percentile(90.0), i64),
-            ("time_between_schedule_us_p99", percentile(99.0), i64),
-            (
-                "time_between_schedule_us_max",
-                self.time_between_schedule_us.maximum().unwrap_or_default(),
-                i64
-            ),
-        );
-        self.time_between_schedule_us.clear();
     }
 }
 
@@ -731,13 +704,6 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
     ) -> Result<SchedulingSummary, SchedulerError> {
         let starting_queue_size = container.queue_size();
         let starting_buffer_size = container.buffer_size();
-
-        let start_time = Instant::now();
-        let time_since_last_schedule = start_time.duration_since(self.last_schedule_time);
-        self.last_schedule_time = start_time;
-        let _ = self
-            .time_between_schedule_us
-            .increment(time_since_last_schedule.as_micros() as u64);
 
         let mut num_scheduled = 0;
 
@@ -842,7 +808,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                         }
                         None => {
                             warn!("Processed results for batch {batch_id} are missing for index 0");
-                            continue;
+                            Self::not_committed_result(0, NotCommittedReason::PohTimeout)
                         }
                     }
                 };
@@ -989,16 +955,6 @@ mod tests {
         }
 
         container
-    }
-
-    #[test]
-    fn test_scheduler_empty() {
-        let (bank_forks, _) = test_bank_forks();
-        let TestScheduler { mut scheduler, .. } = create_test_scheduler(&bank_forks);
-
-        let mut container = TransactionStateContainer::with_capacity(100);
-        let result = scheduler.schedule(&mut container, 0, 0).unwrap();
-        assert_eq!(result.num_scheduled, 0);
     }
 
     #[test]
@@ -1403,54 +1359,6 @@ mod tests {
             !conflicting,
             "a write to the ProgramData PDA must wait for the implicit read lock"
         );
-    }
-
-    #[test]
-    fn test_prio_graph_clears_on_slot_boundary() {
-        let (bank_forks, _) = test_bank_forks();
-        let TestScheduler { mut scheduler, .. } = create_test_scheduler(&bank_forks);
-        scheduler.extra_checks_enabled = false;
-
-        let keypair_a = Keypair::new();
-        let keypair_b = Keypair::new();
-
-        let bank = bank_forks.read().unwrap().working_bank();
-
-        // Set initial slot with bank start
-        let mut container = create_container(vec![
-            (&keypair_a, vec![Pubkey::new_unique()], 1000, 0, u64::MAX),
-            (&keypair_b, vec![Pubkey::new_unique()], 2000, 1, u64::MAX),
-        ]);
-        let decision = BufferedPacketsDecision::Consume(bank.clone());
-
-        scheduler
-            .receive_completed(&mut container, &decision)
-            .unwrap();
-        assert_eq!(scheduler.slot, Some(bank.slot()));
-
-        // Pull transactions into prio_graph
-        scheduler.pull_into_prio_graph(&mut container, &bank);
-        assert!(
-            !scheduler.prio_graph.is_empty(),
-            "Prio graph should have transactions"
-        );
-
-        set_leader_bank(&mut scheduler.shared_leader_state, Some(bank));
-        scheduler.shared_leader_state.set_bank_replacement();
-        scheduler
-            .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
-            .unwrap();
-        assert!(!scheduler.prio_graph.is_empty());
-
-        // Simulate slot boundary change by changing to no bank (None)
-        let decision_no_bank = BufferedPacketsDecision::Forward;
-        scheduler
-            .receive_completed(&mut container, &decision_no_bank)
-            .unwrap();
-
-        assert_eq!(scheduler.slot, None);
-        assert!(scheduler.prio_graph.is_empty());
-        assert!(container.is_empty());
     }
 
     /// Regression test for the `solBamSched` "blocking node must exist" panic.

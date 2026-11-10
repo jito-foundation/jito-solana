@@ -16,13 +16,13 @@ pub mod fetch_stage_manager;
 pub mod relayer_stage;
 
 use {
-    crate::tonic_endpoint,
     std::{
         net::{AddrParseError, SocketAddr},
         result,
+        time::Duration,
     },
     thiserror::Error,
-    tonic::{Status, transport::Endpoint},
+    tonic::{Response, Status},
 };
 
 type Result<T> = result::Result<T, ProxyError>;
@@ -81,9 +81,6 @@ pub enum ProxyError {
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,
 
-    #[error("RelayerTimeout")]
-    RelayerEngineTimeout,
-
     #[error("RelayerConnectionError: {0:?}")]
     RelayerConnectionError(String),
 
@@ -113,12 +110,20 @@ fn sanitize_status_message_for_influx(input: &str) -> String {
         .collect()
 }
 
-fn endpoint_from_url(
-    url: &str,
-    invalid_error: impl FnOnce() -> ProxyError,
-    tls_error: impl FnOnce() -> ProxyError,
-) -> Result<Endpoint> {
-    tonic_endpoint::endpoint_from_url_with_error(url, invalid_error, tls_error)
+/// Runs a gRPC call, mapping a timeout or an error status to `ProxyError`.
+async fn call_with_timeout<T>(
+    method: &str,
+    duration: Duration,
+    call: impl Future<Output = result::Result<Response<T>, Status>>,
+) -> Result<T> {
+    tokio::time::timeout(duration, call)
+        .await
+        .map_err(|_| ProxyError::MethodTimeout(method.to_string()))?
+        .map(Response::into_inner)
+        .map_err(|status| ProxyError::MethodError {
+            code: status.code(),
+            message: sanitize_status_message_for_influx(status.message()),
+        })
 }
 
 impl From<Status> for ProxyError {

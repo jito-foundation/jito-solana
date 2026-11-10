@@ -90,30 +90,6 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --accounts-db-skip-shrink ]]; then
       args+=("$1")
       shift
-    elif [[ $1 == --relayer-url ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --block-engine-url ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --disable-block-engine-autoconfig ]]; then
-      args+=("$1")
-      shift
-    elif [[ $1 == --tip-payment-program-pubkey ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --tip-distribution-program-pubkey ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --commission-bps ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --shred-receiver-address ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --shred-retransmit-receiver-address ]]; then
-      args+=("$1" "$2")
-      shift 2
     elif [[ $1 = --log-messages-bytes-limit ]]; then
       args+=("$1" "$2")
       shift 2
@@ -126,18 +102,6 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --transaction-structure ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 == --geyser-plugin-config ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --trust-relayer-packets ]]; then
-      args+=("$1")
-      shift
-    elif [[ $1 == --rpc-threads ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --trust-block-engine-packets ]]; then
-      args+=("$1")
-      shift
     else
       echo "Unknown argument: $1"
       $program --help

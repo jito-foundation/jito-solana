@@ -14,8 +14,9 @@ use {
         proxy::{
             HeartbeatEvent, ProxyError,
             auth::{AuthInterceptor, AuthRefreshState, auth_client_from_endpoint},
-            endpoint_from_url,
+            call_with_timeout,
         },
+        tonic_endpoint,
     },
     arc_swap::ArcSwap,
     crossbeam_channel::Sender,
@@ -40,8 +41,8 @@ use {
     },
 };
 
-const CONNECTION_TIMEOUT_S: u64 = 10;
-const CONNECTION_BACKOFF_S: u64 = 5;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECTION_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct RelayerStageStats {
@@ -72,7 +73,7 @@ pub struct RelayerConfig {
 }
 
 pub struct RelayerStage {
-    t_hdls: Vec<JoinHandle<()>>,
+    t_hdl: JoinHandle<()>,
 }
 
 impl RelayerStage {
@@ -104,19 +105,13 @@ impl RelayerStage {
             })
             .unwrap();
 
-        Self {
-            t_hdls: vec![thread],
-        }
+        Self { t_hdl: thread }
     }
 
     pub fn join(self) -> thread::Result<()> {
-        for t in self.t_hdls {
-            t.join()?;
-        }
-        Ok(())
+        self.t_hdl.join()
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn start(
         relayer_config: Arc<ArcSwap<RelayerConfig>>,
         cluster_info: Arc<ClusterInfo>,
@@ -124,9 +119,6 @@ impl RelayerStage {
         packet_tx: agave_wake_channel::Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
     ) {
-        const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
-        const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
-
         let mut error_count: u64 = 0;
 
         while !exit.load(Ordering::Relaxed) {
@@ -142,7 +134,6 @@ impl RelayerStage {
                 &heartbeat_tx,
                 &packet_tx,
                 &exit,
-                &CONNECTION_TIMEOUT,
             )
             .await
             {
@@ -176,7 +167,6 @@ impl RelayerStage {
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &agave_wake_channel::Sender<PacketBatch>,
         exit: &Arc<AtomicBool>,
-        connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair();
@@ -184,7 +174,7 @@ impl RelayerStage {
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
         let auth_refresh_state =
-            auth_client_from_endpoint(&backend_endpoint, connection_timeout, keypair.as_ref())
+            auth_client_from_endpoint(&backend_endpoint, &CONNECTION_TIMEOUT, keypair.as_ref())
                 .await?;
 
         datapoint_info!(
@@ -196,7 +186,7 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
-        let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
+        let relayer_channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::RelayerConnectionTimeout)?
             .map_err(|err| {
@@ -216,7 +206,6 @@ impl RelayerStage {
             exit,
             auth_refresh_state,
             cluster_info,
-            connection_timeout,
         )
         .await
     }
@@ -231,20 +220,14 @@ impl RelayerStage {
         exit: &Arc<AtomicBool>,
         auth_refresh_state: AuthRefreshState,
         cluster_info: &Arc<ClusterInfo>,
-        connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         let heartbeat_event: HeartbeatEvent = {
-            let tpu_config = timeout(
-                *connection_timeout,
+            let tpu_config = call_with_timeout(
+                "relayer_get_tpu_configs",
+                CONNECTION_TIMEOUT,
                 client.get_tpu_configs(relayer::GetTpuConfigsRequest {}),
             )
-            .await
-            .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
-            .map_err(|status| ProxyError::MethodError {
-                code: status.code(),
-                message: crate::proxy::sanitize_status_message_for_influx(status.message()),
-            })?
-            .into_inner();
+            .await?;
 
             let tpu_addr = tpu_config
                 .tpu
@@ -261,17 +244,12 @@ impl RelayerStage {
             (tpu_socket, tpu_forward_socket)
         };
 
-        let packet_stream = timeout(
-            *connection_timeout,
+        let packet_stream = call_with_timeout(
+            "relayer_subscribe_packets",
+            CONNECTION_TIMEOUT,
             client.subscribe_packets(relayer::SubscribePacketsRequest {}),
         )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
-        .map_err(|status| ProxyError::MethodError {
-            code: status.code(),
-            message: crate::proxy::sanitize_status_message_for_influx(status.message()),
-        })?
-        .into_inner();
+        .await?;
 
         Self::consume_packet_stream(
             heartbeat_event,
@@ -283,7 +261,6 @@ impl RelayerStage {
             exit,
             auth_refresh_state,
             cluster_info,
-            connection_timeout,
         )
         .await
     }
@@ -299,7 +276,6 @@ impl RelayerStage {
         exit: &Arc<AtomicBool>,
         mut auth_refresh_state: AuthRefreshState,
         cluster_info: &Arc<ClusterInfo>,
-        connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         let refresh_within_s: u64 = METRICS_TICK.as_secs().saturating_mul(3).saturating_div(2);
@@ -339,7 +315,7 @@ impl RelayerStage {
                     }
 
                     let (access_token_refreshed, refresh_token_refreshed) = auth_refresh_state
-                        .maybe_refresh(cluster_info, connection_timeout, refresh_within_s)
+                        .maybe_refresh(cluster_info, &CONNECTION_TIMEOUT, refresh_within_s)
                         .await?;
 
                     if access_token_refreshed {
@@ -430,18 +406,10 @@ impl RelayerStage {
     }
 
     fn get_endpoint(relayer_url: &str) -> crate::proxy::Result<Endpoint> {
-        endpoint_from_url(
-            relayer_url,
-            || {
-                ProxyError::RelayerConnectionError(format!(
-                    "invalid relayer url value: {relayer_url}"
-                ))
-            },
-            || {
-                ProxyError::RelayerConnectionError(
-                    "failed to set tls_config for relayer service".to_string(),
-                )
-            },
-        )
+        tonic_endpoint::endpoint_from_url(relayer_url).map_err(|_| {
+            ProxyError::RelayerConnectionError(format!(
+                "invalid relayer url or tls config: {relayer_url}"
+            ))
+        })
     }
 }

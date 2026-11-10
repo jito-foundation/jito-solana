@@ -26,7 +26,7 @@ pub(crate) struct ArtifactStore {
 impl ArtifactStore {
     pub(crate) fn new(output_dir: PathBuf) -> Result<Self, ArtifactStoreError> {
         let candidates_dir = candidate_directory(&output_dir);
-        ensure_output_directory(&candidates_dir).map_err(|source| {
+        fs::create_dir_all(&candidates_dir).map_err(|source| {
             ArtifactStoreError::DirectoryUnavailable {
                 path: candidates_dir.clone(),
                 source,
@@ -180,29 +180,6 @@ pub(crate) enum PublishError {
 
 fn candidate_directory(output_dir: &Path) -> PathBuf {
     output_dir.join(CANDIDATES_DIRECTORY_NAME)
-}
-
-/// Checks path_dir is directory, if not, creates it
-fn ensure_output_directory(output_dir: &Path) -> io::Result<()> {
-    match fs::metadata(output_dir) {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            format!("{} is not a directory", output_dir.display()),
-        )),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(output_dir)?;
-            if fs::metadata(output_dir)?.is_dir() {
-                Ok(())
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::NotADirectory,
-                    format!("{} is not a directory", output_dir.display()),
-                ))
-            }
-        }
-        Err(err) => Err(err),
-    }
 }
 
 /// Parses + Validates file name

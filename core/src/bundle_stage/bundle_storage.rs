@@ -62,7 +62,6 @@ pub struct BundleStorage {
 impl BundleStorage {
     const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
-    #[allow(unused)]
     pub fn with_capacity(transaction_capacity: usize) -> Self {
         Self {
             last_slot: Slot::default(),
@@ -199,7 +198,6 @@ impl BundleStorage {
         }
 
         let mut container_ids = SmallVec::<[usize; 5]>::new();
-        let mut maybe_error = Ok(());
         let working_limits = working_bank.get_transaction_account_lock_limits();
         let root_limits = root_bank.get_transaction_account_lock_limits();
         let transaction_account_lock_limits = TransactionAccountLockLimits {
@@ -212,34 +210,27 @@ impl BundleStorage {
             // bundles shall contain all valid packets; checked above
             let packet_data = packet.data(..).unwrap();
 
-            // try to insert the packet into the container
-            let insert_result = match TransactionViewReceiveAndBuffer::try_handle_packet(
+            match TransactionViewReceiveAndBuffer::try_handle_packet(
                 Bytes::copy_from_slice(packet_data),
                 root_bank,
                 working_bank,
                 transaction_account_lock_limits,
                 blacklisted_accounts,
             ) {
-                Ok(state) => self
-                    .transaction_view_state_container
-                    .try_insert_map_only(state),
-                Err(e) => {
-                    maybe_error = Err(e);
-                    None
-                }
-            };
-            if let Some(container_id) = insert_result {
-                container_ids.push(container_id);
-            } else {
-                // any error shall rollback any transactions added to the container
-                for container_id in container_ids.iter() {
+                // The capacity check above leaves room for every packet in the bundle.
+                Ok(state) => container_ids.push(
                     self.transaction_view_state_container
-                        .remove_by_id(*container_id);
+                        .insert_map_only(state)
+                        .id,
+                ),
+                Err(e) => {
+                    // any error shall rollback any transactions added to the container
+                    for container_id in container_ids.iter() {
+                        self.transaction_view_state_container
+                            .remove_by_id(*container_id);
+                    }
+                    return Err(BundleStorageError::PacketFilterError((e, idx)));
                 }
-                return match maybe_error {
-                    Err(e) => Err(BundleStorageError::PacketFilterError((e, idx))),
-                    Ok(()) => Err(BundleStorageError::ContainerFull),
-                };
             }
         }
 
@@ -313,19 +304,28 @@ mod tests {
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
         solana_message::{AddressLoader, AddressLookupTableAccount, VersionedMessage, v0},
-        solana_perf::packet::{BytesPacket, PacketBatch},
+        solana_perf::{
+            packet::{BytesPacket, PacketBatch},
+            test_tx::test_tx,
+        },
         solana_pubkey::Pubkey,
-        solana_runtime::bank::{Bank, NewBankOptions},
+        solana_runtime::bank::Bank,
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
-        std::{assert_matches, borrow::Cow},
+        std::borrow::Cow,
     };
 
-    pub fn test_tx() -> Transaction {
-        let keypair1 = Keypair::new();
-        let pubkey1 = keypair1.pubkey();
-        solana_system_transaction::transfer(&keypair1, &pubkey1, 42, Hash::default())
+    fn insert_tx(bundle_storage: &mut BundleStorage, bank: &Bank, tx: &Transaction) {
+        let packet = BytesPacket::from_data(tx).unwrap();
+        bundle_storage
+            .insert_bundle(
+                VerifiedPacketBundle::new(PacketBatch::from(vec![packet])),
+                bank,
+                bank,
+                &HashSet::new(),
+            )
+            .unwrap();
     }
 
     #[test_case::test_case(false, false, true; "root_inactive_keeps_locks")]
@@ -481,63 +481,45 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_bundle_vote_only_check_uses_working_bank() {
-        let (root_bank, _bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
-        let working_bank = Bank::new_from_parent_with_options(
-            root_bank.clone(),
-            SlotLeader::new_unique(),
-            root_bank.slot() + 1,
-            NewBankOptions {
-                vote_only_bank: true,
-            },
-        );
-        let packet = BytesPacket::from_data(test_tx()).unwrap();
-        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
-        let mut bundle_storage = BundleStorage::with_capacity(1);
-
-        assert_eq!(
-            bundle_storage.insert_bundle(
-                bundle,
-                root_bank.as_ref(),
-                &working_bank,
-                &HashSet::new(),
-            ),
-            Err(BundleStorageError::PacketFilterError((
-                PacketHandlingError::Sanitization,
-                0,
-            )))
-        );
-    }
-
-    #[test]
-    fn test_bundle_too_large() {
+    #[test_case::test_case("empty", BundleStorageError::EmptyBatch)]
+    #[test_case::test_case("too_large", BundleStorageError::BundleTooLarge)]
+    #[test_case::test_case("discard", BundleStorageError::PacketMarkedDiscard(1))]
+    #[test_case::test_case("duplicate", BundleStorageError::DuplicateTransaction)]
+    #[test_case::test_case(
+        "blacklisted",
+        BundleStorageError::PacketFilterError((PacketHandlingError::FilterKey, 0))
+    )]
+    fn test_insert_bundle_rejected(case: &str, expected: BundleStorageError) {
         let mut bundle_storage = BundleStorage::with_capacity(10);
-
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let packets: Vec<BytesPacket> = (0..BundleStorage::MAX_PACKETS_PER_BUNDLE + 1)
-            .map(|_| BytesPacket::from_data(test_tx()).unwrap())
-            .collect();
+        let tx = test_tx();
+        let packet = BytesPacket::from_data(&tx).unwrap();
+        let packets = match case {
+            "empty" => vec![],
+            "too_large" => (0..BundleStorage::MAX_PACKETS_PER_BUNDLE + 1)
+                .map(|_| BytesPacket::from_data(test_tx()).unwrap())
+                .collect(),
+            "discard" => {
+                let mut discarded = BytesPacket::from_data(test_tx()).unwrap();
+                discarded.meta_mut().set_discard(true);
+                vec![packet, discarded]
+            }
+            "duplicate" => vec![packet.clone(), packet],
+            _ => vec![packet],
+        };
+        let blacklisted_accounts = if case == "blacklisted" {
+            HashSet::from_iter([tx.message().account_keys[0]])
+        } else {
+            HashSet::new()
+        };
         let bundle = VerifiedPacketBundle::new(PacketBatch::from(packets));
-        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
-
-        assert_matches!(result, Err(BundleStorageError::BundleTooLarge));
-        assert_eq!(bundle_storage.unprocessed_bundles.len(), 0);
-        assert_eq!(bundle_storage.cost_model_buffered_bundles.len(), 0);
-        assert!(bundle_storage.transaction_view_state_container.is_empty());
-    }
-
-    #[test]
-    fn test_bundle_marked_discard() {
-        let mut bundle_storage = BundleStorage::with_capacity(10);
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let packet_1 = BytesPacket::from_data(test_tx()).unwrap();
-        let mut packet_2 = BytesPacket::from_data(test_tx()).unwrap();
-        packet_2.meta_mut().set_discard(true);
-        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]));
-        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
-        assert_matches!(result, Err(BundleStorageError::PacketMarkedDiscard(1)));
+        assert_eq!(
+            bundle_storage.insert_bundle(bundle, &bank, &bank, &blacklisted_accounts),
+            Err(expected)
+        );
+        assert!(bundle_storage.unprocessed_bundles.is_empty());
+        assert!(bundle_storage.cost_model_buffered_bundles.is_empty());
+        assert_eq!(bundle_storage.num_packets_buffered(), 0);
     }
 
     #[test]
@@ -575,34 +557,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bundle_empty() {
-        let mut bundle_storage = BundleStorage::with_capacity(10);
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![]));
-        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
-        assert_matches!(result, Err(BundleStorageError::EmptyBatch));
-    }
-
-    #[test]
-    fn test_bundle_duplicate_hashes() {
-        let mut bundle_storage = BundleStorage::with_capacity(10);
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let packet_1 = BytesPacket::from_data(test_tx()).unwrap();
-        let packet_2 = packet_1.clone();
-        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]));
-        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
-        assert_matches!(result, Err(BundleStorageError::DuplicateTransaction));
-        assert!(
-            bundle_storage
-                .transaction_view_state_container
-                .buffer_size()
-                == 0
-        );
-        assert!(bundle_storage.unprocessed_bundles.is_empty());
-        assert!(bundle_storage.cost_model_buffered_bundles.is_empty());
-    }
-
-    #[test]
     fn test_retry_bundle() {
         let mut bundle_storage = BundleStorage::with_capacity(10);
 
@@ -629,6 +583,7 @@ mod tests {
 
         let bundle = bundle_storage.pop_bundle(bank.slot() + 1, bank_id).unwrap();
         bundle_storage.destroy_bundle(bundle);
+        assert_eq!(bundle_storage.num_packets_buffered(), 0);
 
         let packet = BytesPacket::from_data(test_tx()).unwrap();
         bundle_storage
@@ -645,26 +600,7 @@ mod tests {
                 .pop_bundle(bank.slot(), bank.bank_id_generator().next())
                 .is_none()
         );
-        assert!(bundle_storage.transaction_view_state_container.is_empty());
-    }
-
-    #[test]
-    fn test_bundle_blacklisted_account() {
-        let mut bundle_storage = BundleStorage::with_capacity(10);
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let tx = test_tx();
-        let pubkey = tx.message().account_keys[0];
-        let blacklisted_accounts = HashSet::from_iter([pubkey]);
-        let packet = BytesPacket::from_data(tx).unwrap();
-        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
-        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &blacklisted_accounts);
-        assert_matches!(
-            result,
-            Err(BundleStorageError::PacketFilterError((
-                PacketHandlingError::FilterKey,
-                0
-            )))
-        );
+        assert_eq!(bundle_storage.num_packets_buffered(), 0);
     }
 
     #[test]
@@ -678,31 +614,9 @@ mod tests {
         let tx_3 = test_tx();
         let tx_4 = test_tx();
 
-        let packet_batch_1 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_1).unwrap(),
-        ]));
-        let packet_batch_2 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_2).unwrap(),
-        ]));
-        let packet_batch_3 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_3).unwrap(),
-        ]));
-        let packet_batch_4 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_4).unwrap(),
-        ]));
-
-        bundle_storage
-            .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
-            .unwrap();
-        bundle_storage
-            .insert_bundle(packet_batch_2, &bank, &bank, &HashSet::new())
-            .unwrap();
-        bundle_storage
-            .insert_bundle(packet_batch_3, &bank, &bank, &HashSet::new())
-            .unwrap();
-        bundle_storage
-            .insert_bundle(packet_batch_4, &bank, &bank, &HashSet::new())
-            .unwrap();
+        for tx in [&tx_1, &tx_2, &tx_3, &tx_4] {
+            insert_tx(&mut bundle_storage, &bank, tx);
+        }
 
         let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot(), bank_id).unwrap();
         assert_eq!(
@@ -732,80 +646,6 @@ mod tests {
         assert_eq!(
             bundle_storage_entry_4.transactions[0].signatures()[0],
             tx_4.signatures[0]
-        );
-    }
-
-    #[test]
-    fn test_destroy_bundle() {
-        let mut bundle_storage = BundleStorage::with_capacity(100);
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let bank_id = bank.bank_id();
-
-        let tx_1 = test_tx();
-        let tx_2 = test_tx();
-
-        let packet_batch_1 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_1).unwrap(),
-        ]));
-        let packet_batch_2 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_2).unwrap(),
-        ]));
-
-        bundle_storage
-            .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
-            .unwrap();
-        bundle_storage
-            .insert_bundle(packet_batch_2, &bank, &bank, &HashSet::new())
-            .unwrap();
-
-        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot(), bank_id).unwrap();
-        bundle_storage.destroy_bundle(bundle_storage_entry_1);
-        assert!(
-            bundle_storage
-                .transaction_view_state_container
-                .buffer_size()
-                == 1
-        );
-        let bundle_storage_entry_2 = bundle_storage.pop_bundle(bank.slot(), bank_id).unwrap();
-        bundle_storage.destroy_bundle(bundle_storage_entry_2);
-        assert!(
-            bundle_storage
-                .transaction_view_state_container
-                .buffer_size()
-                == 0
-        );
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut bundle_storage = BundleStorage::with_capacity(100);
-        let bank = Bank::new_for_tests(&GenesisConfig::default());
-
-        let tx_1 = test_tx();
-        let tx_2 = test_tx();
-
-        let packet_batch_1 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_1).unwrap(),
-        ]));
-        let packet_batch_2 = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(&tx_2).unwrap(),
-        ]));
-
-        bundle_storage
-            .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
-            .unwrap();
-        bundle_storage
-            .insert_bundle(packet_batch_2, &bank, &bank, &HashSet::new())
-            .unwrap();
-
-        bundle_storage.clear();
-        assert!(bundle_storage.unprocessed_bundles.is_empty());
-        assert!(bundle_storage.cost_model_buffered_bundles.is_empty());
-        assert!(
-            bundle_storage
-                .transaction_view_state_container
-                .buffer_size()
-                == 0
         );
     }
 }

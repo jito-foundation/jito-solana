@@ -508,34 +508,16 @@ pub fn execute(
         ),
     }));
 
-    let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
-        parse_shred_receiver_addresses(
-            matches
-                .values_of("shred_receiver_address")
-                .into_iter()
-                .flatten(),
-        )
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("shred_receiver_address invalid: {err}"),
-            )
-        })?,
-    ));
-    let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::from_pointee(
-        parse_shred_receiver_addresses(
-            matches
-                .values_of("shred_retransmit_receiver_address")
-                .into_iter()
-                .flatten(),
-        )
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("shred_retransmit_receiver_address invalid: {err}"),
-            )
-        })?,
-    ));
+    let parse_receiver_addresses = |arg: &str| {
+        parse_shred_receiver_addresses(matches.values_of(arg).into_iter().flatten())
+            .map(|addresses| Arc::new(ArcSwap::from_pointee(addresses)))
+            .map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("{arg} invalid: {err}"))
+            })
+    };
+    let shred_receiver_addresses = parse_receiver_addresses("shred_receiver_address")?;
+    let shred_retransmit_receiver_addresses =
+        parse_receiver_addresses("shred_retransmit_receiver_address")?;
 
     let mut validator_config = ValidatorConfig {
         log_config,
@@ -904,35 +886,29 @@ fn tip_manager_config_from_matches(
     matches: &ArgMatches,
     voting_disabled: bool,
 ) -> TipManagerConfig {
-    if voting_disabled {
-        return TipManagerConfig {
-            tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey")
-                .unwrap_or_else(Pubkey::new_unique),
-            tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
-                .unwrap_or_else(Pubkey::new_unique),
-            tip_distribution_account_config: TipDistributionAccountConfig {
-                merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
-                    .unwrap_or_else(Pubkey::new_unique),
-                vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(Pubkey::new_unique),
-                commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_default(),
-            },
-        };
-    }
-
+    // A voting validator needs every tip argument; a non-voting one gets placeholders.
+    let pubkey = |name: &str| {
+        pubkey_of(matches, name).unwrap_or_else(|| {
+            assert!(
+                voting_disabled,
+                "--{} argument required when validator is voting",
+                name.replace('_', "-")
+            );
+            Pubkey::new_unique()
+        })
+    };
+    let commission_bps = value_t!(matches, "commission_bps", u16);
     TipManagerConfig {
-        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey")
-            .expect("--tip-payment-program-pubkey argument required when validator is voting"),
-        tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
-            .expect("--tip-distribution-program-pubkey argument required when validator is voting"),
+        tip_payment_program_id: pubkey("tip_payment_program_pubkey"),
+        tip_distribution_program_id: pubkey("tip_distribution_program_pubkey"),
         tip_distribution_account_config: TipDistributionAccountConfig {
-            merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
-                .expect(
-                    "--merkle-root-upload-authority argument required when validator is voting",
-                ),
-            vote_account: pubkey_of(matches, "vote_account")
-                .expect("--vote-account argument required when validator is voting"),
-            commission_bps: value_t!(matches, "commission_bps", u16)
-                .expect("--commission-bps argument required when validator is voting"),
+            merkle_root_upload_authority: pubkey("merkle_root_upload_authority"),
+            vote_account: pubkey("vote_account"),
+            commission_bps: if voting_disabled {
+                commission_bps.unwrap_or_default()
+            } else {
+                commission_bps.expect("--commission-bps argument required when validator is voting")
+            },
         },
     }
 }
