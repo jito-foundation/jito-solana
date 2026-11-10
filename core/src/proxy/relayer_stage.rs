@@ -89,7 +89,11 @@ impl RelayerStage {
         let thread = Builder::new()
             .name("relayer-stage".to_string())
             .spawn(move || {
+                // Stream handling runs in `block_on` on this thread. The workers only drive gRPC
+                // connections, so two are enough.
                 let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_name("solRelayerRt")
                     .enable_all()
                     .build()
                     .unwrap();

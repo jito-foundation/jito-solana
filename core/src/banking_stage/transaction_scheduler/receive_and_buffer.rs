@@ -58,7 +58,7 @@ pub enum PacketHandlingError {
 }
 
 /// Check that each precompile instruction can hold the claimed signature offset table.
-fn has_short_precompile_data(message: &impl SVMStaticMessage) -> bool {
+pub(crate) fn has_short_precompile_data(message: &impl SVMStaticMessage) -> bool {
     message.program_instructions_iter().any(|(program_id, ix)| {
         let (header_len, offset_len) = if *program_id == secp256k1_program::ID {
             (

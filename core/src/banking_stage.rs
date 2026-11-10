@@ -731,18 +731,18 @@ impl BankingStage {
                             bam_shared_leader_state.clone(),
                             tip_processing,
                         );
+                        let bam_sharable_banks =
+                            bam_scheduler_bank_forks.read().unwrap().sharable_banks();
                         let receive_and_buffer = BamReceiveAndBuffer::new(
                             bam_scheduler_exit.clone(),
                             bam_dependencies.bam_enabled.clone(),
                             bam_dependencies.batch_receiver.clone(),
                             bam_dependencies.outbound_sender.clone(),
-                            bam_scheduler_bank_forks.clone(),
+                            bam_sharable_banks.clone(),
                             Some(bam_shared_leader_state),
                             jito_filter_keys.as_ref().clone(),
                         );
 
-                        let bam_sharable_banks =
-                            bam_scheduler_bank_forks.read().unwrap().sharable_banks();
                         let mut scheduler_controller = SchedulerController::new(
                             BAM_METRICS_ID_OFFSET,
                             bam_scheduler_exit,

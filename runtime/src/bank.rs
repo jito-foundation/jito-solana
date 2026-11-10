@@ -4670,6 +4670,26 @@ impl Bank {
         processed_counts: &ProcessedTransactionCounts,
         timings: &mut ExecuteTimings,
     ) -> Vec<TransactionCommitResult> {
+        self.commit_transactions_with_transaction_refs(
+            sanitized_txs,
+            processing_results,
+            processed_counts,
+            timings,
+            None,
+        )
+    }
+
+    /// Like `commit_transactions`, but account notifications borrow `transaction_refs` if given.
+    /// `transaction_refs` must line up with `sanitized_txs` by position.
+    pub fn commit_transactions_with_transaction_refs(
+        &self,
+        sanitized_txs: &[impl TransactionWithMeta],
+        processing_results: Vec<TransactionProcessingResult>,
+        processed_counts: &ProcessedTransactionCounts,
+        timings: &mut ExecuteTimings,
+        transaction_refs: Option<&[SanitizedTransaction]>,
+    ) -> Vec<TransactionCommitResult> {
+        debug_assert!(transaction_refs.is_none_or(|refs| refs.len() == sanitized_txs.len()));
         assert!(
             !self.freeze_started(),
             "commit_transactions() working on a bank that is already frozen or is undergoing \
@@ -4709,11 +4729,12 @@ impl Bank {
                 .accounts()
                 .accounts_db
                 .has_accounts_update_notifier()
-                .then(|| {
-                    sanitized_txs
+                .then(|| match transaction_refs {
+                    Some(txs) => txs.iter().map(std::borrow::Cow::Borrowed).collect(),
+                    None => sanitized_txs
                         .iter()
                         .map(|tx| tx.as_sanitized_transaction())
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>(),
                 });
 
             let (accounts_to_store, transactions) = collect_accounts_to_store(
