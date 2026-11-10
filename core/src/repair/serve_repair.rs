@@ -873,10 +873,16 @@ impl ServeRepair {
         repair_peers: &[ContactInfo],
         staked_nodes: &HashMap<Pubkey, u64>,
     ) -> Vec<u64> {
-        repair_peers
+        let weights: Vec<u64> = repair_peers
             .iter()
             .map(|peer| staked_nodes.get(peer.pubkey()).copied().unwrap_or(0))
-            .collect()
+            .collect();
+        // A node restricted to unstaked repair peers (e.g. --repair-validator pointed at an
+        // unstaked node) would otherwise never send a repair request.
+        if weights.iter().all(|&weight| weight == 0) {
+            return vec![1; weights.len()];
+        }
+        weights
     }
 
     fn repair_peer_weights(&self, slot: Slot, repair_peers: &[ContactInfo]) -> Vec<u64> {
@@ -2511,6 +2517,30 @@ mod tests {
             .collect();
         assert_eq!(rv[0].index(), index as u32);
         assert_eq!(rv[0].slot(), slot);
+    }
+
+    #[test]
+    fn test_repair_peer_weights_fall_back_to_uniform_when_all_unstaked() {
+        let staked = Pubkey::new_unique();
+        let unstaked = Pubkey::new_unique();
+        let peers: Vec<_> = [staked, unstaked]
+            .iter()
+            .map(|pubkey| ContactInfo::new_localhost(pubkey, timestamp()))
+            .collect();
+
+        let stakes = HashMap::from([(staked, 42)]);
+        assert_eq!(
+            ServeRepair::stake_weighted_repair_peer_weights(&peers, &stakes),
+            vec![42, 0]
+        );
+        assert_eq!(
+            ServeRepair::stake_weighted_repair_peer_weights(&peers[1..], &stakes),
+            vec![1]
+        );
+        assert_eq!(
+            ServeRepair::stake_weighted_repair_peer_weights(&peers, &HashMap::new()),
+            vec![1, 1]
+        );
     }
 
     fn new_test_cluster_info() -> ClusterInfo {
