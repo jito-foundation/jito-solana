@@ -412,122 +412,104 @@ pub(crate) mod external {
                     .map(|response| (true, response));
             }
 
-            // Loop here to avoid exposing internal error to external scheduler.
-            // In the vast majority of cases, this will iterate a single time;
-            // If we began execution when a slot was still in process, and could
-            // not record at the end because the slot has ended, we will retry
-            // on the next slot.
-            let mut last_attempted_slot = 0;
-            for _ in 0..2 {
-                let Some(leader_state) =
-                    active_leader_state_with_timeout(&self.shared_leader_state)
-                else {
-                    return self
-                        .return_not_included_with_reason(
-                            message,
-                            not_included_reasons::BANK_NOT_AVAILABLE,
-                            last_attempted_slot,
-                        )
-                        .map(|response| (true, response));
-                };
-
-                let bank = leader_state
-                    .working_bank()
-                    .expect("active_leader_state_with_timeout should only return an active bank");
-                last_attempted_slot = bank.slot();
-                if bank.slot() > message.max_working_slot {
-                    return Ok((
-                        false,
-                        self.return_unprocessed_message(
-                            message,
-                            agave_scheduler_bindings::processed_codes::MAX_WORKING_SLOT_EXCEEDED,
-                        ),
-                    ));
-                }
-
-                // SAFETY: Assumption that external scheduler does not pass messages with batch regions
-                //         not pointing to valid regions in the allocator.
-                let batch = unsafe {
-                    TransactionPtrBatch::from_sharable_transaction_batch_region(
-                        &message.batch,
-                        &self.allocator,
-                    )
-                };
-                let (translation_results, transactions, max_ages) = self
-                    .translate_transaction_batch(
-                        &batch,
-                        bank,
-                        !self
-                            .sharable_banks
-                            .root()
-                            .feature_set
-                            .snapshot()
-                            .loaderv3_programdata_size_floor,
-                    );
-
-                // Enforce all or nothing on translation_results.
-                let execution_flags = ExecutionFlags {
-                    simulate,
-                    drop_on_failure: message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
-                    all_or_nothing: message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
-                };
-                if execution_flags.all_or_nothing && translation_results.len() != transactions.len()
-                {
-                    let response = self.execution_response(
+            let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
+                return self
+                    .return_not_included_with_reason(
                         message,
-                        Self::all_or_nothing_translate_iterator(&translation_results, bank.slot()),
-                    )?;
+                        not_included_reasons::BANK_NOT_AVAILABLE,
+                        0,
+                    )
+                    .map(|response| (true, response));
+            };
 
-                    return Ok((false, response));
-                }
+            let bank = leader_state
+                .working_bank()
+                .expect("active_leader_state should only return an active bank");
+            if bank.slot() > message.max_working_slot {
+                return Ok((
+                    false,
+                    self.return_unprocessed_message(
+                        message,
+                        agave_scheduler_bindings::processed_codes::MAX_WORKING_SLOT_EXCEEDED,
+                    ),
+                ));
+            }
 
-                let output = self
-                    .transaction_consumer
-                    .process_and_record_aged_transactions_with_policy(
-                        bank,
-                        &transactions,
-                        &max_ages,
-                        &execution_flags,
-                        Some(&self.bundle_account_locker),
-                        false,
-                        None,
-                    );
+            // SAFETY: Assumption that external scheduler does not pass messages with batch regions
+            //         not pointing to valid regions in the allocator.
+            let batch = unsafe {
+                TransactionPtrBatch::from_sharable_transaction_batch_region(
+                    &message.batch,
+                    &self.allocator,
+                )
+            };
+            let (translation_results, transactions, max_ages) = self.translate_transaction_batch(
+                &batch,
+                bank,
+                !self
+                    .sharable_banks
+                    .root()
+                    .feature_set
+                    .snapshot()
+                    .loaderv3_programdata_size_floor,
+            );
 
-                self.metrics.update_for_consume(&output);
-                self.metrics.has_data.store(true, Ordering::Relaxed);
-
-                let Ok(commit_results) = output
-                    .execute_and_commit_transactions_output
-                    .commit_transactions_result
-                else {
-                    // If already ON the last possible execution slot,
-                    // immediately give up instead of trying on next slot.
-                    if bank.slot() == message.max_working_slot {
-                        break;
-                    }
-                    continue; // recording failed, try again on next slot if possible.
-                };
-
+            // Enforce all or nothing on translation_results.
+            let execution_flags = ExecutionFlags {
+                simulate,
+                drop_on_failure: message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
+                all_or_nothing: message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
+            };
+            if execution_flags.all_or_nothing && translation_results.len() != transactions.len() {
                 let response = self.execution_response(
                     message,
-                    Self::consume_response_iterator(
-                        &translation_results,
-                        &transactions,
-                        &commit_results,
-                        bank,
-                        &execution_flags,
-                    ),
+                    Self::all_or_nothing_translate_iterator(&translation_results, bank.slot()),
                 )?;
 
                 return Ok((false, response));
             }
+            let output = self
+                .transaction_consumer
+                .process_and_record_aged_transactions_with_policy(
+                    bank,
+                    &transactions,
+                    &max_ages,
+                    &execution_flags,
+                    Some(&self.bundle_account_locker),
+                    false,
+                    None,
+                );
 
-            self.return_not_included_with_reason(
+            self.metrics.update_for_consume(&output);
+            self.metrics.has_data.store(true, Ordering::Relaxed);
+
+            let Ok(commit_results) = output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+            else {
+                // Recording failed (slot ended during processing).
+                // Return as bank not available so the scheduler can retry.
+                return self
+                    .return_not_included_with_reason(
+                        message,
+                        not_included_reasons::BANK_NOT_AVAILABLE,
+                        bank.slot(),
+                    )
+                    .map(|response| (true, response));
+            };
+
+            let response = self.execution_response(
                 message,
-                not_included_reasons::BANK_NOT_AVAILABLE,
-                last_attempted_slot,
-            )
-            .map(|response| (true, response))
+                Self::consume_response_iterator(
+                    &translation_results,
+                    &transactions,
+                    &commit_results,
+                    bank,
+                    &execution_flags,
+                ),
+            )?;
+
+            Ok((false, response))
         }
 
         fn execution_response(
@@ -1342,10 +1324,6 @@ pub(crate) mod external {
                 ),
                 not_included_reasons::SANITIZE_FAILURE
             );
-            assert_eq!(
-                ExternalWorker::reason_from_packet_handling_error(&PacketHandlingError::FilterKey),
-                not_included_reasons::SANITIZE_FAILURE
-            );
 
             assert_eq!(
                 ExternalWorker::reason_from_packet_handling_error(
@@ -2068,23 +2046,6 @@ fn active_leader_state(
         None
     } else {
         Some(guard)
-    }
-}
-
-/// Returns an active leader state, briefly waiting for the next working bank if the current slot
-/// just completed.
-fn active_leader_state_with_timeout(
-    shared_leader_state: &SharedLeaderState,
-) -> Option<arc_swap::Guard<Arc<LeaderState>>> {
-    let start = Instant::now();
-    loop {
-        if let Some(leader_state) = active_leader_state(shared_leader_state) {
-            return Some(leader_state);
-        }
-        if start.elapsed() >= MAX_SLEEP_DURATION {
-            return None;
-        }
-        std::thread::sleep(STARTING_SLEEP_DURATION);
     }
 }
 
