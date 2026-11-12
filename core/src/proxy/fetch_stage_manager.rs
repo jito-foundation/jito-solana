@@ -333,7 +333,7 @@ impl FetchStageTpuStateMachine {
             }
             if succeeded
                 && prev_state.tpu_type == TpuConnectionType::Relayer
-                && self.current_tpu_state.tpu_type != TpuConnectionType::Relayer
+                && self.current_tpu_state.tpu_type == TpuConnectionType::Original
             {
                 self.relayer_info = None;
             }
@@ -383,6 +383,11 @@ impl FetchStageTpuStateMachine {
         let now = Instant::now();
         self.metrics.heartbeats_received += 1;
         if let Some(relayer_info) = self.relayer_info.as_mut() {
+            if now.duration_since(relayer_info.last_heartbeat)
+                >= self.max_time_between_relayer_heartbeats
+            {
+                relayer_info.first_heartbeat = now;
+            }
             relayer_info.last_heartbeat = now;
             relayer_info.tpu_addresses.tpu_addr = tpu_addr;
             relayer_info.tpu_addresses.tpu_forward_addr = tpu_forward_addr;
@@ -779,6 +784,60 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
+        let expected_relayer_addr =
+            SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
+        let expected_relayer_fwd_addr =
+            SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
+        check_brain(
+            &brain,
+            TpuConnectionType::Relayer,
+            &expected_relayer_addr,
+            &expected_relayer_fwd_addr,
+        );
+        check_cluster_info(
+            &cluster_info,
+            &expected_relayer_addr,
+            &expected_relayer_fwd_addr,
+        );
+        check_sending_packet(&mut brain, &packet_rx, false);
+    }
+
+    #[test]
+    fn test_relayer_to_bam_to_relayer_fallback() {
+        let TestContext {
+            cluster_info,
+            bam_enabled,
+            original_tpu_info: _,
+            bam_tpu_info,
+            heartbeat_check_interval: _,
+            relayer_tpu_enable_delay,
+            _packet_tx,
+            packet_rx,
+            mut brain,
+        } = setup_test();
+
+        let relayer_tpu_addr: SocketAddr = "127.0.0.1:7002".parse().unwrap();
+        let relayer_tpu_fwd_addr: SocketAddr = "127.0.0.1:7003".parse().unwrap();
+        let relayer_heartbeat = Ok((relayer_tpu_addr, relayer_tpu_fwd_addr));
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+
+        std::thread::sleep(relayer_tpu_enable_delay.saturating_mul(2));
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+        assert!(brain.state_machine_tick());
+        assert_eq!(brain.current_tpu_state.tpu_type, TpuConnectionType::Relayer);
+
+        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
+        let bam_tpu_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
+        let bam_tpu_fwd_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        bam_tpu_info.store(Arc::new(Some((bam_tpu_addr, bam_tpu_fwd_addr))));
+        assert!(brain.state_machine_tick());
+        assert_eq!(brain.current_tpu_state.tpu_type, TpuConnectionType::Bam);
+
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+
+        bam_enabled.store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+        assert!(brain.state_machine_tick());
+
         let expected_relayer_addr =
             SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
         let expected_relayer_fwd_addr =
