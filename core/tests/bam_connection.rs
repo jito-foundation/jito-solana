@@ -743,6 +743,7 @@ mod bam_manager_tests {
         panic!("BAM did not connect");
     }
 
+    #[allow(clippy::type_complexity)]
     fn create_test_poh_recorder() -> (
         Arc<AtomicBool>,
         Arc<std::sync::RwLock<PohRecorder>>,

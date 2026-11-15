@@ -1893,7 +1893,7 @@ mod tests {
         ctx.my_pubkey = new_identity;
         ctx.alpenglow_slot_clock
             .update(4, Instant::now(), Duration::from_millis(400));
-        refresh_next_leader_slot(&ctx);
+        refresh_next_leader_slot(ctx);
         assert_eq!(
             ctx.poh_recorder
                 .read()
@@ -1908,7 +1908,7 @@ mod tests {
             Instant::now() - Duration::from_secs(2),
             Duration::from_millis(400),
         );
-        refresh_next_leader_slot(&ctx);
+        refresh_next_leader_slot(ctx);
         assert_eq!(
             ctx.poh_recorder
                 .read()
