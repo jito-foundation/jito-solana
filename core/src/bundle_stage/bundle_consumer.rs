@@ -521,12 +521,10 @@ mod tests {
             },
             bundle_stage::{BundleExecutionError, BundleStage, bundle_consumer::BundleConsumer},
         },
-        crossbeam_channel::unbounded,
         solana_cost_model::cost_model::CostModel,
         solana_entry::entry::Entry,
         solana_genesis_config::create_genesis_config,
         solana_keypair::Keypair,
-        solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::{
             GenesisConfigInfo, bootstrap_validator_stake_lamports,
             create_genesis_config_with_leader,
@@ -538,16 +536,14 @@ mod tests {
         },
         solana_pubkey::{Pubkey, new_rand},
         solana_runtime::{
-            bank::{Bank, NewBankOptions, entry_bytes_budget::EntryBytesReserveError},
+            bank::{Bank, entry_bytes_budget::EntryBytesReserveError},
             prioritization_fee_cache::PrioritizationFeeCache,
-            vote_sender_types::ReplayVoteReceiver,
         },
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{
-            InstructionError, Transaction, TransactionError, TransactionVerificationMode,
-            sanitized::SanitizedTransaction,
+            InstructionError, Transaction, TransactionError, sanitized::SanitizedTransaction,
         },
         std::{assert_matches, sync::Arc, time::Duration},
         test_case::test_case,
@@ -563,18 +559,13 @@ mod tests {
             .collect()
     }
 
-    fn new_test_consumer(bank: &Bank) -> (BundleConsumer, RecordReceiver, ReplayVoteReceiver) {
+    fn new_test_consumer(bank: &Bank) -> (BundleConsumer, RecordReceiver) {
         let (record_sender, mut record_receiver) = record_channels(false);
         record_receiver.restart(bank.bank_id());
-        let (replay_vote_sender, replay_vote_receiver) = unbounded();
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
+        let committer = Committer::new(None, Some(Arc::new(PrioritizationFeeCache::new(0u64))));
         let consumer =
             BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
-        (consumer, record_receiver, replay_vote_receiver)
+        (consumer, record_receiver)
     }
 
     #[test]
@@ -630,7 +621,7 @@ mod tests {
             genesis_config.hash(),
         )]);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -677,7 +668,7 @@ mod tests {
         );
         let mint_balance = bank.get_balance(&mint_keypair.pubkey());
         let block_cost = bank.read_cost_tracker().unwrap().block_cost();
-        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, record_receiver) = new_test_consumer(&bank);
 
         bank.quiesce_transaction_execution();
         let output = consumer.process_and_record_aged_transactions(
@@ -726,72 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rejects_non_vote_bundle_in_vote_only_bank() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(
-            10_000,
-            &Pubkey::new_unique(),
-            bootstrap_validator_stake_lamports(),
-        );
-        let (parent_bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
-        let recipient = Pubkey::new_unique();
-        let transaction_bytes =
-            wincode::serialize(&solana_transaction::versioned::VersionedTransaction::from(
-                transfer(&mint_keypair, &recipient, 1, parent_bank.last_blockhash()),
-            ))
-            .unwrap();
-        let transaction_view =
-            agave_transaction_view::transaction_view::UnsanitizedTransactionView::try_new_unsanitized(
-                bytes::Bytes::from(transaction_bytes),
-            )
-            .unwrap();
-        let transaction = parent_bank
-            .verify_transaction(
-                transaction_view,
-                TransactionVerificationMode::FullVerification,
-            )
-            .unwrap();
-        let max_age = MaxAge {
-            sanitized_epoch: parent_bank.epoch(),
-            alt_invalidation_slot: u64::MAX,
-        };
-        let bank = Bank::new_from_parent_with_options(
-            parent_bank,
-            SlotLeader::new_unique(),
-            1,
-            NewBankOptions {
-                vote_only_bank: true,
-            },
-        );
-
-        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
-
-        let output = consumer.process_and_record_aged_transactions(
-            &bank,
-            &[transaction],
-            &[max_age],
-            Duration::from_millis(20),
-        );
-
-        assert_matches!(
-            output
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-                .unwrap()
-                .as_slice(),
-            [CommitTransactionDetails::NotCommitted(
-                TransactionError::SanitizeFailure
-            )]
-        );
-        assert_eq!(bank.get_balance(&recipient), 0);
-        assert!(record_receiver.try_recv().is_err());
-        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
-    }
-
-    #[test]
     fn test_single_tx_bad_not_committed() {
         agave_logger::setup();
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config_with_leader(
@@ -808,7 +733,7 @@ mod tests {
             genesis_config.hash(),
         )]);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -856,7 +781,7 @@ mod tests {
             transfer(&Keypair::new(), &new_rand(), 1, genesis_config.hash()), // bad tx
         ]);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -917,7 +842,7 @@ mod tests {
             transfer(&kp2, &new_rand(), 1, genesis_config.hash()),
         ]);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -994,7 +919,7 @@ mod tests {
         let mint_balance = bank.get_balance(&mint_keypair.pubkey());
         let block_cost = bank.read_cost_tracker().unwrap().block_cost();
 
-        let (mut consumer, record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, record_receiver) = new_test_consumer(&bank);
 
         let max_ages = [MaxAge::MAX; TEST_BUNDLE_LEN];
         let ProcessTransactionBatchOutput {
@@ -1100,7 +1025,7 @@ mod tests {
             ),
         );
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1156,7 +1081,7 @@ mod tests {
             genesis_config.hash(),
         )]);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1227,7 +1152,7 @@ mod tests {
         )]);
         let batch = bank.prepare_sanitized_batch(&tx);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1276,7 +1201,7 @@ mod tests {
             transfer(&kp1, &kp2.pubkey(), 10, genesis_config.hash()),
         ]);
 
-        let (mut consumer, _record_receiver, _replay_vote_receiver) = new_test_consumer(&bank);
+        let (mut consumer, _record_receiver) = new_test_consumer(&bank);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:

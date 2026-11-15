@@ -411,9 +411,9 @@ mod tests {
         let large_pubkey = solana_pubkey::new_rand();
         bank.store_account(
             &large_pubkey,
-            &AccountSharedData::new(
+            &AccountSharedData::new_with_data(
                 bank.get_minimum_balance_for_rent_exemption(data_len),
-                data_len,
+                vec![0; data_len],
                 &system_program::id(),
             ),
         );
@@ -451,9 +451,9 @@ mod tests {
             let pubkey = solana_pubkey::new_rand();
             bank.store_account(
                 &pubkey,
-                &AccountSharedData::new(
+                &AccountSharedData::new_with_data(
                     bank.get_minimum_balance_for_rent_exemption(data_len),
-                    data_len,
+                    vec![0; data_len],
                     &system_program::id(),
                 ),
             );
@@ -506,7 +506,8 @@ mod tests {
         let data_len = 100;
         let lamports = bank.get_minimum_balance_for_rent_exemption(data_len);
         let leader_pubkey = solana_pubkey::new_rand();
-        let leader_account_data = AccountSharedData::new(lamports, data_len, &system_program::id());
+        let leader_account_data =
+            AccountSharedData::new_with_data(lamports, vec![0; data_len], &system_program::id());
         bank.store_account(&leader_pubkey, &leader_account_data);
         bank.freeze();
 

@@ -13192,7 +13192,7 @@ impl ProgramDataFloorFixture {
             None => {}
         }
 
-        let system_account = AccountSharedData::new(LAMPORTS_PER_SOL, 0, &system_program::id());
+        let system_account = AccountSharedData::empty(LAMPORTS_PER_SOL, &system_program::id());
         for signer in [&self.funder, &self.reader, &self.authority] {
             bank.store_account(&signer.pubkey(), &system_account);
         }
@@ -13229,9 +13229,9 @@ impl ProgramDataFloorFixture {
             }
             .serialize_for_tests()
             .unwrap();
-            let mut account = AccountSharedData::new(
+            let mut account = AccountSharedData::new_with_data(
                 LAMPORTS_PER_SOL,
-                data.len(),
+                vec![0; data.len()],
                 &solana_address_lookup_table_interface::program::id(),
             );
             account.set_data_from_slice(&data);

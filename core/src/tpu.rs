@@ -409,7 +409,6 @@ impl Tpu {
             transaction_recorder,
             verified_bundle_receiver,
             transaction_status_sender,
-            replay_vote_sender,
             log_messages_bytes_limit,
             exit.clone(),
             tip_manager,

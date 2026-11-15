@@ -2462,13 +2462,12 @@ mod tests {
 
         // Reject both provisional batches on the replacement fork, then verify a valid control
         // transaction commits through the real consume worker.
-        let (replay_vote_sender, _replay_vote_receiver) = bounded(1);
         let worker_exit = Arc::new(AtomicBool::default());
         let worker = ConsumeWorker::new(
             worker_exit.clone(),
             consume_work_receiver,
             Consumer::new(
-                Committer::new(None, replay_vote_sender, None),
+                Committer::new(None, None),
                 TransactionRecorder::new(record_sender),
                 None,
             ),

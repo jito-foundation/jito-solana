@@ -685,8 +685,11 @@ mod bam_manager_tests {
             bam_manager::BamManager,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
         },
-        solana_ledger::{blockstore::Blockstore, genesis_utils::create_genesis_config},
-        solana_poh::poh_recorder::create_test_recorder,
+        solana_ledger::{
+            blockstore::Blockstore, genesis_utils::create_genesis_config,
+            leader_schedule_cache::LeaderScheduleCache,
+        },
+        solana_poh::poh_recorder::PohRecorder,
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
         std::sync::{RwLock, atomic::AtomicU8},
@@ -740,12 +743,10 @@ mod bam_manager_tests {
         panic!("BAM did not connect");
     }
 
-    #[allow(clippy::type_complexity)]
     fn create_test_poh_recorder() -> (
         Arc<AtomicBool>,
-        Arc<std::sync::RwLock<solana_poh::poh_recorder::PohRecorder>>,
+        Arc<std::sync::RwLock<PohRecorder>>,
         Arc<RwLock<solana_runtime::bank_forks::BankForks>>,
-        solana_poh::poh_service::PohService,
         tempfile::TempDir,
     ) {
         let genesis_config = create_genesis_config(1000).genesis_config;
@@ -755,10 +756,26 @@ mod bam_manager_tests {
         let blockstore =
             Arc::new(Blockstore::open(ledger_path.path()).expect("Failed to open blockstore"));
 
-        let (exit, poh_recorder, _poh_controller, _recorder, poh_service, _entry_receiver) =
-            create_test_recorder(bank, blockstore, None, None);
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            bank.tick_height(),
+            bank.last_blockhash(),
+            bank.clone(),
+            Some((4, 4)),
+            bank.ticks_per_slot(),
+            blockstore,
+            &leader_schedule_cache,
+            &genesis_config.poh_config,
+            Arc::default(),
+        );
+        poh_recorder.set_bank_for_test(bank);
 
-        (exit, poh_recorder, bank_forks, poh_service, ledger_path)
+        (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(std::sync::RwLock::new(poh_recorder)),
+            bank_forks,
+            ledger_path,
+        )
     }
 
     #[tokio::test]
@@ -768,8 +785,7 @@ mod bam_manager_tests {
             start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
+        let (exit, poh_recorder, bank_forks, _ledger_path) = create_test_poh_recorder();
         let (dependencies, outbound_receiver) =
             create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
@@ -792,7 +808,6 @@ mod bam_manager_tests {
         wait_for_bam_connection(&bam_enabled).await;
 
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
     }
 
     #[tokio::test]
@@ -802,8 +817,7 @@ mod bam_manager_tests {
             start_mock_server(send_heartbeats.clone(), Duration::from_millis(500), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
+        let (exit, poh_recorder, bank_forks, _ledger_path) = create_test_poh_recorder();
         let (dependencies, outbound_receiver) =
             create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
@@ -841,14 +855,12 @@ mod bam_manager_tests {
         );
 
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
     }
 
     #[tokio::test]
     async fn test_bam_disabled_when_no_url() {
         let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
+        let (exit, poh_recorder, bank_forks, _ledger_path) = create_test_poh_recorder();
         let (dependencies, outbound_receiver) =
             create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
@@ -873,7 +885,6 @@ mod bam_manager_tests {
         );
 
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
     }
 
     #[tokio::test]
@@ -885,8 +896,7 @@ mod bam_manager_tests {
             start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
+        let (exit, poh_recorder, bank_forks, _ledger_path) = create_test_poh_recorder();
         let (dependencies, outbound_receiver) =
             create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
@@ -915,7 +925,6 @@ mod bam_manager_tests {
         wait_for_bam_connection(&bam_enabled).await;
 
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
     }
 
     #[tokio::test]
@@ -925,8 +934,7 @@ mod bam_manager_tests {
             start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
+        let (exit, poh_recorder, bank_forks, _ledger_path) = create_test_poh_recorder();
         let (dependencies, outbound_receiver) =
             create_test_bam_dependencies(cluster_info.clone(), bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
@@ -978,7 +986,6 @@ mod bam_manager_tests {
         wait_for_bam_connection(&bam_enabled).await;
 
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
     }
 
     #[tokio::test]
@@ -988,8 +995,7 @@ mod bam_manager_tests {
             start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
-            create_test_poh_recorder();
+        let (exit, poh_recorder, bank_forks, _ledger_path) = create_test_poh_recorder();
         let (dependencies, outbound_receiver) =
             create_test_bam_dependencies(cluster_info, bank_forks);
         let block_builder_fee_info = dependencies.block_builder_fee_info.clone();
@@ -1023,6 +1029,5 @@ mod bam_manager_tests {
         assert_eq!(block_builder_fee_info.load().block_builder_commission, 20);
 
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
     }
 }

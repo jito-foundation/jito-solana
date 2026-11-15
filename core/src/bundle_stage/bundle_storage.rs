@@ -315,7 +315,7 @@ mod tests {
         solana_message::{AddressLoader, AddressLookupTableAccount, VersionedMessage, v0},
         solana_perf::packet::{BytesPacket, PacketBatch},
         solana_pubkey::Pubkey,
-        solana_runtime::bank::{Bank, NewBankOptions},
+        solana_runtime::bank::Bank,
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
@@ -441,8 +441,11 @@ mod tests {
             addresses: Cow::Borrowed(&[recipient]),
         };
         let data = address_lookup_table.serialize_for_tests().unwrap();
-        let mut account =
-            AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
+        let mut account = AccountSharedData::new_with_data(
+            1,
+            vec![0; data.len()],
+            &address_lookup_table::program::id(),
+        );
         account.set_data_from_slice(&data);
         working_bank.store_account(&address_lookup_table_key, &account);
 
@@ -476,36 +479,6 @@ mod tests {
             ),
             Err(BundleStorageError::PacketFilterError((
                 PacketHandlingError::ALTResolution,
-                0,
-            )))
-        );
-    }
-
-    #[test]
-    fn test_bundle_vote_only_check_uses_working_bank() {
-        let (root_bank, _bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
-        let working_bank = Bank::new_from_parent_with_options(
-            root_bank.clone(),
-            SlotLeader::new_unique(),
-            root_bank.slot() + 1,
-            NewBankOptions {
-                vote_only_bank: true,
-            },
-        );
-        let packet = BytesPacket::from_data(test_tx()).unwrap();
-        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
-        let mut bundle_storage = BundleStorage::with_capacity(1);
-
-        assert_eq!(
-            bundle_storage.insert_bundle(
-                bundle,
-                root_bank.as_ref(),
-                &working_bank,
-                &HashSet::new(),
-            ),
-            Err(BundleStorageError::PacketFilterError((
-                PacketHandlingError::Sanitization,
                 0,
             )))
         );

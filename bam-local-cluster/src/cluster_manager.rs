@@ -560,7 +560,7 @@ impl BamLocalCluster {
             let stake_pubkey = validator_voting_keypairs.borrow().stake_keypair.pubkey();
 
             // Create accounts
-            let node_account = Account::new(validator_lamports, 0, &system_program::id());
+            let node_account = Account::empty(validator_lamports, &system_program::id());
             let bls_pubkey_compressed = validator_voting_keypairs
                 .borrow()
                 .bls_keypair

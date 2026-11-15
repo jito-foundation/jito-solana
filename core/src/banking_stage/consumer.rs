@@ -725,7 +725,7 @@ mod tests {
             transaction_scheduler::bam_scheduler::try_admit_transactions,
         },
         agave_reserved_account_keys::ReservedAccountKeys,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::bounded,
         solana_account::{AccountSharedData, state_traits::StateMutWincode as _},
         solana_address_lookup_table_interface::{
             self as address_lookup_table,
@@ -1744,7 +1744,7 @@ mod tests {
             // The lookup changes after admission, so the worker must recheck and release it.
             bank.store_account(
                 &address_table_key,
-                &AccountSharedData::new(1, 0, &system_program::id()),
+                &AccountSharedData::empty(1, &system_program::id()),
             );
             let expected_error = resanitize().unwrap_err();
             let output = consumer.process_and_record_aged_transactions_with_policy(
@@ -1913,13 +1913,7 @@ mod tests {
         // record
         let (record_sender, _record_receiver) = record_channels(false);
         let recorder = TransactionRecorder::new(record_sender);
-
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-        );
+        let committer = Committer::new(None, Some(Arc::new(PrioritizationFeeCache::new(0u64))));
         let consumer = Consumer::new(committer, recorder.clone(), None);
 
         let process_transactions_summary = consumer.process_and_record_transactions_with_policy(

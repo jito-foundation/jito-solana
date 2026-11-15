@@ -371,20 +371,7 @@ impl BamReceiveAndBuffer {
         let alt_resolved_slot = root_bank.slot();
         let sanitized_epoch = root_bank.epoch();
         let transaction_account_lock_limits = working_bank.get_transaction_account_lock_limits();
-        let vote_only = working_bank.vote_only_bank();
         let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
-
-        if vote_only {
-            return (
-                Err(Reason::DeserializationError(
-                    jito_protos::proto::bam_types::DeserializationError {
-                        index: 0,
-                        reason: DeserializationErrorReason::SanitizeError as i32,
-                    },
-                )),
-                stats,
-            );
-        }
 
         // Checks are taken from receive_and_buffer.rs:
         // SanitizedTransactionReceiveAndBuffer::buffer_packets
@@ -2179,8 +2166,11 @@ pub(super) mod tests {
         }
         .serialize_for_tests()
         .unwrap();
-        let mut table_account =
-            AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
+        let mut table_account = AccountSharedData::new_with_data(
+            1,
+            vec![0; data.len()],
+            &address_lookup_table::program::id(),
+        );
         table_account.set_data_from_slice(&data);
         genesis_bank.store_account(&table_key, &table_account);
         let (genesis_bank, _bank_forks) = genesis_bank.wrap_with_bank_forks_for_tests();

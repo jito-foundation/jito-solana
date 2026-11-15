@@ -504,7 +504,7 @@ impl TransactionViewReceiveAndBuffer {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
             root_bank,
-                transaction_account_lock_limits,
+            transaction_account_lock_limits,
             !root_bank
                 .feature_set
                 .snapshot()
@@ -754,8 +754,11 @@ mod tests {
         }
         .serialize_for_tests()
         .unwrap();
-        let mut table_account =
-            AccountSharedData::new(1, data.len(), &address_lookup_table::program::id());
+        let mut table_account = AccountSharedData::new_with_data(
+            1,
+            vec![0; data.len()],
+            &address_lookup_table::program::id(),
+        );
         table_account.set_data_from_slice(&data);
         genesis_bank.store_account(&table_key, &table_account);
         let (genesis_bank, _bank_forks) = genesis_bank.wrap_with_bank_forks_for_tests();

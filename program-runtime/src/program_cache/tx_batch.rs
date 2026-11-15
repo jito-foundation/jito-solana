@@ -52,6 +52,12 @@ impl ProgramCacheForTxBatch {
         self.merged_modified
     }
 
+    /// Clears the merged marker, so a cache reused across transactions reports only the merges
+    /// of the next one.
+    pub fn reset_merged_modified(&mut self) {
+        self.merged_modified = false;
+    }
+
     /// Refill the cache with a single entry. It's typically called during transaction loading, and
     /// transaction processing (for program management instructions).
     /// It replaces the existing entry (if any) with the provided entry.

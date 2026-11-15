@@ -693,7 +693,6 @@ pub(crate) mod external {
             translate_to_runtime_view(
                 transaction_ptr,
                 bank,
-                bank.vote_only_bank(),
                 transaction_account_lock_limits,
                 enable_implicit_read_locks,
             )
@@ -1135,7 +1134,6 @@ pub(crate) mod external {
                     translate_to_runtime_view(
                         &simple_tx[..],
                         &bank,
-                        bank.vote_only_bank(),
                         bank.get_transaction_account_lock_limits(),
                         !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
                     )
@@ -1243,7 +1241,6 @@ pub(crate) mod external {
             let tx = translate_to_runtime_view(
                 &simple_tx[..],
                 &bank,
-                bank.vote_only_bank(),
                 bank.get_transaction_account_lock_limits(),
                 !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
             )
@@ -2623,7 +2620,7 @@ mod tests {
             },
         },
         arc_swap::ArcSwap,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::unbounded,
         solana_account::{Account, AccountSharedData},
         solana_clock::Slot,
         solana_cost_model::cost_tracker::CostTrackerLimits,
@@ -2697,7 +2694,7 @@ mod tests {
             genesis_config.rent = Rent::default();
             genesis_config.accounts.insert(
                 leader_keypair.pubkey(),
-                Account::new(1_000_000_000, 0, &solana_system_interface::program::id()),
+                Account::empty(1_000_000_000, &solana_system_interface::program::id()),
             );
         }
         genesis_config.accounts.extend(
@@ -3885,7 +3882,7 @@ mod tests {
         match failure {
             "construction" => bank.store_account(
                 &config_key,
-                &AccountSharedData::new(1, 8, &jito_tip_payment::id()),
+                &AccountSharedData::new_with_data(1, vec![0; 8], &jito_tip_payment::id()),
             ),
             "recording" => frame.record_receiver.shutdown(),
             "account_lock" => tips
@@ -3908,7 +3905,7 @@ mod tests {
                 } else {
                     let lamports = bank.get_minimum_balance_for_rent_exemption(0);
                     let system = solana_system_interface::program::id();
-                    let underfunded = AccountSharedData::new(lamports, 0, &system);
+                    let underfunded = AccountSharedData::empty(lamports, &system);
                     bank.store_account(&keypair.pubkey(), &underfunded);
                 }
             }

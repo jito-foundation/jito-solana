@@ -55,7 +55,7 @@ impl Bank {
             let number_of_accounts = transaction.account_keys().len();
 
             let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
-            program_cache_for_tx_batch.merged_modified = false;
+            program_cache_for_tx_batch.reset_merged_modified();
 
             let LoadAndExecuteTransactionsOutput {
                 mut processing_results,

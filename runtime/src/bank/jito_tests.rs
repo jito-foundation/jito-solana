@@ -97,9 +97,9 @@ fn store_loader_v3_program(
     program_data: &[u8],
 ) {
     let programdata_key = get_program_data_address(program_key);
-    let mut program_account = AccountSharedData::new(
+    let mut program_account = AccountSharedData::new_with_data(
         bank.get_minimum_balance_for_rent_exemption(UpgradeableLoaderState::size_of_program()),
-        UpgradeableLoaderState::size_of_program(),
+        vec![0; UpgradeableLoaderState::size_of_program()],
         &bpf_loader_upgradeable::id(),
     );
     wincode::serialize_into(
@@ -112,9 +112,9 @@ fn store_loader_v3_program(
     program_account.set_executable(true);
 
     let programdata_len = UpgradeableLoaderState::size_of_programdata(program_data.len());
-    let mut programdata_account = AccountSharedData::new(
+    let mut programdata_account = AccountSharedData::new_with_data(
         bank.get_minimum_balance_for_rent_exemption(programdata_len),
-        programdata_len,
+        vec![0; programdata_len],
         &bpf_loader_upgradeable::id(),
     );
     wincode::serialize_into(

@@ -1636,10 +1636,10 @@ mod tests {
         let keypair2 = Keypair::new();
         let keypair3 = Keypair::new();
 
-        let account0 = AccountSharedData::new(1, 0, &Pubkey::default());
-        let account1 = AccountSharedData::new(2, 0, &Pubkey::default());
-        let account2 = AccountSharedData::new(3, 0, &Pubkey::default());
-        let account3 = AccountSharedData::new(4, 0, &Pubkey::default());
+        let account0 = AccountSharedData::empty(1, &Pubkey::default());
+        let account1 = AccountSharedData::empty(2, &Pubkey::default());
+        let account2 = AccountSharedData::empty(3, &Pubkey::default());
+        let account3 = AccountSharedData::empty(4, &Pubkey::default());
 
         let accounts_db = AccountsDb::default_for_tests();
         let accounts = Accounts::new(Arc::new(accounts_db));

@@ -5,7 +5,7 @@ use {
     crate::mock_bam_server::MockBamServer,
     arc_swap::ArcSwap,
     clap::{App, Arg, crate_description, crate_name, value_t},
-    crossbeam_channel::{Receiver, unbounded},
+    crossbeam_channel::unbounded,
     log::*,
     solana_accounts_db::accounts_db::AccountsDbConfig,
     solana_core::{
@@ -13,13 +13,11 @@ use {
         banking_channels::Channels,
         banking_stage::{
             BankingStage, transaction_scheduler::scheduler_controller::SchedulerConfig,
-            update_bank_forks_and_poh_recorder_for_new_tpu_bank,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         validator::BlockProductionMethod,
     },
-    solana_entry::recorder_message::RecorderMessage,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_keypair::Keypair,
     solana_leader_schedule::SlotLeader,
@@ -31,8 +29,9 @@ use {
     },
     solana_net_utils::SocketAddrSpace,
     solana_poh::{
-        poh_controller::PohController,
-        poh_recorder::{PohRecorder, WorkingBankMessage, create_test_recorder},
+        poh_recorder::PohRecorder,
+        record_channels::{RecordReceiver, record_channels},
+        transaction_recorder::TransactionRecorder,
     },
     solana_pubkey::Pubkey,
     solana_runtime::{
@@ -53,6 +52,9 @@ use {
     },
     tokio::sync::mpsc,
 };
+
+/// Slot length used by the bench; nothing ticks PoH to end a slot.
+const SLOT_DURATION: Duration = Duration::from_millis(400);
 
 #[allow(clippy::cognitive_complexity)]
 fn main() {
@@ -85,7 +87,6 @@ fn main() {
         ..
     } = create_genesis_config(mint_total);
 
-    let (replay_vote_sender, _replay_vote_receiver) = unbounded();
     let exit_for_bank = Arc::new(AtomicBool::new(false));
     let bank0 = Bank::new_from_genesis(
         &genesis_config,
@@ -110,13 +111,23 @@ fn main() {
         Blockstore::open(ledger_path.path()).expect("Expected to be able to open database ledger"),
     );
     let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
-    let (exit, poh_recorder, poh_controller, transaction_recorder, poh_service, signal_receiver) =
-        create_test_recorder(
-            bank.clone(),
-            blockstore.clone(),
-            None,
-            Some(leader_schedule_cache),
-        );
+    let exit = Arc::new(AtomicBool::new(false));
+    let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+        bank.tick_height(),
+        bank.last_blockhash(),
+        bank.clone(),
+        Some((4, 4)),
+        bank.ticks_per_slot(),
+        blockstore.clone(),
+        &leader_schedule_cache,
+        &genesis_config.poh_config,
+        exit.clone(),
+    );
+    poh_recorder.set_bank(bank.clone_with_scheduler());
+    let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+    let (record_sender, mut record_receiver) = record_channels(false);
+    record_receiver.restart(bank.bank_id());
+    let transaction_recorder = TransactionRecorder::new(record_sender);
     let prioritization_fee_cache = Arc::new(PrioritizationFeeCache::new(0u64));
 
     // create a mock bam server
@@ -166,10 +177,7 @@ fn main() {
     let Channels {
         non_vote_sender,
         non_vote_receiver,
-        tpu_vote_sender,
-        tpu_vote_receiver,
-        gossip_vote_sender,
-        gossip_vote_receiver,
+        ..
     } = Channels::new();
 
     let banking_stage = BankingStage::new_num_threads(
@@ -178,15 +186,12 @@ fn main() {
         poh_recorder.clone(),
         transaction_recorder,
         non_vote_receiver,
-        tpu_vote_receiver,
-        gossip_vote_receiver,
         // this doesn't matter for the BAM test
         mpsc::channel(1).1,
         BankingStage::default_num_workers(),
         SchedulerConfig::default(),
         None,
         None,
-        replay_vote_sender,
         None,
         bank_forks.clone(),
         agave_votor::slot_clock::SharedAlpenglowSlotClock::default(),
@@ -202,37 +207,24 @@ fn main() {
         let bank_forks = bank_forks.clone();
         let poh_recorder = poh_recorder.clone();
         let exit = exit.clone();
-        spawn(move || {
-            bank_setting_loop(
-                bank_forks,
-                poh_recorder,
-                poh_controller,
-                signal_receiver,
-                exit.clone(),
-            )
-        })
+        spawn(move || bank_setting_loop(bank_forks, poh_recorder, record_receiver, exit.clone()))
     };
 
     sleep(Duration::from_secs(test_duration));
 
     exit.store(true, Ordering::Relaxed);
     drop(non_vote_sender);
-    drop(tpu_vote_sender);
-    drop(gossip_vote_sender);
     banking_stage.join().unwrap();
     debug!("waited for banking_stage");
-    poh_service.join().unwrap();
-    sleep(Duration::from_secs(1));
-    debug!("waited for poh_service");
     mock_bam_server.join().unwrap();
     bank_setting_thread.join().unwrap();
 }
 
+/// Ends each slot on a timer and installs the next bank, standing in for `BlockCreationLoop`.
 fn bank_setting_loop(
     bank_forks: Arc<RwLock<BankForks>>,
     poh_recorder: Arc<RwLock<PohRecorder>>,
-    mut poh_controller: PohController,
-    signal_receiver: Receiver<WorkingBankMessage>,
+    mut record_receiver: RecordReceiver,
     exit: Arc<AtomicBool>,
 ) {
     let mut bank = bank_forks.read().unwrap().working_bank_with_scheduler();
@@ -241,13 +233,22 @@ fn bank_setting_loop(
     let mut total_txs = 0;
 
     while !exit.load(Ordering::Relaxed) {
-        if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-            signal_receiver.recv_timeout(Duration::from_millis(10))
+        if let Ok(record) = record_receiver
+            .inner()
+            .recv_timeout(Duration::from_millis(10))
         {
-            total_txs += entry.transactions.len();
+            record_receiver.on_received_record();
+            total_txs += record.transactions.len();
         }
 
-        if poh_recorder.read().unwrap().bank().is_none() {
+        if last_bank_time.elapsed() >= SLOT_DURATION {
+            // Stop admitting records, then count the ones workers had already reserved.
+            record_receiver.shutdown();
+            total_txs += record_receiver
+                .drain_after_shutdown()
+                .map(|record| record.transactions.len())
+                .sum::<usize>();
+
             let new_bank_transaction_count = bank.transaction_count();
             eprintln!(
                 "[bank: {} done, tx count: {}, elapsed: {}ms total_txs: {}]",
@@ -257,10 +258,11 @@ fn bank_setting_loop(
                 total_txs
             );
 
-            poh_recorder
-                .write()
-                .unwrap()
-                .reset(bank.clone(), Some((bank.slot(), bank.slot() + 1)));
+            {
+                let mut poh_recorder = poh_recorder.write().unwrap();
+                poh_recorder.clear_bank(true);
+                poh_recorder.reset(bank.clone(), Some((bank.slot(), bank.slot() + 1)));
+            }
 
             if let Some((result, _timings)) = bank.wait_for_completed_scheduler() {
                 assert_matches!(result, Ok(_));
@@ -268,20 +270,11 @@ fn bank_setting_loop(
 
             let new_slot = bank.slot() + 1;
             let new_bank = Bank::new_from_parent(bank.clone(), SlotLeader::new_unique(), new_slot);
-
-            assert_matches!(poh_recorder.read().unwrap().bank(), None);
-            update_bank_forks_and_poh_recorder_for_new_tpu_bank(
-                &bank_forks,
-                &mut poh_controller,
-                new_bank,
-            );
+            let tpu_bank = bank_forks.write().unwrap().insert(new_bank);
+            let bank_id = tpu_bank.bank_id();
+            poh_recorder.write().unwrap().set_bank(tpu_bank);
+            record_receiver.restart(bank_id);
             bank = bank_forks.read().unwrap().working_bank_with_scheduler();
-
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(1)
-                && poh_recorder.read().unwrap().bank().is_none()
-            {}
-            assert_matches!(poh_recorder.read().unwrap().bank(), Some(_));
 
             last_bank_time = Instant::now();
             bank_transaction_count = new_bank_transaction_count;

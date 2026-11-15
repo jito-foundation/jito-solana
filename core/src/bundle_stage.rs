@@ -33,7 +33,7 @@ use {
     solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
-        transaction_execution::TransactionStatusSender, vote_sender_types::ReplayVoteSender,
+        transaction_execution::TransactionStatusSender,
     },
     solana_transaction::TransactionError,
     std::{
@@ -343,7 +343,6 @@ impl BundleStage {
         transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
-        replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
@@ -361,7 +360,6 @@ impl BundleStage {
             transaction_recorder,
             bundle_receiver,
             transaction_status_sender,
-            replay_vote_sender,
             log_messages_bytes_limit,
             exit,
             tip_manager,
@@ -386,7 +384,6 @@ impl BundleStage {
         transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
-        replay_vote_sender: ReplayVoteSender,
         log_message_bytes_limit: Option<usize>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
@@ -396,11 +393,7 @@ impl BundleStage {
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
-        let committer = Committer::new(
-            transaction_status_sender,
-            replay_vote_sender,
-            prioritization_fee_cache,
-        );
+        let committer = Committer::new(transaction_status_sender, prioritization_fee_cache);
         let decision_maker = DecisionMaker::new(
             poh_recorder.read().unwrap().shared_leader_state(),
             bank_forks.read().unwrap().migration_status(),
@@ -978,9 +971,8 @@ mod tests {
             tip_payment::JitoTipPaymentConfig,
         },
         agave_feature_set::FeatureSet,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::bounded,
         solana_cluster_type::ClusterType,
-        solana_entry::recorder_message::RecorderMessage,
         solana_fee_calculator::{DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, FeeRateGovernor},
         solana_genesis_config::GenesisConfig,
         solana_gossip::contact_info::ContactInfo,
@@ -988,7 +980,7 @@ mod tests {
         solana_leader_schedule::SlotLeader,
         solana_ledger::{
             blockstore::Blockstore, genesis_utils::GenesisConfigInfo,
-            get_tmp_ledger_path_auto_delete,
+            get_tmp_ledger_path_auto_delete, leader_schedule_cache::LeaderScheduleCache,
         },
         solana_native_token::LAMPORTS_PER_SOL,
         solana_net_utils::SocketAddrSpace,
@@ -996,7 +988,8 @@ mod tests {
             packet::{BytesPacket, PacketBatch},
             test_tx::test_tx,
         },
-        solana_poh::poh_recorder::create_test_recorder,
+        solana_poh::record_channels::{RecordReceiver, record_channels},
+        solana_poh_config::PohConfig,
         solana_program_binaries::{jito_tip_distribution, jito_tip_payment, spl_programs},
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
@@ -1013,6 +1006,53 @@ mod tests {
         solana_vote_interface::state::vote_state_v4::VoteStateV4,
         std::assert_matches,
     };
+
+    /// Creates a recorder with `bank` installed as the working bank. Recorded batches stay in the
+    /// returned receiver; `BlockCreationLoop` drains it in production.
+    fn create_test_recorder(
+        bank: Arc<Bank>,
+        blockstore: Arc<Blockstore>,
+    ) -> (
+        Arc<AtomicBool>,
+        Arc<RwLock<PohRecorder>>,
+        TransactionRecorder,
+        RecordReceiver,
+    ) {
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+        let exit = Arc::new(AtomicBool::new(false));
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            bank.tick_height(),
+            bank.last_blockhash(),
+            bank.clone(),
+            Some((4, 4)),
+            bank.ticks_per_slot(),
+            blockstore,
+            &leader_schedule_cache,
+            &PohConfig::default(),
+            exit.clone(),
+        );
+        poh_recorder.set_bank_for_test(bank.clone());
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(bank.bank_id());
+
+        (
+            exit,
+            Arc::new(RwLock::new(poh_recorder)),
+            TransactionRecorder::new(record_sender),
+            record_receiver,
+        )
+    }
+
+    /// Waits briefly for the next recorded batch and returns its transaction count.
+    fn recv_recorded_transaction_count(record_receiver: &RecordReceiver) -> Option<usize> {
+        let record = record_receiver
+            .inner()
+            .recv_timeout(Duration::from_millis(1))
+            .ok()?;
+        record_receiver.on_received_record();
+        Some(record.transactions.len())
+    }
 
     struct TestFixture {
         genesis_config_info: GenesisConfigInfo,
@@ -1142,9 +1182,8 @@ mod tests {
             )
             .unwrap();
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let mut consumer = BundleConsumer::new(
-            Committer::new(None, replay_vote_sender, None),
+            Committer::new(None, None),
             TransactionRecorder::new(record_sender),
             None,
         );
@@ -1185,8 +1224,7 @@ mod tests {
     fn test_missing_block_builder_fee_info_is_retryable() {
         let bank = Arc::new(Bank::new_for_tests(&GenesisConfig::default()));
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let committer = Committer::new(None, replay_vote_sender, None);
+        let committer = Committer::new(None, None);
         let mut consumer =
             BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
 
@@ -1358,15 +1396,8 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let (exit, poh_recorder, transaction_recorder, record_receiver) =
+            create_test_recorder(bank.clone(), blockstore);
 
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
@@ -1383,7 +1414,6 @@ mod tests {
             transaction_recorder,
             verified_bundle_receiver,
             None,
-            replay_vote_sender,
             None,
             exit.clone(),
             TipManager::new(TipManagerConfig {
@@ -1413,10 +1443,8 @@ mod tests {
         let mut tx_count = 0;
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
+            if let Some(num_transactions) = recv_recorded_transaction_count(&record_receiver) {
+                tx_count += num_transactions;
             }
             assert!(tx_count <= NUM_TXS_EXPECTED, "tx_count: {tx_count}");
         }
@@ -1472,7 +1500,6 @@ mod tests {
 
         drop(verified_bundle_sender);
         exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
         bundle_stage.join().unwrap();
     }
 
@@ -1498,15 +1525,8 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let (exit, poh_recorder, transaction_recorder, record_receiver) =
+            create_test_recorder(bank.clone(), blockstore);
 
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
@@ -1523,7 +1543,6 @@ mod tests {
             transaction_recorder,
             verified_bundle_receiver,
             None,
-            replay_vote_sender,
             None,
             exit.clone(),
             TipManager::new(TipManagerConfig {
@@ -1554,17 +1573,14 @@ mod tests {
         const MAX_EXPECTED_TXS: usize = 4;
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
+            if let Some(num_transactions) = recv_recorded_transaction_count(&record_receiver) {
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
         exit.store(true, Ordering::Relaxed);
         bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
         drop(verified_bundle_sender);
     }
 
@@ -1590,15 +1606,8 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let (exit, poh_recorder, transaction_recorder, record_receiver) =
+            create_test_recorder(bank.clone(), blockstore);
 
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
@@ -1615,7 +1624,6 @@ mod tests {
             transaction_recorder,
             verified_bundle_receiver,
             None,
-            replay_vote_sender,
             None,
             exit.clone(),
             TipManager::new(TipManagerConfig {
@@ -1667,10 +1675,8 @@ mod tests {
         while (tx_count < MAX_EXPECTED_TXS || bank.get_balance(&kp2.pubkey()) != expected_balance)
             && start.elapsed() < PROCESSING_TIMEOUT
         {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
+            if let Some(num_transactions) = recv_recorded_transaction_count(&record_receiver) {
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
@@ -1682,7 +1688,6 @@ mod tests {
 
         exit.store(true, Ordering::Relaxed);
         bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
         drop(verified_bundle_sender);
     }
 
@@ -1708,15 +1713,8 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let (exit, poh_recorder, transaction_recorder, record_receiver) =
+            create_test_recorder(bank.clone(), blockstore);
 
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
@@ -1733,7 +1731,6 @@ mod tests {
             transaction_recorder,
             verified_bundle_receiver,
             None,
-            replay_vote_sender,
             None,
             exit.clone(),
             TipManager::new(TipManagerConfig {
@@ -1789,17 +1786,14 @@ mod tests {
         const MAX_EXPECTED_TXS: usize = 4; // 4 initial for tips
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
+            if let Some(num_transactions) = recv_recorded_transaction_count(&record_receiver) {
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
         exit.store(true, Ordering::Relaxed);
         bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
         drop(verified_bundle_sender);
     }
 
@@ -1825,15 +1819,8 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let (exit, poh_recorder, transaction_recorder, record_receiver) =
+            create_test_recorder(bank.clone(), blockstore);
 
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
@@ -1850,7 +1837,6 @@ mod tests {
             transaction_recorder,
             verified_bundle_receiver,
             None,
-            replay_vote_sender,
             None,
             exit.clone(),
             TipManager::new(TipManagerConfig {
@@ -1890,10 +1876,8 @@ mod tests {
         const MAX_EXPECTED_TXS: usize = 5; // 4 initial for tips
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
+            if let Some(num_transactions) = recv_recorded_transaction_count(&record_receiver) {
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
@@ -1919,10 +1903,8 @@ mod tests {
         let start = Instant::now();
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
+            if let Some(num_transactions) = recv_recorded_transaction_count(&record_receiver) {
+                tx_count += num_transactions;
                 assert_eq!(tx_count, 0, "tx_count: {tx_count}");
             }
         }
@@ -1934,7 +1916,6 @@ mod tests {
 
         exit.store(true, Ordering::Relaxed);
         bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
         drop(verified_bundle_sender);
     }
 }

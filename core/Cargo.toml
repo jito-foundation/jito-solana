@@ -75,6 +75,7 @@ chrono = { workspace = true, features = ["default", "serde"] }
 crossbeam-channel = { workspace = true }
 dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 futures = { workspace = true }
+histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
 lazy-lru = { workspace = true }
@@ -196,6 +197,7 @@ sysctl = { workspace = true }
 [dev-dependencies]
 agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["agave-unstable-api"] }
 bencher = { workspace = true }
+bincode = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
 rcgen = { workspace = true }
