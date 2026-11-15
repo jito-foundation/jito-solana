@@ -48,6 +48,11 @@ impl ProgramCacheForTxBatch {
         self.slot
     }
 
+    /// Whether no programs have been extracted into this batch cache yet.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn merged_modified(&self) -> bool {
         self.merged_modified
     }
@@ -117,10 +122,6 @@ impl ProgramCacheForTxBatch {
 
 #[cfg(any(test, feature = "dev-context-only-utils"))]
 impl ProgramCacheForTxBatch {
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     /// Look up `entries` directly, without the delay visibility rewrite
     /// `find` performs, so a test can see the entry as it was stored.
     pub fn get_entry_for_tests(&self, key: &Pubkey) -> Option<&Arc<ProgramCacheEntry>> {
