@@ -576,7 +576,7 @@ mod tests {
                                     "executable": false,
                                     "lamports": leader_account_data.lamports(),
                                     "owner": "11111111111111111111111111111111",
-                                    "rentEpoch": 0,
+                                    "rentEpoch": u64::MAX,
                                     "space": 100
                                 }
                             ],
