@@ -338,7 +338,7 @@ impl BundleStage {
         sharable_banks: SharableBanks,
         mut bundle_receiver: Receiver<VerifiedPacketBundle>,
         mut decision_maker: DecisionMaker,
-        mut consumer: BundleConsumer,
+        consumer: BundleConsumer,
         exit: Arc<AtomicBool>,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
@@ -365,7 +365,7 @@ impl BundleStage {
                 let (_, process_buffered_packets_time_us) =
                     measure_us!(Self::process_buffered_bundles(
                         &mut decision_maker,
-                        &mut consumer,
+                        &consumer,
                         &mut bundle_storage,
                         &bundle_account_locker,
                         &mut bundle_stage_metrics,
@@ -471,7 +471,7 @@ impl BundleStage {
     #[allow(clippy::too_many_arguments)]
     fn process_buffered_bundles(
         decision_maker: &mut DecisionMaker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
@@ -515,7 +515,7 @@ impl BundleStage {
         bank: &Arc<Bank>,
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         last_tip_update_slot: &mut Slot,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
@@ -630,7 +630,7 @@ impl BundleStage {
     fn handle_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
@@ -672,7 +672,7 @@ impl BundleStage {
     fn handle_initialize_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         consume_worker_metrics: &ConsumeWorkerMetrics,
         keypair: &Keypair,
@@ -700,7 +700,7 @@ impl BundleStage {
     fn handle_crank_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
@@ -810,7 +810,7 @@ impl BundleStage {
     fn process_bundle(
         bank: &Arc<Bank>,
         bundle: &BundleStorageEntry,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) -> BundleExecutionResult<()> {
         if bank.is_complete() {
@@ -1072,7 +1072,7 @@ mod tests {
             .unwrap();
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let mut consumer = BundleConsumer::new(
+        let consumer = BundleConsumer::new(
             Committer::new(None, replay_vote_sender, None),
             TransactionRecorder::new(record_sender),
             None,
@@ -1092,7 +1092,7 @@ mod tests {
             clock.update(slot, Instant::now(), Duration::from_millis(200));
             BundleStage::process_buffered_bundles(
                 &mut decision_maker,
-                &mut consumer,
+                &consumer,
                 &mut storage,
                 &BundleAccountLocker::default(),
                 &mut metrics,
@@ -1116,13 +1116,13 @@ mod tests {
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let committer = Committer::new(None, replay_vote_sender, None);
-        let mut consumer =
+        let consumer =
             BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
 
         let result = BundleStage::handle_crank_tip_programs(
             &bank,
             &BundleAccountLocker::default(),
-            &mut consumer,
+            &consumer,
             &TipManager::new(TipManagerConfig::default()),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             &ConsumeWorkerMetrics::new(),
