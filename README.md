@@ -78,6 +78,24 @@ $ sudo setcap 'cap_net_admin,cap_net_raw,cap_bpf,cap_perfmon+eip' <path-to-agave
 $ ./cargo nextest run --profile ci  --cargo-profile ci --config-file .config/nextest.toml
 ```
 
+### Local testing
+
+From the repository root, start a single-node test validator with a built-in faucet.
+
+```bash
+git submodule update --init --recursive
+./cargo run --locked -p agave-validator --bin solana-test-validator --features agave-unstable-api -- --ledger local-test-ledger
+```
+
+JSON-RPC is available at `http://127.0.0.1:8899`. Press Ctrl+C to stop the validator.
+
+The bundle tests start their own local fixtures. Run them from the repository root.
+
+```bash
+./cargo test --locked -p solana-core --features agave-unstable-api,dev-context-only-utils --lib bundle_stage::tests
+./cargo test --locked -p solana-rpc-test --features agave-unstable-api --test simulate_bundle
+```
+
 ### Starting a local testnet
 
 Start your own testnet locally, instructions are in the [online docs](https://docs.anza.xyz/clusters/benchmark).
