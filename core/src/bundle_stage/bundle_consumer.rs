@@ -10,7 +10,6 @@ use {
         scheduler_messages::MaxAge,
     },
     smallvec::SmallVec,
-    solana_clock::MAX_PROCESSING_AGE,
     solana_poh::transaction_recorder::TransactionRecorder,
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -79,7 +78,7 @@ impl BundleConsumer {
         let (check_results, _) = bank.check_transactions_external(
             txs,
             &pre_results,
-            MAX_PROCESSING_AGE,
+            bank.max_processing_age(),
             false,
             &mut error_counters,
         );
