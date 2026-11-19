@@ -154,32 +154,30 @@ impl MockBamServer {
         let mut seq_id = 0;
 
         thread::spawn(move || {
-            loop {
-                while !exit.load(Ordering::Relaxed) {
-                    let Some(bank) = shared_leader_state.load().working_bank().cloned() else {
-                        continue;
-                    };
+            while !exit.load(Ordering::Relaxed) {
+                let Some(bank) = shared_leader_state.load().working_bank().cloned() else {
+                    continue;
+                };
 
-                    if bank.slot() != bank_stats.bank_slot {
-                        Self::wait_for_all_results(&mut outbound_receiver, &mut bank_stats);
+                if bank.slot() != bank_stats.bank_slot {
+                    Self::wait_for_all_results(&mut outbound_receiver, &mut bank_stats);
 
-                        bank_stats.print_stats();
-                        bank_stats = BankStats::new(bank.slot());
-                        seq_id = 0;
-                        nonce = 0;
-                    }
-
-                    Self::send_transactions(
-                        &keypairs,
-                        &mut bank_stats,
-                        &batch_sender,
-                        &bank,
-                        &mut nonce,
-                        &mut seq_id,
-                    );
-
-                    Self::handle_outbound_messages(&mut outbound_receiver, &mut bank_stats);
+                    bank_stats.print_stats();
+                    bank_stats = BankStats::new(bank.slot());
+                    seq_id = 0;
+                    nonce = 0;
                 }
+
+                Self::send_transactions(
+                    &keypairs,
+                    &mut bank_stats,
+                    &batch_sender,
+                    &bank,
+                    &mut nonce,
+                    &mut seq_id,
+                );
+
+                Self::handle_outbound_messages(&mut outbound_receiver, &mut bank_stats);
             }
         })
     }
