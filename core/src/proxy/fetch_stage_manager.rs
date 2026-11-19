@@ -1,21 +1,19 @@
 use {
-    crate::{
-        bam_dependencies::BamConnectionState,
-        proxy::{HeartbeatEvent, ProxyError},
-    },
+    crate::{bam_dependencies::BamConnectionState, proxy::HeartbeatEvent},
     arc_swap::ArcSwap,
-    crossbeam_channel::{Receiver, RecvError, select, tick},
+    crossbeam_channel::{Receiver, RecvError, TrySendError, select, tick},
     solana_gossip::{
         cluster_info::ClusterInfo,
         contact_info::{self, Protocol},
     },
     solana_perf::packet::PacketBatch,
+    solana_streamer::streamer::ChannelSend,
     std::{
         fmt,
         net::SocketAddr,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicU8, Ordering},
+            atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -35,6 +33,46 @@ const RELAYER_TPU_ENABLE_DELAY: Duration = Duration::from_secs(60);
 const METRICS_INTERVAL: Duration = Duration::from_secs(1);
 const TPU_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Sends TPU packets to sigverify while this validator advertises its own TPU, and drops them
+/// while a relayer or BAM TPU is advertised. FetchStageManager decides which.
+#[derive(Clone)]
+pub struct TpuPacketSender {
+    sender: agave_wake_channel::Sender<PacketBatch>,
+    forward: Arc<AtomicBool>,
+    packets_forwarded: Arc<AtomicU64>,
+}
+
+impl TpuPacketSender {
+    pub fn new(sender: agave_wake_channel::Sender<PacketBatch>) -> Self {
+        Self {
+            sender,
+            forward: Arc::new(AtomicBool::new(true)),
+            packets_forwarded: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl ChannelSend<PacketBatch> for TpuPacketSender {
+    fn try_send(&self, batch: PacketBatch) -> Result<(), TrySendError<PacketBatch>> {
+        if !self.forward.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let num_packets = batch.len() as u64;
+        self.sender.try_send(batch)?;
+        self.packets_forwarded
+            .fetch_add(num_packets, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sender.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.sender.len()
+    }
+}
+
 /// Manages switching between the validator's tpu ports and that of the proxy's.
 /// Switch-overs are triggered by late and missed heartbeats.
 pub struct FetchStageManager {
@@ -46,9 +84,7 @@ impl FetchStageManager {
         // ClusterInfo is used to switch between advertising the proxy's TPU ports and that of this validator's.
         cluster_info: Arc<ClusterInfo>,
         relayer_heartbeat_rx: Receiver<HeartbeatEvent>,
-        packet_intercept_rx: Receiver<PacketBatch>,
-        // Intercepted packets get piped through here.
-        packet_tx: agave_wake_channel::Sender<PacketBatch>,
+        tpu_packet_sender: TpuPacketSender,
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
@@ -57,8 +93,7 @@ impl FetchStageManager {
         let t_hdl = Self::start(
             cluster_info,
             relayer_heartbeat_rx,
-            packet_intercept_rx,
-            packet_tx,
+            tpu_packet_sender,
             exit,
             bam_enabled,
             my_fallback_contact_info,
@@ -71,8 +106,7 @@ impl FetchStageManager {
     fn start(
         cluster_info: Arc<ClusterInfo>,
         relayer_heartbeat_rx: Receiver<HeartbeatEvent>,
-        packet_intercept_rx: Receiver<PacketBatch>,
-        packet_tx: agave_wake_channel::Sender<PacketBatch>,
+        tpu_packet_sender: TpuPacketSender,
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
@@ -91,7 +125,7 @@ impl FetchStageManager {
 
                 // Initialize the 'brain of the operation'
                 let mut tpu_state_machine = FetchStageTpuStateMachine::new(
-                    packet_tx,
+                    tpu_packet_sender,
                     bam_enabled.clone(),
                     TpuAddresses {
                         tpu_addr: original_tpu_info.0,
@@ -110,7 +144,6 @@ impl FetchStageManager {
                 // Run the semi-eternal loop
                 while !exit.load(Ordering::Relaxed) {
                     let all_good = select! {
-                        recv(packet_intercept_rx) -> pkt => tpu_state_machine.handle_packet_batch(pkt),
                         recv(state_machine_tick) -> _ => {
                             tpu_state_machine.state_machine_tick();
                             true
@@ -133,12 +166,6 @@ impl FetchStageManager {
     pub fn join(self) -> thread::Result<()> {
         self.t_hdl.join()
     }
-}
-
-/// Metrics collected by FetchStageManager
-struct FetchStageMetrics {
-    packets_forwarded: u64,
-    heartbeats_received: u64,
 }
 
 /// TPU addresses container
@@ -192,8 +219,8 @@ struct FetchStageTpuStateMachine {
     /// Which Tpu is being used
     current_tpu_state: TpuState,
 
-    /// Channel to forward packets to FetchStage
-    packet_tx: agave_wake_channel::Sender<PacketBatch>,
+    /// Forwards TPU packets to sigverify while the original TPU is advertised
+    tpu_packet_sender: TpuPacketSender,
 
     /// Whether BAM is enabled and connected
     bam_enabled: Arc<AtomicU8>,
@@ -210,8 +237,8 @@ struct FetchStageTpuStateMachine {
     /// ClusterInfo to update TPU addresses
     cluster_info: Arc<ClusterInfo>,
 
-    /// Metrics collected
-    metrics: FetchStageMetrics,
+    /// Heartbeats received since the last metrics report
+    heartbeats_received: u64,
 
     /// How often to check for relayer heartbeat timeouts
     max_time_between_relayer_heartbeats: Duration,
@@ -225,7 +252,7 @@ struct FetchStageTpuStateMachine {
 
 impl FetchStageTpuStateMachine {
     fn new(
-        packet_tx: agave_wake_channel::Sender<PacketBatch>,
+        tpu_packet_sender: TpuPacketSender,
         bam_enabled: Arc<AtomicU8>,
         original_tpu_info: TpuAddresses,
         bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
@@ -234,17 +261,14 @@ impl FetchStageTpuStateMachine {
         relayer_tpu_enable_delay: Duration,
     ) -> Self {
         Self {
-            packet_tx,
+            tpu_packet_sender,
             bam_enabled,
             current_tpu_state: TpuState {
                 tpu_type: TpuConnectionType::Original,
                 addr: original_tpu_info.tpu_addr,
                 fwd_addr: original_tpu_info.tpu_forward_addr,
             },
-            metrics: FetchStageMetrics {
-                packets_forwarded: 0,
-                heartbeats_received: 0,
-            },
+            heartbeats_received: 0,
             original_tpu_info,
             relayer_info: None,
             bam_tpu_info,
@@ -337,6 +361,10 @@ impl FetchStageTpuStateMachine {
             {
                 self.relayer_info = None;
             }
+            self.tpu_packet_sender.forward.store(
+                self.current_tpu_state.tpu_type == TpuConnectionType::Original,
+                Ordering::Relaxed,
+            );
         }
 
         if state_changed || report_due {
@@ -361,13 +389,14 @@ impl FetchStageTpuStateMachine {
             "relayer-heartbeat",
             (
                 "fetch_stage_packets_forwarded",
-                self.metrics.packets_forwarded,
+                self.tpu_packet_sender
+                    .packets_forwarded
+                    .swap(0, Ordering::Relaxed),
                 i64
             ),
-            ("heartbeats_received", self.metrics.heartbeats_received, i64),
+            ("heartbeats_received", self.heartbeats_received, i64),
         );
-        self.metrics.packets_forwarded = 0;
-        self.metrics.heartbeats_received = 0;
+        self.heartbeats_received = 0;
     }
 
     /// Process a relayer heartbeat message; returns false if we should shut down
@@ -381,7 +410,7 @@ impl FetchStageTpuStateMachine {
         };
 
         let now = Instant::now();
-        self.metrics.heartbeats_received += 1;
+        self.heartbeats_received += 1;
         if let Some(relayer_info) = self.relayer_info.as_mut() {
             relayer_info.last_heartbeat = now;
             relayer_info.tpu_addresses.tpu_addr = tpu_addr;
@@ -397,33 +426,6 @@ impl FetchStageTpuStateMachine {
             });
         }
         true
-    }
-
-    /// Process a batch of packets from FetchStage; returns false if we should shut down
-    fn handle_packet_batch(&mut self, pkt: Result<PacketBatch, RecvError>) -> bool {
-        match pkt {
-            Ok(pkt) => {
-                // Only forward packets when fetch stage is "connected"
-                if self.should_forward_packets() {
-                    let packet_count = pkt.len() as u64;
-                    if self.packet_tx.send(pkt).is_err() {
-                        error!("{:?}", ProxyError::PacketForwardError);
-                        return false;
-                    }
-                    self.metrics.packets_forwarded += packet_count;
-                }
-                true
-            }
-            Err(_) => {
-                warn!("packet intercept receiver disconnected, shutting down");
-                false
-            }
-        }
-    }
-
-    /// Determine if packets should be forwarded to FetchStage
-    fn should_forward_packets(&self) -> bool {
-        matches!(self.current_tpu_state.tpu_type, TpuConnectionType::Original)
     }
 
     /// Update gossip TPU addresses based on current state
@@ -501,15 +503,21 @@ mod tests {
         packet_rx: &agave_wake_channel::Receiver<PacketBatch>,
         should_send: bool,
     ) {
-        let packets_forwarded = brain.metrics.packets_forwarded;
+        let forwarded = || {
+            brain
+                .tpu_packet_sender
+                .packets_forwarded
+                .load(Ordering::Relaxed)
+        };
+        let packets_forwarded = forwarded();
         let pkt = PacketBatch::from(vec![BytesPacket::empty(); 3]);
-        assert!(brain.handle_packet_batch(Ok(pkt.clone())));
+        assert!(brain.tpu_packet_sender.try_send(pkt.clone()).is_ok());
         if should_send {
-            assert_eq!(packet_rx.recv().unwrap(), pkt);
-            assert_eq!(brain.metrics.packets_forwarded, packets_forwarded + 3);
+            assert_eq!(packet_rx.try_recv().unwrap(), pkt);
+            assert_eq!(forwarded(), packets_forwarded + 3);
         } else {
             assert!(packet_rx.try_recv().is_err());
-            assert_eq!(brain.metrics.packets_forwarded, packets_forwarded);
+            assert_eq!(forwarded(), packets_forwarded);
         }
     }
 
@@ -541,7 +549,7 @@ mod tests {
         let (packet_tx, packet_rx) = agave_wake_channel::unbounded();
 
         let brain = FetchStageTpuStateMachine::new(
-            packet_tx.clone(),
+            TpuPacketSender::new(packet_tx.clone()),
             bam_enabled.clone(),
             original_tpu_info,
             bam_tpu_info.clone(),
@@ -804,9 +812,20 @@ mod tests {
         let TestContext {
             bam_enabled,
             bam_tpu_info,
+            packet_rx,
             mut brain,
             ..
         } = setup_test();
+        let bad_bam_tpu_info = Arc::new(Some((
+            SocketAddr::from_str("0.0.0.0:0").unwrap(),
+            SocketAddr::from_str("0.0.0.0:0").unwrap(),
+        )));
+
+        // A failed switch away from Original keeps forwarding packets.
+        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
+        bam_tpu_info.store(bad_bam_tpu_info.clone());
+        assert!(!brain.state_machine_tick());
+        check_sending_packet(&mut brain, &packet_rx, true);
 
         // Enable BAM and set a valid BAM TPU info
         bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
@@ -817,9 +836,7 @@ mod tests {
         assert_eq!(brain.current_tpu_state.tpu_type, TpuConnectionType::Bam);
 
         // Now set a bad BAM TPU info that will cause gossip to fail
-        let bad_bam_tpu_addr = SocketAddr::from_str("0.0.0.0:0").unwrap();
-        let bad_bam_tpu_fwd_addr = SocketAddr::from_str("0.0.0.0:0").unwrap();
-        bam_tpu_info.store(Arc::new(Some((bad_bam_tpu_addr, bad_bam_tpu_fwd_addr))));
+        bam_tpu_info.store(bad_bam_tpu_info);
 
         // The state machine should attempt to switch, fail gossip, and revert to previous state
         let prev_state = brain.current_tpu_state;

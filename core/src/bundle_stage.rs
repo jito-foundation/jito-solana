@@ -32,7 +32,9 @@ use {
     solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
     solana_pubkey::Pubkey,
     solana_runtime::{
-        bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
+        bank::Bank,
+        bank_forks::{BankForks, BankPair, SharableBanks},
+        prioritization_fee_cache::PrioritizationFeeCache,
         transaction_execution::TransactionStatusSender,
     },
     solana_transaction::TransactionError,
@@ -405,11 +407,12 @@ impl BundleStage {
 
         let block_builder_fee_info = block_builder_fee_info.clone();
         let cluster_info = cluster_info.clone();
+        let sharable_banks = bank_forks.read().unwrap().sharable_banks();
         let bundle_thread = Builder::new()
             .name("solBundleStgTx".to_string())
             .spawn(move || {
                 Self::process_loop(
-                    bank_forks,
+                    sharable_banks,
                     bundle_receiver,
                     decision_maker,
                     consumer,
@@ -429,7 +432,7 @@ impl BundleStage {
 
     #[allow(clippy::too_many_arguments)]
     fn process_loop(
-        bank_forks: Arc<RwLock<BankForks>>,
+        sharable_banks: SharableBanks,
         mut bundle_receiver: Receiver<VerifiedPacketBundle>,
         mut decision_maker: DecisionMaker,
         mut consumer: BundleConsumer,
@@ -477,7 +480,7 @@ impl BundleStage {
 
             let start = Instant::now();
             if let Err(RecvTimeoutError::Disconnected) = Self::receive_and_buffer_bundles(
-                &bank_forks,
+                &sharable_banks,
                 &mut bundle_receiver,
                 &mut bundle_storage,
                 &blacklisted_accounts,
@@ -524,19 +527,12 @@ impl BundleStage {
     }
 
     fn receive_and_buffer_bundles(
-        bank_forks: &Arc<RwLock<BankForks>>,
+        sharable_banks: &SharableBanks,
         bundle_receiver: &mut Receiver<VerifiedPacketBundle>,
         bundle_storage: &mut BundleStorage,
         blacklisted_accounts: &HashSet<Pubkey>,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
     ) -> Result<(), RecvTimeoutError> {
-        let (root_bank, working_bank) = {
-            let bank_forks = bank_forks.read().unwrap();
-            let root_bank = bank_forks.root_bank();
-            let working_bank = bank_forks.working_bank();
-            (root_bank, working_bank)
-        };
-
         let recv_timeout = if bundle_storage.unprocessed_bundles_len() > 0 {
             Duration::from_millis(0)
         } else {
@@ -544,6 +540,10 @@ impl BundleStage {
         };
 
         let bundle = bundle_receiver.recv_timeout(recv_timeout)?;
+        let BankPair {
+            root_bank,
+            working_bank,
+        } = sharable_banks.load();
         for bundle in std::iter::once(bundle).chain(bundle_receiver.try_iter()) {
             let num_packets = bundle.batch().len();
 
