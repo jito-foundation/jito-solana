@@ -18,7 +18,7 @@ use {
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
                     DisconnectedError, ReceivingStats, calculate_max_age,
-                    contains_blacklisted_account,
+                    contains_blacklisted_account, has_short_precompile_data,
                 },
                 transaction_state_container::StateContainer,
             },
@@ -47,7 +47,7 @@ use {
     solana_perf::sigverify::verify_transaction_view,
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
-    solana_runtime::{bank::Bank, bank_forks::BankForks},
+    solana_runtime::{bank::Bank, bank_forks::SharableBanks},
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::TransactionMeta,
     },
@@ -56,7 +56,7 @@ use {
     solana_transaction::sanitized::MessageHash,
     std::{
         sync::{
-            Arc, RwLock,
+            Arc,
             atomic::{AtomicBool, AtomicU8, Ordering},
         },
         time::{Duration, Instant},
@@ -107,12 +107,12 @@ impl BamReceiveAndBuffer {
         bam_enabled: Arc<AtomicU8>,
         bundle_receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         response_sender: TokioSender<BamOutboundMessage>,
-        bank_forks: Arc<RwLock<BankForks>>,
+        sharable_banks: SharableBanks,
         shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         let (parsed_batch_sender, parsed_batch_receiver) =
-            crossbeam_channel::unbounded::<ParsedBatch>();
+            crossbeam_channel::bounded::<ParsedBatch>(PARSED_BATCH_CHANNEL_CAPACITY);
         let (recv_stats_sender, recv_stats_receiver) =
             crossbeam_channel::unbounded::<ReceivingStats>();
         #[cfg(test)]
@@ -130,7 +130,7 @@ impl BamReceiveAndBuffer {
                 parsed_batch_sender,
                 recv_stats_sender,
                 response_sender_clone,
-                bank_forks,
+                sharable_banks,
                 parsing_leader_state,
                 blacklisted_accounts,
                 #[cfg(test)]
@@ -162,7 +162,7 @@ impl BamReceiveAndBuffer {
         parsed_batch_sender: crossbeam_channel::Sender<ParsedBatch>,
         recv_stats_sender: crossbeam_channel::Sender<ReceivingStats>,
         response_sender: TokioSender<BamOutboundMessage>,
-        bank_forks: Arc<RwLock<BankForks>>,
+        sharable_banks: SharableBanks,
         shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
         #[cfg(test)] replacement_wait_sender: crossbeam_channel::Sender<()>,
@@ -214,7 +214,7 @@ impl BamReceiveAndBuffer {
                     return;
                 }
                 if let Some(working_bank) =
-                    Self::select_parsing_bank(&bank_forks, shared_leader_state.as_ref())
+                    Self::select_parsing_bank(&sharable_banks, shared_leader_state.as_ref())
                 {
                     break working_bank;
                 }
@@ -223,7 +223,7 @@ impl BamReceiveAndBuffer {
                 let _ = replacement_wait_sender.try_send(());
                 std::thread::sleep(TIMEOUT);
             };
-            let root_bank = bank_forks.read().unwrap().root_bank();
+            let root_bank = sharable_banks.root();
 
             let (deserialize_stats, duration_us) = measure_us!(Self::batch_verify(
                 &sigverify_thread_pool,
@@ -284,12 +284,20 @@ impl BamReceiveAndBuffer {
                             ));
                         stats.accumulate(parse_stats);
                         metrics.total_us += duration_us;
-                        parse_result.map_err(|reason| (reason, seq_id))
+                        let parsed_batch = parse_result.map_err(|reason| (reason, seq_id))?;
+                        if parsed_batch_sender.try_send(parsed_batch).is_err() {
+                            stats.num_dropped_on_capacity += 1;
+                            metrics.parsed_queue_full += 1;
+                            let reason = SchedulingError::ContainerFull as i32;
+                            return Err((Reason::SchedulingError(reason), seq_id));
+                        }
+                        stats.num_buffered = stats.num_buffered.saturating_add(packet_count);
+                        Ok(())
                     },
                 );
 
-                let parsed_batch = match result {
-                    Ok(batch) => batch,
+                match result {
+                    Ok(()) => {}
                     Err((reason, seq_id)) => {
                         let _ = response_sender.try_send(BamOutboundMessage::AtomicTxnBatchResult(
                             jito_protos::proto::bam_types::AtomicTxnBatchResult {
@@ -301,23 +309,20 @@ impl BamReceiveAndBuffer {
                                 )),
                             },
                         ));
-                        continue;
                     }
-                };
-
-                stats.num_buffered = stats
-                    .num_buffered
-                    .saturating_add(parsed_batch.txns_max_age.len());
-                let _ = parsed_batch_sender.try_send(parsed_batch);
+                }
             }
             debug_assert_eq!(verification_result_offset, verification_results.len());
             verification_results.clear();
+            metrics.parsed_queue_max_len = metrics
+                .parsed_queue_max_len
+                .max(parsed_batch_sender.len() as u64);
         }
     }
 
     /// Returns `None` only while a retained working bank is being replaced.
     fn select_parsing_bank(
-        bank_forks: &RwLock<BankForks>,
+        sharable_banks: &SharableBanks,
         shared_leader_state: Option<&SharedLeaderState>,
     ) -> Option<(Arc<Bank>, bool)> {
         if let Some(shared_leader_state) = shared_leader_state {
@@ -330,10 +335,7 @@ impl BamReceiveAndBuffer {
             }
         }
         // BankForks can expose a provisional bank before its leader state is published.
-        Some((
-            bank_forks.read().unwrap().working_bank(),
-            shared_leader_state.is_none(),
-        ))
+        Some((sharable_banks.working(), shared_leader_state.is_none()))
     }
 
     fn send_scheduling_error_txn_batch_result(&self, seq_id: u32, error: SchedulingError) {
@@ -397,11 +399,13 @@ impl BamReceiveAndBuffer {
                 unreachable!("signature failures are handled before parsing");
             };
 
-            let Ok(view) = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
+            let Some(view) = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
                 view,
                 MessageHash::Compute,
                 Some(is_simple_vote_transaction),
-            ) else {
+            )
+            .ok()
+            .filter(|view| !has_short_precompile_data(view)) else {
                 return (
                     Err(Reason::DeserializationError(
                         jito_protos::proto::bam_types::DeserializationError {
@@ -810,6 +814,11 @@ impl BamReceiveAndBuffer {
 
 // nomenclature taken from the agave versions of these constants
 const ATOMIC_TXN_BATCH_BURST: usize = 128;
+// Parsed batches waiting for the scheduler, bounded separately from its transaction container.
+// It holds several times the most batches BAM sends one validator in a slot. crossbeam
+// preallocates every ~3 KB entry (~30 MB). When full, the parser rejects with ContainerFull,
+// which BAM retries in the next slot.
+const PARSED_BATCH_CHANNEL_CAPACITY: usize = 10_240;
 const TIMEOUT: Duration = Duration::from_millis(1);
 
 impl ReceiveAndBuffer for BamReceiveAndBuffer {
@@ -940,6 +949,10 @@ struct BamReceiveAndBufferMetrics {
     fee_payer_check_us: u64,
     blacklist_check_us: u64,
     implicit_read_locks_us: u64,
+    /// Batches rejected because the parsed queue was full (also in `num_dropped_on_capacity`).
+    parsed_queue_full: u64,
+    /// Deepest the parsed queue got after a parser pass in this interval.
+    parsed_queue_max_len: u64,
     pub sigverify_metrics: SigverifyMetrics,
 }
 
@@ -954,6 +967,8 @@ impl BamReceiveAndBufferMetrics {
             || self.fee_payer_check_us > 0
             || self.blacklist_check_us > 0
             || self.implicit_read_locks_us > 0
+            || self.parsed_queue_full > 0
+            || self.parsed_queue_max_len > 0
             || self.sigverify_metrics.has_data()
     }
 
@@ -977,6 +992,8 @@ impl BamReceiveAndBufferMetrics {
             ("fee_payer_check_us", self.fee_payer_check_us, i64),
             ("blacklist_check_us", self.blacklist_check_us, i64),
             ("implicit_read_locks_us", self.implicit_read_locks_us, i64),
+            ("parsed_queue_full", self.parsed_queue_full, i64),
+            ("parsed_queue_max_len", self.parsed_queue_max_len, i64),
         );
         self.sigverify_metrics.report();
         *self = Self::default();
@@ -1111,7 +1128,7 @@ pub(super) mod tests {
         solana_message::{Message, VersionedMessage, v1},
         solana_poh::poh_recorder::LeaderState,
         solana_pubkey::Pubkey,
-        solana_runtime::bank::Bank,
+        solana_runtime::{bank::Bank, bank_forks::BankForks},
         solana_runtime_transaction::{
             transaction_meta::TransactionMeta, transaction_with_meta::TransactionWithMeta,
         },
@@ -1119,7 +1136,7 @@ pub(super) mod tests {
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{Transaction, versioned::VersionedTransaction},
-        std::sync::atomic::AtomicU8,
+        std::sync::{RwLock, atomic::AtomicU8},
     };
 
     pub(crate) fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
@@ -1269,7 +1286,7 @@ pub(super) mod tests {
             Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
             receiver,
             response_sender,
-            bank_forks,
+            bank_forks.read().unwrap().sharable_banks(),
             shared_leader_state,
             blacklisted_accounts,
         );
@@ -1409,12 +1426,89 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn test_parsed_queue_overflow_and_shutdown() {
+        const CAPACITY: usize = 8;
+        let (bank_forks, mint) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let (sender, raw_receiver) = unbounded();
+        let (parsed_batch_sender, parsed_batches) = crossbeam_channel::bounded(CAPACITY);
+        let (response_sender, mut responses) = tokio::sync::mpsc::channel(100);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let parser = std::thread::spawn({
+            let shutdown = shutdown.clone();
+            let sharable_banks = bank_forks.read().unwrap().sharable_banks();
+            move || {
+                BamReceiveAndBuffer::run_parsing(
+                    Arc::new(AtomicBool::new(false)),
+                    shutdown,
+                    raw_receiver,
+                    parsed_batch_sender,
+                    unbounded().0,
+                    response_sender,
+                    sharable_banks,
+                    None,
+                    HashSet::new(),
+                    crossbeam_channel::bounded(1).0,
+                )
+            }
+        });
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: (0..=CAPACITY)
+                    .map(|seq_id| transfer_batch(&mint, &bank, seq_id as u32))
+                    .collect(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let response = loop {
+            match responses.try_recv() {
+                Ok(response) => break response,
+                Err(_) if Instant::now() < deadline => std::thread::sleep(TIMEOUT),
+                Err(err) => panic!("parser did not reject the overflow batch: {err:?}"),
+            }
+        };
+        assert!(matches!(
+            response,
+            BamOutboundMessage::AtomicTxnBatchResult(
+                jito_protos::proto::bam_types::AtomicTxnBatchResult {
+                    seq_id,
+                    result: Some(atomic_txn_batch_result::Result::NotCommitted(
+                        jito_protos::proto::bam_types::NotCommitted {
+                            reason: Some(Reason::SchedulingError(reason)),
+                        }
+                    )),
+                }
+            ) if seq_id == CAPACITY as u32 && reason == SchedulingError::ContainerFull as i32
+        ));
+        // The parser must stop even while the queue is full and ingress is connected.
+        shutdown.store(true, Ordering::Relaxed);
+        while !parser.is_finished() {
+            assert!(Instant::now() < deadline, "parser did not stop on shutdown");
+            std::thread::sleep(TIMEOUT);
+        }
+        parser.join().unwrap();
+        assert_eq!(
+            parsed_batches
+                .try_iter()
+                .map(|batch| batch.seq_id)
+                .collect::<Vec<_>>(),
+            (0..CAPACITY as u32).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_receive_pass_is_bounded_and_preserves_fifo() {
         let (bank_forks, mint) = test_bank_forks();
         let bank = bank_forks.read().unwrap().working_bank();
         let (sender, raw_receiver) = unbounded();
         let (_exit, mut receiver, _, _) =
             setup_bam_receive_and_buffer(raw_receiver, bank_forks, None, HashSet::new());
+        assert_eq!(
+            receiver.parsed_batch_receiver.capacity(),
+            Some(PARSED_BATCH_CHANNEL_CAPACITY)
+        );
         sender
             .send(MultipleAtomicTxnBatch {
                 batches: (0..=ATOMIC_TXN_BATCH_BURST)
@@ -1577,8 +1671,9 @@ pub(super) mod tests {
         assert_ne!(old_bank.bank_id(), bank.bank_id());
         let mut shared = SharedLeaderState::new(0, None, None);
         let parsing_state = shared.clone();
+        let sharable_banks = bank_forks.read().unwrap().sharable_banks();
         let select = || {
-            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&parsing_state))
+            BamReceiveAndBuffer::select_parsing_bank(&sharable_banks, Some(&parsing_state))
                 .map(|(bank, _)| bank)
         };
         let (_exit, mut receiver, mut container, mut responses) = setup_bam_receive_and_buffer(
@@ -1827,11 +1922,12 @@ pub(super) mod tests {
 
         // BCL has inserted the provisional bank into BankForks, but has not yet
         // called set_bank_with_atomic_batches_enabled(..., false).
+        let sharable_banks = bank_forks.read().unwrap().sharable_banks();
         let (selected, enabled) =
-            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&shared)).unwrap();
+            BamReceiveAndBuffer::select_parsing_bank(&sharable_banks, Some(&shared)).unwrap();
         assert!(Arc::ptr_eq(&selected, &provisional));
         let (without_shared, checks_without_shared) =
-            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, None).unwrap();
+            BamReceiveAndBuffer::select_parsing_bank(&sharable_banks, None).unwrap();
         assert!(Arc::ptr_eq(&without_shared, &provisional));
         let parse = |bank: &Bank, checks, revert_on_error| {
             let mut batch =
@@ -1897,15 +1993,16 @@ pub(super) mod tests {
             None,
             false,
         )));
+        let sharable_banks = bank_forks.read().unwrap().sharable_banks();
         let (selected_bank, bank_checks_enabled) =
-            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&shared)).unwrap();
+            BamReceiveAndBuffer::select_parsing_bank(&sharable_banks, Some(&shared)).unwrap();
         assert!(Arc::ptr_eq(&selected_bank, &bank));
         assert!(!bank_checks_enabled);
         shared.load().enable_atomic_batches();
         // Resolution after selection cannot change the policy captured for this bank.
         assert!(!bank_checks_enabled);
         assert!(
-            BamReceiveAndBuffer::select_parsing_bank(&bank_forks, Some(&shared))
+            BamReceiveAndBuffer::select_parsing_bank(&sharable_banks, Some(&shared))
                 .unwrap()
                 .1
         );
@@ -2147,6 +2244,45 @@ pub(super) mod tests {
                 Reason::DeserializationError(_)
             ));
         }
+    }
+
+    #[test]
+    fn test_parse_batch_rejects_short_precompile_data() {
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let bank = bank_forks.read().unwrap().working_bank();
+        // Claims 255 signatures without an offset table.
+        let instruction =
+            Instruction::new_with_bytes(solana_sdk_ids::ed25519_program::ID, &[255], vec![]);
+        let transaction = Transaction::new_signed_with_payer(
+            &[instruction],
+            Some(&mint_keypair.pubkey()),
+            &[&mint_keypair],
+            bank.last_blockhash(),
+        );
+        let mut stats = BamReceiveAndBufferMetrics::default();
+        let batch = batch_with_transaction(&transaction.into());
+        let (results, _) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+        let Ok((mut verified_packets, revert_on_error, seq_id, max_schedule_slot)) =
+            results.into_iter().next().unwrap()
+        else {
+            panic!("signature verification failed");
+        };
+        let (result, _) = BamReceiveAndBuffer::parse_batch(
+            &mut verified_packets,
+            seq_id,
+            revert_on_error,
+            max_schedule_slot,
+            (&bank, &bank),
+            &HashSet::new(),
+            true,
+            &mut stats,
+        );
+        assert!(matches!(
+            result,
+            Err(Reason::DeserializationError(
+                jito_protos::proto::bam_types::DeserializationError { index: 0, reason }
+            )) if reason == DeserializationErrorReason::SanitizeError as i32
+        ));
     }
 
     // Activation on the working bank isn't enough: a buffered batch may still execute in a bank
