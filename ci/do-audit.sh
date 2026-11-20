@@ -137,6 +137,16 @@ default_cargo_audit_extra_args=(
   # patched 1.0.10; no fixed 0.26 exists.
   --ignore RUSTSEC-2026-0381
 
+  # Crate:     quinn-udp
+  # Version:   0.5.14 (dev-bins), 0.5.4 (programs/sbf)
+  # Title:     Receive loop can spin after a truncated datagram
+  # ID:        RUSTSEC-2026-0538
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0538
+  # Solution:  Upgrade to >=0.5.16
+  # Agave Ok:  only the single-recvmsg fallback (macOS, OpenBSD, Solaris) is affected; Linux
+  # uses recvmmsg. On macOS, agave-ledger-tool (dev-bins) links it via solana-core but
+  # never opens a QUIC socket.
+  --ignore RUSTSEC-2026-0538
 )
 
 xtask_cargo_audit_extra_args=(
@@ -149,6 +159,16 @@ xtask_cargo_audit_extra_args=(
   # Severity:  5.9 (medium)
   # Solution:  No fixed upgrade is available!
   --ignore RUSTSEC-2023-0071
+
+  # Crate:     quinn-udp
+  # Version:   0.5.14
+  # Title:     Receive loop can spin after a truncated datagram
+  # ID:        RUSTSEC-2026-0538
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0538
+  # Solution:  Upgrade to >=0.5.16
+  # Agave Ok:  only in xtask's lockfile as an optional dep of Reqwest's HTTP/3 feature, which
+  # xtask does not enable, so upstream Quinn and quinn-udp are never built.
+  --ignore RUSTSEC-2026-0538
 )
 
 lock_files="$(git ls-files ':**Cargo.lock')"
