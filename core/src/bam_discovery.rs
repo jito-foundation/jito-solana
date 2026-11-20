@@ -157,10 +157,8 @@ impl RegistryFollower {
         // BamManager goes live under this lock, so it cannot go live between this read and a
         // publish below.
         let _selection = selection_lock.lock().unwrap();
-        self.stalled_since = BamDiscovery::stall_since(
-            BamDiscovery::connection_state(bam_enabled),
-            self.stalled_since,
-        );
+        let state = BamDiscovery::connection_state(bam_enabled);
+        self.stalled_since = BamDiscovery::stall_since(state, self.stalled_since);
         let stuck = self.stalled_since.elapsed() >= CONNECT_GRACE;
 
         // A node can answer the probe and still refuse the scheduler stream.
@@ -172,7 +170,7 @@ impl RegistryFollower {
             }
         }
 
-        if (stuck || BamDiscovery::needs_pick(current_url.as_deref(), &self.registry_nodes))
+        if (stuck || BamDiscovery::needs_pick(state, current_url.as_deref(), &self.registry_nodes))
             && let Some(node) = self.ranked.get(self.cursor)
             && BamDiscovery::publish(bam_url, node)
         {
@@ -274,9 +272,17 @@ impl BamDiscovery {
     }
 
     // Checks the registry's list rather than the ranking, since a node that missed a probe is
-    // still listed.
-    fn needs_pick(current_url: Option<&str>, nodes: &[ServedNode]) -> bool {
-        !current_url.is_some_and(|url| nodes.iter().any(|node| node.url() == url))
+    // still listed. A node in maintenance leaves the list but keeps live sessions through the
+    // validator's leader slots, so keep a live pick until the node or connection ends it.
+    fn needs_pick(
+        state: BamConnectionState,
+        current_url: Option<&str>,
+        nodes: &[ServedNode],
+    ) -> bool {
+        match current_url {
+            None => true,
+            Some(url) => !Self::is_live(state) && !nodes.iter().any(|node| node.url() == url),
+        }
     }
 
     // A rebuilt ranking must publish its best node before advancing the cursor.
@@ -623,25 +629,35 @@ mod tests {
         assert_eq!(BamDiscovery::is_usable(&node), usable);
     }
 
-    #[test]
-    fn test_needs_pick_once_the_registry_drops_the_current_pick() {
+    #[test_case(BamConnectionState::Disconnected, true ; "disconnected")]
+    #[test_case(BamConnectionState::Connecting, true ; "connecting")]
+    #[test_case(BamConnectionState::DrainingBlockEngine, false ; "draining")]
+    #[test_case(BamConnectionState::BlockEngineDrained, false ; "drained")]
+    #[test_case(BamConnectionState::Connected, false ; "connected")]
+    fn test_needs_pick_once_the_registry_drops_the_current_pick(
+        state: BamConnectionState,
+        expected: bool,
+    ) {
         let still_served = served_node("203.0.113.1");
-        assert!(BamDiscovery::needs_pick(
-            Some("https://203.0.113.9:50056"),
-            &[still_served]
-        ));
+        assert_eq!(
+            BamDiscovery::needs_pick(state, Some("https://203.0.113.9:50056"), &[still_served]),
+            expected
+        );
     }
 
-    #[test]
-    fn test_no_pick_while_the_current_one_is_served() {
+    #[test_case(BamConnectionState::Disconnected ; "disconnected")]
+    #[test_case(BamConnectionState::Connected ; "connected")]
+    fn test_no_pick_while_the_current_one_is_served(state: BamConnectionState) {
         let served = served_node("203.0.113.1");
         let url = served.url();
-        assert!(!BamDiscovery::needs_pick(Some(&url), &[served]));
+        assert!(!BamDiscovery::needs_pick(state, Some(&url), &[served]));
     }
 
-    #[test]
-    fn test_needs_pick_when_nothing_is_published() {
+    #[test_case(BamConnectionState::Disconnected ; "disconnected")]
+    #[test_case(BamConnectionState::Connected ; "connected")]
+    fn test_needs_pick_when_nothing_is_published(state: BamConnectionState) {
         assert!(BamDiscovery::needs_pick(
+            state,
             None,
             &[served_node("203.0.113.1")]
         ));
