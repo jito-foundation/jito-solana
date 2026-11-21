@@ -1889,6 +1889,7 @@ mod tests {
             reward_certs_requestor,
             banking_stage_sender,
             metrics: LoopMetrics::default(),
+            genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
         let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
         let initial_leader_state = shared_leader_state.load();
@@ -2109,6 +2110,7 @@ mod tests {
             reward_certs_requestor,
             banking_stage_sender,
             metrics: LoopMetrics::default(),
+            genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
 
         create_and_insert_leader_bank(1, root_bank.clone(), 0, true, &mut ctx).unwrap();
@@ -2294,6 +2296,7 @@ mod tests {
             reward_certs_requestor,
             banking_stage_sender,
             metrics: LoopMetrics::default(),
+            genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
 
         create_and_insert_leader_bank(1, root_bank, 0, true, &mut ctx).unwrap();
@@ -2426,6 +2429,7 @@ mod tests {
             reward_certs_requestor,
             banking_stage_sender,
             metrics: LoopMetrics::default(),
+            genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
         let shared_leader_state = ctx.poh_recorder.read().unwrap().shared_leader_state();
 

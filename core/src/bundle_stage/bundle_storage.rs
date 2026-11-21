@@ -481,6 +481,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_bundle_vote_only_check_uses_working_bank() {
+        let (root_bank, _bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&GenesisConfig::default());
+        let working_bank = Bank::new_from_parent_with_options(
+            root_bank.clone(),
+            SlotLeader::new_unique(),
+            root_bank.slot() + 1,
+            NewBankOptions {
+                vote_only_bank: true,
+            },
+        );
+        let packet = BytesPacket::from_data(test_tx()).unwrap();
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
+        let mut bundle_storage = BundleStorage::with_capacity(1);
+
+        assert_eq!(
+            bundle_storage.insert_bundle(
+                bundle,
+                root_bank.as_ref(),
+                &working_bank,
+                &HashSet::new(),
+            ),
+            Err(BundleStorageError::PacketFilterError((
+                PacketHandlingError::Sanitization,
+                0,
+            )))
+        );
+    }
+
     #[test_case::test_case("empty", BundleStorageError::EmptyBatch)]
     #[test_case::test_case("too_large", BundleStorageError::BundleTooLarge)]
     #[test_case::test_case("discard", BundleStorageError::PacketMarkedDiscard(1))]

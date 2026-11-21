@@ -71,13 +71,13 @@ pub(crate) mod consume_worker;
 pub mod consumer;
 pub mod decision_maker;
 mod latest_validator_vote_packet;
-mod leader_slot_metrics;
+pub mod leader_slot_metrics;
 pub(crate) mod leader_slot_timing_metrics;
 pub mod qos_service;
 pub mod scheduler_messages;
 pub mod transaction_scheduler;
 mod vote_packet_receiver;
-mod vote_storage;
+pub mod vote_storage;
 mod vote_worker;
 
 #[cfg(unix)]

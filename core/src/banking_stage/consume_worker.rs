@@ -2568,7 +2568,7 @@ mod tests {
             },
         },
         arc_swap::ArcSwap,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::bounded,
         solana_account::{Account, AccountSharedData},
         solana_clock::Slot,
         solana_cost_model::cost_tracker::CostTrackerLimits,
