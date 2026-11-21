@@ -38,6 +38,7 @@ use {
         transaction_execution::TransactionStatusSender,
         vote_sender_types::ReplayVoteSender,
     },
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_transaction::TransactionError,
     std::{
         collections::VecDeque,
@@ -123,42 +124,6 @@ impl Default for BundleStageLoopMetrics {
 }
 
 impl BundleStageLoopMetrics {
-    pub fn increment_num_bundles_received(&mut self, count: u64) {
-        self.num_bundles_received += count;
-    }
-
-    pub fn increment_num_packets_received(&mut self, count: u64) {
-        self.num_packets_received += count;
-    }
-
-    pub fn increment_newly_buffered_bundles_count(&mut self, count: u64) {
-        self.newly_buffered_bundles_count += count;
-    }
-
-    pub fn set_current_buffered_bundles_count(&mut self, count: u64) {
-        self.current_buffered_bundles_count = Saturating(count);
-    }
-
-    pub fn set_current_buffered_packets_count(&mut self, count: u64) {
-        self.current_buffered_packets_count = Saturating(count);
-    }
-
-    pub fn set_cost_model_buffered_bundles_count(&mut self, count: u64) {
-        self.cost_model_buffered_bundles_count = Saturating(count);
-    }
-
-    pub fn increment_tip_programs_error(&mut self, count: u64) {
-        self.tip_programs_error += count;
-    }
-
-    pub fn increment_bundle_lock_errors(&mut self, count: u64) {
-        self.bundle_lock_errors += count;
-    }
-
-    pub fn increment_bundles_processed(&mut self, count: u64) {
-        self.bundles_processed += count;
-    }
-
     pub fn increment_bundle_dropped_error(&mut self, error: BundleStorageError) {
         self.num_bundles_dropped += 1;
         match error {
@@ -181,14 +146,6 @@ impl BundleStageLoopMetrics {
                 self.num_bundles_dropped_duplicate_transaction += 1;
             }
         }
-    }
-
-    pub fn increment_receive_and_buffer_bundles_elapsed_us(&mut self, count: u64) {
-        self.receive_and_buffer_bundles_elapsed_us += count;
-    }
-
-    pub fn increment_process_buffered_bundles_elapsed_us(&mut self, count: u64) {
-        self.process_buffered_bundles_elapsed_us += count;
     }
 
     fn maybe_report(&mut self, report_interval_ms: u64) {
@@ -276,30 +233,8 @@ impl BundleStageLoopMetrics {
                 ("bundles_processed", self.bundles_processed.0 as i64, i64),
             );
 
-            self.last_report = Instant::now();
-            self.clear();
+            *self = Self::default();
         }
-    }
-
-    fn clear(&mut self) {
-        self.num_bundles_received = Saturating(0);
-        self.num_packets_received = Saturating(0);
-        self.newly_buffered_bundles_count = Saturating(0);
-        self.current_buffered_bundles_count = Saturating(0);
-        self.current_buffered_packets_count = Saturating(0);
-        self.cost_model_buffered_bundles_count = Saturating(0);
-        self.num_bundles_dropped = Saturating(0);
-        self.receive_and_buffer_bundles_elapsed_us = Saturating(0);
-        self.process_buffered_bundles_elapsed_us = Saturating(0);
-        self.num_bundles_dropped_empty_batch = Saturating(0);
-        self.num_bundles_dropped_container_full = Saturating(0);
-        self.num_bundles_dropped_packet_marked_discard = Saturating(0);
-        self.num_bundles_dropped_packet_filter_error = Saturating(0);
-        self.num_bundles_dropped_bundle_too_large = Saturating(0);
-        self.num_bundles_dropped_duplicate_transaction = Saturating(0);
-        self.tip_programs_error = Saturating(0);
-        self.bundle_lock_errors = Saturating(0);
-        self.bundles_processed = Saturating(0);
     }
 
     pub fn has_data(&self) -> bool {
@@ -326,7 +261,6 @@ type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
 
 #[derive(Debug)]
 enum BundleExecutionError {
-    TipError,
     ErrorRetryable,
     ErrorNonRetryable,
 }
@@ -356,49 +290,6 @@ impl BundleStage {
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
-        Self::start_bundle_thread(
-            cluster_info,
-            bank_forks,
-            poh_recorder,
-            alpenglow_slot_clock,
-            transaction_recorder,
-            bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            exit,
-            tip_manager,
-            bundle_account_locker,
-            block_builder_fee_info,
-            bam_enabled,
-            prioritization_fee_cache,
-            blacklisted_accounts,
-        )
-    }
-
-    pub fn join(self) -> thread::Result<()> {
-        self.bundle_thread.join()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn start_bundle_thread(
-        cluster_info: &Arc<ClusterInfo>,
-        bank_forks: Arc<RwLock<BankForks>>,
-        poh_recorder: &Arc<RwLock<PohRecorder>>,
-        alpenglow_slot_clock: SharedAlpenglowSlotClock,
-        transaction_recorder: TransactionRecorder,
-        bundle_receiver: Receiver<VerifiedPacketBundle>,
-        transaction_status_sender: Option<TransactionStatusSender>,
-        replay_vote_sender: ReplayVoteSender,
-        log_message_bytes_limit: Option<usize>,
-        exit: Arc<AtomicBool>,
-        tip_manager: TipManager,
-        bundle_account_locker: BundleAccountLocker,
-        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
-        bam_enabled: Arc<AtomicU8>,
-        prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
-        blacklisted_accounts: HashSet<Pubkey>,
-    ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
             replay_vote_sender,
@@ -411,7 +302,7 @@ impl BundleStage {
         );
 
         let consumer =
-            BundleConsumer::new(committer, transaction_recorder, log_message_bytes_limit);
+            BundleConsumer::new(committer, transaction_recorder, log_messages_bytes_limit);
 
         let block_builder_fee_info = block_builder_fee_info.clone();
         let cluster_info = cluster_info.clone();
@@ -438,12 +329,16 @@ impl BundleStage {
         Self { bundle_thread }
     }
 
+    pub fn join(self) -> thread::Result<()> {
+        self.bundle_thread.join()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn process_loop(
         sharable_banks: SharableBanks,
         mut bundle_receiver: Receiver<VerifiedPacketBundle>,
         mut decision_maker: DecisionMaker,
-        mut consumer: BundleConsumer,
+        consumer: BundleConsumer,
         exit: Arc<AtomicBool>,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
@@ -470,7 +365,7 @@ impl BundleStage {
                 let (_, process_buffered_packets_time_us) =
                     measure_us!(Self::process_buffered_bundles(
                         &mut decision_maker,
-                        &mut consumer,
+                        &consumer,
                         &mut bundle_storage,
                         &bundle_account_locker,
                         &mut bundle_stage_metrics,
@@ -480,9 +375,8 @@ impl BundleStage {
                         &cluster_info,
                         &consume_worker_metrics
                     ));
-                bundle_stage_metrics.increment_process_buffered_bundles_elapsed_us(
-                    process_buffered_packets_time_us,
-                );
+                bundle_stage_metrics.process_buffered_bundles_elapsed_us +=
+                    process_buffered_packets_time_us;
                 last_metrics_update = Instant::now();
             }
 
@@ -501,17 +395,15 @@ impl BundleStage {
             }
             let elapsed = start.elapsed();
 
-            bundle_stage_metrics
-                .increment_receive_and_buffer_bundles_elapsed_us(elapsed.as_micros() as u64);
+            bundle_stage_metrics.receive_and_buffer_bundles_elapsed_us +=
+                elapsed.as_micros() as u64;
 
-            bundle_stage_metrics.set_current_buffered_bundles_count(
-                bundle_storage.unprocessed_bundles_len() as u64,
-            );
-            bundle_stage_metrics
-                .set_current_buffered_packets_count(bundle_storage.num_packets_buffered() as u64);
-            bundle_stage_metrics.set_cost_model_buffered_bundles_count(
-                bundle_storage.cost_model_buffered_bundles_len() as u64,
-            );
+            bundle_stage_metrics.current_buffered_bundles_count =
+                Saturating(bundle_storage.unprocessed_bundles_len() as u64);
+            bundle_stage_metrics.current_buffered_packets_count =
+                Saturating(bundle_storage.num_packets_buffered() as u64);
+            bundle_stage_metrics.cost_model_buffered_bundles_count =
+                Saturating(bundle_storage.cost_model_buffered_bundles_len() as u64);
 
             bundle_stage_metrics.maybe_report(20);
         }
@@ -555,8 +447,8 @@ impl BundleStage {
         for bundle in std::iter::once(bundle).chain(bundle_receiver.try_iter()) {
             let num_packets = bundle.batch().len();
 
-            bundle_stage_metrics.increment_num_bundles_received(1);
-            bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
+            bundle_stage_metrics.num_bundles_received += 1;
+            bundle_stage_metrics.num_packets_received += num_packets as u64;
 
             match bundle_storage.insert_bundle(
                 bundle,
@@ -565,7 +457,7 @@ impl BundleStage {
                 blacklisted_accounts,
             ) {
                 Ok(_) => {
-                    bundle_stage_metrics.increment_newly_buffered_bundles_count(1);
+                    bundle_stage_metrics.newly_buffered_bundles_count += 1;
                 }
                 Err(e) => {
                     bundle_stage_metrics.increment_bundle_dropped_error(e);
@@ -579,7 +471,7 @@ impl BundleStage {
     #[allow(clippy::too_many_arguments)]
     fn process_buffered_bundles(
         decision_maker: &mut DecisionMaker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
@@ -623,7 +515,7 @@ impl BundleStage {
         bank: &Arc<Bank>,
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         last_tip_update_slot: &mut Slot,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
@@ -649,14 +541,14 @@ impl BundleStage {
                     *last_tip_update_slot = bank.slot();
                 }
                 Err(BundleExecutionError::ErrorRetryable) => {
-                    bundle_stage_metrics.increment_tip_programs_error(1);
+                    bundle_stage_metrics.tip_programs_error += 1;
                     error!("tip programs error, not processing bundles");
                     return;
                 }
                 Err(err) => {
                     // Instruction failures and missing accounts will not succeed on retry
                     // in this slot. Advance so we do not tight-loop every 10ms poll.
-                    bundle_stage_metrics.increment_tip_programs_error(1);
+                    bundle_stage_metrics.tip_programs_error += 1;
                     error!("tip programs error, not processing bundles: {err:?}");
                     *last_tip_update_slot = bank.slot();
                     return;
@@ -690,7 +582,7 @@ impl BundleStage {
                     .lock_bundle(&bundle.transactions, bank)
                     .is_err()
                 {
-                    bundle_stage_metrics.increment_bundle_lock_errors(1);
+                    bundle_stage_metrics.bundle_lock_errors += 1;
                     bundle_storage.destroy_bundle(bundle);
                     continue;
                 }
@@ -704,10 +596,9 @@ impl BundleStage {
             let result = Self::process_bundle(bank, &bundle, consumer, consume_worker_metrics);
             let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
             match result {
-                Ok(output) => {
-                    consume_worker_metrics.update_for_consume(&output);
+                Ok(()) => {
                     consume_worker_metrics.set_has_data(true);
-                    bundle_stage_metrics.increment_bundles_processed(1);
+                    bundle_stage_metrics.bundles_processed += 1;
                     bundle_storage.destroy_bundle(bundle);
                 }
                 Err(BundleExecutionError::ErrorRetryable) => {
@@ -715,10 +606,6 @@ impl BundleStage {
                 }
                 Err(BundleExecutionError::ErrorNonRetryable) => {
                     bundle_storage.destroy_bundle(bundle);
-                }
-                Err(BundleExecutionError::TipError) => {
-                    // This error is not possible from this code path as any tip processing directly calls Consumer::process_and_record_aged_transactions
-                    continue;
                 }
             }
             consume_worker_metrics.maybe_report_and_reset("10000");
@@ -743,7 +630,7 @@ impl BundleStage {
     fn handle_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
@@ -785,7 +672,7 @@ impl BundleStage {
     fn handle_initialize_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         consume_worker_metrics: &ConsumeWorkerMetrics,
         keypair: &Keypair,
@@ -794,48 +681,26 @@ impl BundleStage {
             .get_initialize_tip_programs_bundle(bank, keypair)
             .map_err(|e| {
                 warn!("tip programs initialize error: {e:?}");
-                BundleExecutionError::TipError
+                BundleExecutionError::ErrorNonRetryable
             })?;
         if initialize_tip_program_transactions.is_empty() {
             return Ok(());
         }
 
-        let max_age = MaxAge {
-            sanitized_epoch: bank.epoch(),
-            alt_invalidation_slot: bank.slot(),
-        };
-        // SmallVec 2: tip-manager init bundle is at most payment-program + distribution-config txs.
-        let max_ages: SmallVec<[MaxAge; 2]> =
-            SmallVec::from_elem(max_age, initialize_tip_program_transactions.len());
-        let _ = bundle_account_locker.lock_bundle(&initialize_tip_program_transactions, bank);
-        let output = consumer.process_and_record_aged_transactions(
+        Self::execute_tip_bundle(
+            "initialize",
             bank,
             &initialize_tip_program_transactions,
-            &max_ages,
-            MAX_BUNDLE_RETRY_DURATION,
-        );
-        let _ = bundle_account_locker.unlock_bundle(&initialize_tip_program_transactions, bank);
-
-        consume_worker_metrics.update_for_consume(&output);
-        consume_worker_metrics.set_has_data(true);
-
-        let bundle_result = Self::to_bundle_result(&output);
-
-        debug!(
-            "initialize tip program output: {:?}",
-            output
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-        );
-        info!("initialize tip program output: {bundle_result:?}");
-
-        bundle_result
+            bundle_account_locker,
+            consumer,
+            consume_worker_metrics,
+        )
     }
 
     fn handle_crank_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
@@ -849,39 +714,56 @@ impl BundleStage {
             .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info)
             .map_err(|e| {
                 warn!("tip programs crank error: {e:?}");
-                BundleExecutionError::TipError
+                BundleExecutionError::ErrorNonRetryable
             })?;
 
         if crank_tip_program_transactions.is_empty() {
             return Ok(());
         }
 
+        Self::execute_tip_bundle(
+            "crank",
+            bank,
+            &crank_tip_program_transactions,
+            bundle_account_locker,
+            consumer,
+            consume_worker_metrics,
+        )
+    }
+
+    fn execute_tip_bundle(
+        label: &str,
+        bank: &Arc<Bank>,
+        transactions: &[impl TransactionWithMeta],
+        bundle_account_locker: &BundleAccountLocker,
+        consumer: &BundleConsumer,
+        consume_worker_metrics: &ConsumeWorkerMetrics,
+    ) -> BundleExecutionResult<()> {
         let max_age = MaxAge {
             sanitized_epoch: bank.epoch(),
             alt_invalidation_slot: bank.slot(),
         };
-        // SmallVec 2: tip-manager crank bundle is at most init-distribution + change-receiver txs.
-        let max_ages: SmallVec<[MaxAge; 2]> =
-            SmallVec::from_elem(max_age, crank_tip_program_transactions.len());
-        let _ = bundle_account_locker.lock_bundle(&crank_tip_program_transactions, bank);
+        // SmallVec 2: tip-manager init and crank bundles each have at most two transactions.
+        let max_ages: SmallVec<[MaxAge; 2]> = SmallVec::from_elem(max_age, transactions.len());
+        let _ = bundle_account_locker.lock_bundle(transactions, bank);
         let output = consumer.process_and_record_aged_transactions(
             bank,
-            &crank_tip_program_transactions,
+            transactions,
             &max_ages,
             MAX_BUNDLE_RETRY_DURATION,
         );
-        let _ = bundle_account_locker.unlock_bundle(&crank_tip_program_transactions, bank);
+        let _ = bundle_account_locker.unlock_bundle(transactions, bank);
 
         consume_worker_metrics.update_for_consume(&output);
         consume_worker_metrics.set_has_data(true);
         let bundle_result = Self::to_bundle_result(&output);
         debug!(
-            "crank tip program output: {:?}",
+            "{label} tip program output: {:?}",
             output
                 .execute_and_commit_transactions_output
                 .commit_transactions_result
         );
-        info!("crank tip program output: {bundle_result:?}");
+        info!("{label} tip program output: {bundle_result:?}");
         bundle_result
     }
 
@@ -928,9 +810,9 @@ impl BundleStage {
     fn process_bundle(
         bank: &Arc<Bank>,
         bundle: &BundleStorageEntry,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         consume_worker_metrics: &ConsumeWorkerMetrics,
-    ) -> BundleExecutionResult<ProcessTransactionBatchOutput> {
+    ) -> BundleExecutionResult<()> {
         if bank.is_complete() {
             return Err(BundleExecutionError::ErrorRetryable);
         }
@@ -963,9 +845,7 @@ impl BundleStage {
                     .commit_transactions_result
             );
         }
-        result?;
-
-        Ok(output)
+        result
     }
 }
 
@@ -979,9 +859,8 @@ mod tests {
             tip_payment::JitoTipPaymentConfig,
         },
         agave_feature_set::FeatureSet,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::{Sender, bounded, unbounded},
         solana_cluster_type::ClusterType,
-        solana_entry::recorder_message::RecorderMessage,
         solana_fee_calculator::{DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, FeeRateGovernor},
         solana_genesis_config::GenesisConfig,
         solana_gossip::contact_info::ContactInfo,
@@ -989,7 +868,7 @@ mod tests {
         solana_leader_schedule::SlotLeader,
         solana_ledger::{
             blockstore::Blockstore, genesis_utils::GenesisConfigInfo,
-            get_tmp_ledger_path_auto_delete,
+            get_tmp_ledger_path_auto_delete, leader_schedule_cache::LeaderScheduleCache,
         },
         solana_native_token::LAMPORTS_PER_SOL,
         solana_net_utils::SocketAddrSpace,
@@ -997,7 +876,8 @@ mod tests {
             packet::{BytesPacket, PacketBatch},
             test_tx::test_tx,
         },
-        solana_poh::poh_recorder::create_test_recorder,
+        solana_poh::record_channels::{RecordReceiver, record_channels},
+        solana_poh_config::PohConfig,
         solana_program_binaries::{jito_tip_distribution, jito_tip_payment, spl_programs},
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
@@ -1011,9 +891,57 @@ mod tests {
         solana_system_transaction::transfer,
         solana_time_utils::timestamp,
         solana_transaction::sanitized::SanitizedTransaction,
-        solana_vote_interface::state::vote_state_v4::VoteStateV4,
+        solana_vote_program::vote_state::VoteStateV4,
         std::assert_matches,
+        tempfile::TempDir,
     };
+
+    /// Creates a recorder with `bank` installed as the working bank. Recorded batches stay in the
+    /// returned receiver; `BlockCreationLoop` drains it in production.
+    fn create_test_recorder(
+        bank: Arc<Bank>,
+        blockstore: Arc<Blockstore>,
+    ) -> (
+        Arc<AtomicBool>,
+        Arc<RwLock<PohRecorder>>,
+        TransactionRecorder,
+        RecordReceiver,
+    ) {
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+        let exit = Arc::new(AtomicBool::new(false));
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            bank.tick_height(),
+            bank.last_blockhash(),
+            bank.clone(),
+            Some((4, 4)),
+            bank.ticks_per_slot(),
+            blockstore,
+            &leader_schedule_cache,
+            &PohConfig::default(),
+            exit.clone(),
+        );
+        poh_recorder.set_bank_for_test(bank.clone());
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(bank.bank_id());
+
+        (
+            exit,
+            Arc::new(RwLock::new(poh_recorder)),
+            TransactionRecorder::new(record_sender),
+            record_receiver,
+        )
+    }
+
+    /// Waits briefly for the next recorded batch and returns its transaction count.
+    fn recv_recorded_transaction_count(record_receiver: &RecordReceiver) -> Option<usize> {
+        let record = record_receiver
+            .inner()
+            .recv_timeout(Duration::from_millis(1))
+            .ok()?;
+        record_receiver.on_received_record();
+        Some(record.transactions.len())
+    }
 
     struct TestFixture {
         genesis_config_info: GenesisConfigInfo,
@@ -1144,7 +1072,7 @@ mod tests {
             .unwrap();
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let mut consumer = BundleConsumer::new(
+        let consumer = BundleConsumer::new(
             Committer::new(None, replay_vote_sender, None),
             TransactionRecorder::new(record_sender),
             None,
@@ -1164,7 +1092,7 @@ mod tests {
             clock.update(slot, Instant::now(), Duration::from_millis(200));
             BundleStage::process_buffered_bundles(
                 &mut decision_maker,
-                &mut consumer,
+                &consumer,
                 &mut storage,
                 &BundleAccountLocker::default(),
                 &mut metrics,
@@ -1188,13 +1116,13 @@ mod tests {
         let (record_sender, _record_receiver) = solana_poh::record_channels::record_channels(false);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let committer = Committer::new(None, replay_vote_sender, None);
-        let mut consumer =
+        let consumer =
             BundleConsumer::new(committer, TransactionRecorder::new(record_sender), None);
 
         let result = BundleStage::handle_crank_tip_programs(
             &bank,
             &BundleAccountLocker::default(),
-            &mut consumer,
+            &consumer,
             &TipManager::new(TipManagerConfig::default()),
             &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             &ConsumeWorkerMetrics::new(),
@@ -1267,21 +1195,23 @@ mod tests {
 
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
         assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
+        assert_eq!(bundle_storage.num_packets_buffered(), 0);
         assert_eq!(
             bam_enabled.load(Ordering::Acquire),
             BamConnectionState::Connected as u8
         );
     }
 
-    #[test]
-    fn test_tip_program_accounts_dropped_when_genesis_rent_is_free() {
+    #[test_case::test_case(Rent::free(), false; "free_rent_drops_accounts")]
+    #[test_case::test_case(Rent::default(), true; "default_rent_persists_accounts")]
+    fn test_tip_program_accounts_with_zero_fees(rent: Rent, persists: bool) {
         // Local-cluster genesis uses Rent::free() + zero fees. Tip program init
         // then creates 0-lamport PDAs, which accounts-db drops, so crank fails
         // with AccountMissing. BundleStage skips init/crank in that environment.
         let TestFixture {
             genesis_config_info,
             leader_keypair,
-        } = create_genesis_config_with_rent(2, Rent::free(), FeeRateGovernor::new(0, 0));
+        } = create_genesis_config_with_rent(2, rent, FeeRateGovernor::new(0, 0));
         let (bank, bank_forks) =
             Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
         let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
@@ -1295,50 +1225,40 @@ mod tests {
         );
 
         assert!(init_committed_ok, "init transactions should commit");
-        assert!(
-            !config_account_exists,
-            "0-lamport tip-payment config must not persist under Rent::free()"
+        assert_eq!(
+            config_account_exists, persists,
+            "tip-payment config must persist only when genesis rent is non-zero"
         );
-        assert!(
-            matches!(
-                crank,
-                Err(crate::tip_manager::TipManagerError::AccountMissing)
-            ),
-            "crank must fail after the config PDA is dropped: {crank:?}"
-        );
+        if persists {
+            assert!(
+                crank.is_ok(),
+                "crank should build after a persisted init: {crank:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    crank,
+                    Err(crate::tip_manager::TipManagerError::AccountMissing)
+                ),
+                "crank must fail after the config PDA is dropped: {crank:?}"
+            );
+        }
     }
 
-    #[test]
-    fn test_tip_program_accounts_persist_with_default_rent_and_zero_fees() {
-        let TestFixture {
-            genesis_config_info,
-            leader_keypair,
-        } = create_genesis_config_with_rent(2, Rent::default(), FeeRateGovernor::new(0, 0));
-        let (bank, bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
-        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
-        bank_forks.write().unwrap().insert(bank);
-        let bank = bank_forks.read().unwrap().working_bank();
-
-        let (init_committed_ok, config_account_exists, crank) = execute_tip_program_maintenance(
-            &bank,
-            &leader_keypair,
-            genesis_config_info.voting_keypair.pubkey(),
-        );
-
-        assert!(init_committed_ok, "init transactions should commit");
-        assert!(
-            config_account_exists,
-            "tip-payment config must persist when genesis rent is non-zero"
-        );
-        assert!(
-            crank.is_ok(),
-            "crank should build after a persisted init: {crank:?}"
-        );
+    /// A running `BundleStage` at slot 1. Don't destructure it with `..`: the guards must stay alive.
+    struct BundleStageFixture {
+        genesis_config_info: GenesisConfigInfo,
+        rent_exempt_minimum: u64,
+        bank: Arc<Bank>,
+        exit: Arc<AtomicBool>,
+        record_receiver: RecordReceiver,
+        bundle_sender: Sender<VerifiedPacketBundle>,
+        bundle_stage: BundleStage,
+        _poh_recorder: Arc<RwLock<PohRecorder>>,
+        _ledger_path: TempDir,
     }
 
-    #[test]
-    fn test_tip_programs_initialized_with_no_bundles() {
+    fn start_bundle_stage() -> BundleStageFixture {
         agave_logger::setup();
         let TestFixture {
             genesis_config_info,
@@ -1359,15 +1279,8 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let (exit, poh_recorder, transaction_recorder, record_receiver) =
+            create_test_recorder(bank.clone(), blockstore);
 
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
@@ -1376,6 +1289,7 @@ mod tests {
         ));
 
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let bundle_stage = BundleStage::new(
             &cluster_info,
             bank_forks,
@@ -1406,6 +1320,23 @@ mod tests {
             HashSet::default(),
         );
 
+        BundleStageFixture {
+            rent_exempt_minimum: genesis_config_info.genesis_config.rent.minimum_balance(0),
+            genesis_config_info,
+            bank,
+            exit,
+            record_receiver,
+            bundle_sender: verified_bundle_sender,
+            bundle_stage,
+            _poh_recorder: poh_recorder,
+            _ledger_path: ledger_path,
+        }
+    }
+
+    #[test]
+    fn test_tip_programs_initialized_with_no_bundles() {
+        let fixture = start_bundle_stage();
+
         // initialize tip distribution config
         // initialize tip payment config
         // initialize tip distribution account
@@ -1414,18 +1345,20 @@ mod tests {
         let mut tx_count = 0;
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
+            if let Some(num_transactions) =
+                recv_recorded_transaction_count(&fixture.record_receiver)
             {
-                tx_count += entry.transactions.len();
+                tx_count += num_transactions;
             }
             assert!(tx_count <= NUM_TXS_EXPECTED, "tx_count: {tx_count}");
         }
 
-        let tip_payment_config_account = bank
+        let tip_payment_config_account = fixture
+            .bank
             .get_account(&JitoTipPaymentConfig::find_program_address(&jito_tip_payment::id()).0)
             .unwrap();
-        let tip_distribution_config_account = bank
+        let tip_distribution_config_account = fixture
+            .bank
             .get_account(
                 &JitoTipDistributionConfig::find_program_address(&jito_tip_distribution::id()).0,
             )
@@ -1446,24 +1379,24 @@ mod tests {
             tip_payment_config.tip_receiver(),
             TipDistributionAccount::find_program_address(
                 &jito_tip_distribution::id(),
-                &genesis_config_info.voting_keypair.pubkey(),
-                bank.epoch()
+                &fixture.genesis_config_info.voting_keypair.pubkey(),
+                fixture.bank.epoch()
             )
             .0
         );
         assert_eq!(
             tip_payment_config.block_builder(),
-            genesis_config_info.validator_pubkey
+            fixture.genesis_config_info.validator_pubkey
         );
         assert_eq!(tip_payment_config.block_builder_commission_pct(), 10);
 
         assert_eq!(
             tip_distribution_config.authority(),
-            genesis_config_info.validator_pubkey
+            fixture.genesis_config_info.validator_pubkey
         );
         assert_eq!(
             tip_distribution_config.expired_funds_account(),
-            genesis_config_info.validator_pubkey
+            fixture.genesis_config_info.validator_pubkey
         );
         assert_eq!(tip_distribution_config.num_epochs_valid(), 10);
         assert_eq!(
@@ -1471,172 +1404,14 @@ mod tests {
             10000
         );
 
-        drop(verified_bundle_sender);
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
-        bundle_stage.join().unwrap();
-    }
-
-    #[test]
-    fn test_process_bad_bundle() {
-        agave_logger::setup();
-        let TestFixture {
-            genesis_config_info,
-            leader_keypair,
-        } = create_genesis_config(2);
-        let (bank, bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
-
-        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
-        bank_forks.write().unwrap().insert(bank);
-
-        let bank = bank_forks.read().unwrap().working_bank();
-        assert_eq!(bank.slot(), 1);
-
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Arc::new(
-            Blockstore::open(ledger_path.path())
-                .expect("Expected to be able to open database ledger"),
-        );
-
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let cluster_info = Arc::new(ClusterInfo::new(
-            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
-            Arc::new(leader_keypair.insecure_clone()),
-            SocketAddrSpace::Unspecified,
-        ));
-
-        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
-        let bundle_stage = BundleStage::new(
-            &cluster_info,
-            bank_forks,
-            &poh_recorder,
-            SharedAlpenglowSlotClock::default(),
-            transaction_recorder,
-            verified_bundle_receiver,
-            None,
-            replay_vote_sender,
-            None,
-            exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
-                },
-            }),
-            BundleAccountLocker::default(),
-            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-                block_builder: genesis_config_info.validator_pubkey,
-                block_builder_commission: 10,
-            })),
-            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-            HashSet::default(),
-        );
-
-        let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
-            BytesPacket::from_data(test_tx()).unwrap(),
-        ]));
-        verified_bundle_sender.send(verified_bundle).unwrap();
-
-        let start = Instant::now();
-        const MAX_EXPECTED_TXS: usize = 4;
-        let mut tx_count = 0;
-        while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
-            {
-                tx_count += entry.transactions.len();
-                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
-            }
-        }
-
-        exit.store(true, Ordering::Relaxed);
-        bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
-        drop(verified_bundle_sender);
+        drop(fixture.bundle_sender);
+        fixture.exit.store(true, Ordering::Relaxed);
+        fixture.bundle_stage.join().unwrap();
     }
 
     #[test]
     fn test_process_sequential_bundles() {
-        agave_logger::setup();
-        let TestFixture {
-            genesis_config_info,
-            leader_keypair,
-        } = create_genesis_config(2);
-        let (bank, bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
-
-        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
-        bank_forks.write().unwrap().insert(bank);
-
-        let bank = bank_forks.read().unwrap().working_bank();
-        assert_eq!(bank.slot(), 1);
-
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Arc::new(
-            Blockstore::open(ledger_path.path())
-                .expect("Expected to be able to open database ledger"),
-        );
-
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let cluster_info = Arc::new(ClusterInfo::new(
-            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
-            Arc::new(leader_keypair.insecure_clone()),
-            SocketAddrSpace::Unspecified,
-        ));
-
-        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
-        let bundle_stage = BundleStage::new(
-            &cluster_info,
-            bank_forks,
-            &poh_recorder,
-            SharedAlpenglowSlotClock::default(),
-            transaction_recorder,
-            verified_bundle_receiver,
-            None,
-            replay_vote_sender,
-            None,
-            exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
-                },
-            }),
-            BundleAccountLocker::default(),
-            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-                block_builder: genesis_config_info.validator_pubkey,
-                block_builder_commission: 10,
-            })),
-            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-            HashSet::default(),
-        );
+        let fixture = start_bundle_stage();
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -1644,117 +1419,52 @@ mod tests {
         // mint seeds kp1 which transfers to kp2
         let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
             BytesPacket::from_data(transfer(
-                &genesis_config_info.mint_keypair,
+                &fixture.genesis_config_info.mint_keypair,
                 &kp1.pubkey(),
-                (genesis_config_info.genesis_config.rent.minimum_balance(0) * 2) + 5_000,
-                bank.last_blockhash(),
+                (fixture.rent_exempt_minimum * 2) + 5_000,
+                fixture.bank.last_blockhash(),
             ))
             .unwrap(),
             BytesPacket::from_data(transfer(
                 &kp1,
                 &kp2.pubkey(),
-                genesis_config_info.genesis_config.rent.minimum_balance(0),
-                bank.last_blockhash(),
+                fixture.rent_exempt_minimum,
+                fixture.bank.last_blockhash(),
             ))
             .unwrap(),
         ]));
-        verified_bundle_sender.send(verified_bundle).unwrap();
+        fixture.bundle_sender.send(verified_bundle).unwrap();
 
         let start = Instant::now();
         const PROCESSING_TIMEOUT: Duration = Duration::from_secs(10);
         const MAX_EXPECTED_TXS: usize = 6; // 4 initial for tips + 2 transfers
-        let expected_balance = genesis_config_info.genesis_config.rent.minimum_balance(0);
+        let expected_balance = fixture.rent_exempt_minimum;
         let mut tx_count = 0;
-        while (tx_count < MAX_EXPECTED_TXS || bank.get_balance(&kp2.pubkey()) != expected_balance)
+        while (tx_count < MAX_EXPECTED_TXS
+            || fixture.bank.get_balance(&kp2.pubkey()) != expected_balance)
             && start.elapsed() < PROCESSING_TIMEOUT
         {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
+            if let Some(num_transactions) =
+                recv_recorded_transaction_count(&fixture.record_receiver)
             {
-                tx_count += entry.transactions.len();
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
-        let balance = bank.get_balance(&kp1.pubkey());
+        let balance = fixture.bank.get_balance(&kp1.pubkey());
         assert_eq!(balance, expected_balance);
-        let balance = bank.get_balance(&kp2.pubkey());
+        let balance = fixture.bank.get_balance(&kp2.pubkey());
         assert_eq!(balance, expected_balance);
 
-        exit.store(true, Ordering::Relaxed);
-        bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
-        drop(verified_bundle_sender);
+        fixture.exit.store(true, Ordering::Relaxed);
+        fixture.bundle_stage.join().unwrap();
+        drop(fixture.bundle_sender);
     }
 
     #[test]
     fn test_partial_revert_bundle() {
-        agave_logger::setup();
-        let TestFixture {
-            genesis_config_info,
-            leader_keypair,
-        } = create_genesis_config(2);
-        let (bank, bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
-
-        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
-        bank_forks.write().unwrap().insert(bank);
-
-        let bank = bank_forks.read().unwrap().working_bank();
-        assert_eq!(bank.slot(), 1);
-
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Arc::new(
-            Blockstore::open(ledger_path.path())
-                .expect("Expected to be able to open database ledger"),
-        );
-
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let cluster_info = Arc::new(ClusterInfo::new(
-            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
-            Arc::new(leader_keypair.insecure_clone()),
-            SocketAddrSpace::Unspecified,
-        ));
-
-        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
-        let bundle_stage = BundleStage::new(
-            &cluster_info,
-            bank_forks,
-            &poh_recorder,
-            SharedAlpenglowSlotClock::default(),
-            transaction_recorder,
-            verified_bundle_receiver,
-            None,
-            replay_vote_sender,
-            None,
-            exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
-                },
-            }),
-            BundleAccountLocker::default(),
-            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-                block_builder: genesis_config_info.validator_pubkey,
-                block_builder_commission: 10,
-            })),
-            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-            HashSet::default(),
-        );
+        let fixture = start_bundle_stage();
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -1762,180 +1472,113 @@ mod tests {
         // mint seeds kp1 which transfers to kp2
         let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
             BytesPacket::from_data(transfer(
-                &genesis_config_info.mint_keypair,
+                &fixture.genesis_config_info.mint_keypair,
                 &kp1.pubkey(),
-                (genesis_config_info.genesis_config.rent.minimum_balance(0) * 2) + 5_000,
-                bank.last_blockhash(),
+                (fixture.rent_exempt_minimum * 2) + 5_000,
+                fixture.bank.last_blockhash(),
             ))
             .unwrap(),
             BytesPacket::from_data(transfer(
                 &kp1,
                 &kp2.pubkey(),
-                genesis_config_info.genesis_config.rent.minimum_balance(0),
-                bank.last_blockhash(),
+                fixture.rent_exempt_minimum,
+                fixture.bank.last_blockhash(),
             ))
             .unwrap(),
             BytesPacket::from_data(transfer(
                 &Keypair::new(), // no funds
                 &kp1.pubkey(),
-                genesis_config_info.genesis_config.rent.minimum_balance(0),
-                bank.last_blockhash(),
+                fixture.rent_exempt_minimum,
+                fixture.bank.last_blockhash(),
             ))
             .unwrap(),
         ]));
 
-        verified_bundle_sender.send(verified_bundle).unwrap();
+        fixture.bundle_sender.send(verified_bundle).unwrap();
 
         let start = Instant::now();
         const MAX_EXPECTED_TXS: usize = 4; // 4 initial for tips
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
+            if let Some(num_transactions) =
+                recv_recorded_transaction_count(&fixture.record_receiver)
             {
-                tx_count += entry.transactions.len();
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
-        exit.store(true, Ordering::Relaxed);
-        bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
-        drop(verified_bundle_sender);
+        fixture.exit.store(true, Ordering::Relaxed);
+        fixture.bundle_stage.join().unwrap();
+        drop(fixture.bundle_sender);
     }
 
     #[test]
     fn test_already_processed_tx_drops_bundle() {
-        agave_logger::setup();
-        let TestFixture {
-            genesis_config_info,
-            leader_keypair,
-        } = create_genesis_config(2);
-        let (bank, bank_forks) =
-            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
-
-        let bank = Bank::new_from_parent(bank, SlotLeader::new_unique(), 1);
-        bank_forks.write().unwrap().insert(bank);
-
-        let bank = bank_forks.read().unwrap().working_bank();
-        assert_eq!(bank.slot(), 1);
-
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Arc::new(
-            Blockstore::open(ledger_path.path())
-                .expect("Expected to be able to open database ledger"),
-        );
-
-        let (
-            exit,
-            poh_recorder,
-            _poh_controller,
-            transaction_recorder,
-            poh_service,
-            entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-
-        let cluster_info = Arc::new(ClusterInfo::new(
-            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
-            Arc::new(leader_keypair.insecure_clone()),
-            SocketAddrSpace::Unspecified,
-        ));
-
-        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
-        let bundle_stage = BundleStage::new(
-            &cluster_info,
-            bank_forks,
-            &poh_recorder,
-            SharedAlpenglowSlotClock::default(),
-            transaction_recorder,
-            verified_bundle_receiver,
-            None,
-            replay_vote_sender,
-            None,
-            exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
-                },
-            }),
-            BundleAccountLocker::default(),
-            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
-                block_builder: genesis_config_info.validator_pubkey,
-                block_builder_commission: 10,
-            })),
-            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
-            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
-            HashSet::default(),
-        );
+        let fixture = start_bundle_stage();
 
         let kp = Keypair::new();
         let tx = transfer(
-            &genesis_config_info.mint_keypair,
+            &fixture.genesis_config_info.mint_keypair,
             &kp.pubkey(),
-            genesis_config_info.genesis_config.rent.minimum_balance(0) * 10,
-            bank.last_blockhash(),
+            fixture.rent_exempt_minimum * 10,
+            fixture.bank.last_blockhash(),
         );
 
         let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
             BytesPacket::from_data(tx.clone()).unwrap(),
         ]));
 
-        verified_bundle_sender.send(verified_bundle).unwrap();
+        fixture.bundle_sender.send(verified_bundle).unwrap();
 
         let start = Instant::now();
         const MAX_EXPECTED_TXS: usize = 5; // 4 initial for tips
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
+            if let Some(num_transactions) =
+                recv_recorded_transaction_count(&fixture.record_receiver)
             {
-                tx_count += entry.transactions.len();
+                tx_count += num_transactions;
                 assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
         assert_eq!(
-            bank.get_balance(&kp.pubkey()),
-            (genesis_config_info.genesis_config.rent.minimum_balance(0) * 10)
+            fixture.bank.get_balance(&kp.pubkey()),
+            (fixture.rent_exempt_minimum * 10)
         );
 
         // stick it second in a valid bundle
         let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
             BytesPacket::from_data(transfer(
-                &genesis_config_info.mint_keypair,
+                &fixture.genesis_config_info.mint_keypair,
                 &kp.pubkey(),
-                genesis_config_info.genesis_config.rent.minimum_balance(0),
-                bank.last_blockhash(),
+                fixture.rent_exempt_minimum,
+                fixture.bank.last_blockhash(),
             ))
             .unwrap(),
             BytesPacket::from_data(tx).unwrap(),
         ]));
-        verified_bundle_sender.send(verified_bundle).unwrap();
+        fixture.bundle_sender.send(verified_bundle).unwrap();
 
         let start = Instant::now();
         let mut tx_count = 0;
         while start.elapsed() < Duration::from_secs(2) {
-            if let Ok((_bank, (RecorderMessage::Entry(entry), _tick_height))) =
-                entry_receiever.recv_timeout(Duration::from_millis(1))
+            if let Some(num_transactions) =
+                recv_recorded_transaction_count(&fixture.record_receiver)
             {
-                tx_count += entry.transactions.len();
+                tx_count += num_transactions;
                 assert_eq!(tx_count, 0, "tx_count: {tx_count}");
             }
         }
 
         assert_eq!(
-            bank.get_balance(&kp.pubkey()),
-            genesis_config_info.genesis_config.rent.minimum_balance(0) * 10
+            fixture.bank.get_balance(&kp.pubkey()),
+            fixture.rent_exempt_minimum * 10
         );
 
-        exit.store(true, Ordering::Relaxed);
-        bundle_stage.join().unwrap();
-        poh_service.join().unwrap();
-        drop(verified_bundle_sender);
+        fixture.exit.store(true, Ordering::Relaxed);
+        fixture.bundle_stage.join().unwrap();
+        drop(fixture.bundle_sender);
     }
 }

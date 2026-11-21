@@ -390,8 +390,6 @@ fn generate_full_pipeline() -> Result<buildkite::Pipeline> {
     pipeline.add_step(default_stable_sbf_step());
     pipeline.add_step(default_shuttle_step());
     pipeline.add_step(default_coverage_step(3));
-    // Jito does not publish workspace crates to crates.io.
-    // pipeline.add_step(default_crate_publish_test_step());
 
     pipeline.add_step(buildkite::Step::Wait(buildkite::WaitStep {}));
 
@@ -676,15 +674,16 @@ fn default_coverage_step(parallel: u64) -> buildkite::Step {
     buildkite::Step::Group(group)
 }
 
-// fn default_crate_publish_test_step() -> buildkite::Step {
-//     buildkite::Step::Command(buildkite::CommandStep {
-//         name: String::from("crate-publish-test"),
-//         command: String::from("cargo xtask publish test"),
-//         agents: Some(queue_agents()),
-//         timeout_in_minutes: Some(45),
-//         ..Default::default()
-//     })
-// }
+#[allow(dead_code)] // Jito does not publish workspace crates to crates.io.
+fn default_crate_publish_test_step() -> buildkite::Step {
+    buildkite::Step::Command(buildkite::CommandStep {
+        name: String::from("crate-publish-test"),
+        command: String::from("cargo xtask publish test"),
+        agents: Some(queue_agents()),
+        timeout_in_minutes: Some(45),
+        ..Default::default()
+    })
+}
 
 fn default_trigger_secondary_step() -> buildkite::Step {
     buildkite::Step::Trigger(buildkite::TriggerStep {

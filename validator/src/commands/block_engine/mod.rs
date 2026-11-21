@@ -1,14 +1,13 @@
 use {
     crate::{
         admin_rpc_service,
-        cli::DefaultArgs,
         commands::{Result, jito_args},
     },
     clap::{App, ArgMatches, SubCommand, value_t_or_exit},
     std::path::Path,
 };
 
-pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
+pub fn command<'a>() -> App<'a, 'a> {
     SubCommand::with_name("set-block-engine-config")
         .about("Set configuration for connection to a block engine")
         .arg(jito_args::block_engine_url().required(true))

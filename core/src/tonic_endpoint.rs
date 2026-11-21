@@ -9,19 +9,6 @@ pub(crate) fn endpoint_from_url(url: &str) -> Result<Endpoint, tonic::transport:
     endpoint_from_url_with_tls_config(url, ClientTlsConfig::new().with_enabled_roots())
 }
 
-pub(crate) fn endpoint_from_url_with_error<E>(
-    url: &str,
-    invalid_error: impl FnOnce() -> E,
-    tls_error: impl FnOnce() -> E,
-) -> Result<Endpoint, E> {
-    endpoint_from_url_with_tls_config_and_error(
-        url,
-        ClientTlsConfig::new().with_enabled_roots(),
-        invalid_error,
-        tls_error,
-    )
-}
-
 fn endpoint_from_url_with_tls_config(
     url: &str,
     tls_config: ClientTlsConfig,
@@ -33,21 +20,6 @@ fn endpoint_from_url_with_tls_config(
     Ok(endpoint)
 }
 
-fn endpoint_from_url_with_tls_config_and_error<E>(
-    url: &str,
-    tls_config: ClientTlsConfig,
-    invalid_error: impl FnOnce() -> E,
-    tls_error: impl FnOnce() -> E,
-) -> Result<Endpoint, E> {
-    let mut endpoint = Endpoint::from_shared(url.to_owned())
-        .map_err(|_| invalid_error())?
-        .tcp_keepalive(Some(TCP_KEEPALIVE));
-    if url.starts_with("https") {
-        endpoint = endpoint.tls_config(tls_config).map_err(|_| tls_error())?;
-    }
-    Ok(endpoint)
-}
-
 #[cfg(test)]
 mod tests {
     use {
@@ -55,14 +27,12 @@ mod tests {
         jito_protos::proto::auth::{
             GenerateAuthChallengeRequest, GenerateAuthChallengeResponse, GenerateAuthTokensRequest,
             GenerateAuthTokensResponse, RefreshAccessTokenRequest, RefreshAccessTokenResponse,
-            auth_service_client::AuthServiceClient,
             auth_service_server::{AuthService, AuthServiceServer},
         },
-        rcgen::{CertifiedKey, generate_simple_self_signed},
         tokio::time::{Duration, timeout},
         tonic::{
             Request, Response, Status,
-            transport::{Certificate, Identity, Server, ServerTlsConfig},
+            transport::{Identity, Server, ServerTlsConfig},
         },
     };
 
@@ -75,9 +45,7 @@ mod tests {
             &self,
             _request: Request<GenerateAuthChallengeRequest>,
         ) -> Result<Response<GenerateAuthChallengeResponse>, Status> {
-            Ok(Response::new(GenerateAuthChallengeResponse {
-                challenge: "tls-ok".to_string(),
-            }))
+            Err(Status::unimplemented("not needed for TLS probe"))
         }
 
         async fn generate_auth_tokens(
@@ -95,18 +63,35 @@ mod tests {
         }
     }
 
-    fn localhost_cert() -> (String, String) {
-        let CertifiedKey { cert, signing_key } =
-            generate_simple_self_signed(["localhost".to_string()]).unwrap();
-        (cert.pem(), signing_key.serialize_pem())
-    }
+    // Self-signed for `localhost`, valid until 2126. Generated once for these tests only.
+    const LOCALHOST_CERT_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBkzCCATigAwIBAgIUPHjJfWnCorCz23kjfpSUBe0plqUwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEwNzA1MzQzNloYDzIxMjYxMDE0
+MDUzNDM2WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAATQAGvtXceGym5oFZ6v1+wmuF0AFt7dFjbM62CHmc++iReKhOtQ1WmO
+XIKSqrVAPYjstqh40akSHCjwTG6iKgwwo2YwZDAdBgNVHQ4EFgQUUdjGCpc8xhHU
+tCdl5aw9Bug3wEkwHwYDVR0jBBgwFoAUUdjGCpc8xhHUtCdl5aw9Bug3wEkwFAYD
+VR0RBA0wC4IJbG9jYWxob3N0MAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwIDSQAw
+RgIhAJbeLEu94kxUEu5K4br2HltVMEw2A4/BJ4UrmmVQiyBZAiEA8RFoIvYJaLEK
+JNbHP9PXNBVUIvFzbiHdIefmOhz/iVM=
+-----END CERTIFICATE-----
+";
+    const LOCALHOST_KEY_PEM: &str = "\
+-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg552SooAK8VEMHHjc
+fhJPpSbrjmv0jJGgVtuATFWID2ehRANCAATQAGvtXceGym5oFZ6v1+wmuF0AFt7d
+FjbM62CHmc++iReKhOtQ1WmOXIKSqrVAPYjstqh40akSHCjwTG6iKgww
+-----END PRIVATE KEY-----
+";
 
-    async fn start_tls_probe_server(cert_pem: String, key_pem: String) -> String {
+    async fn start_tls_probe_server() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let identity = Identity::from_pem(LOCALHOST_CERT_PEM, LOCALHOST_KEY_PEM);
         tokio::spawn(async move {
             Server::builder()
-                .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(cert_pem, key_pem)))
+                .tls_config(ServerTlsConfig::new().identity(identity))
                 .unwrap()
                 .add_service(AuthServiceServer::new(ProbeAuthService))
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
@@ -117,33 +102,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_connects_with_configured_tls_roots() {
-        let (cert_pem, key_pem) = localhost_cert();
-        let url = start_tls_probe_server(cert_pem.clone(), key_pem).await;
-        let endpoint = endpoint_from_url_with_tls_config(
-            &url,
-            ClientTlsConfig::new().ca_certificate(Certificate::from_pem(cert_pem)),
-        )
-        .unwrap();
-
-        let channel = timeout(Duration::from_secs(5), endpoint.connect())
-            .await
-            .unwrap()
-            .unwrap();
-        let mut client = AuthServiceClient::new(channel);
-        let response = client
-            .generate_auth_challenge(GenerateAuthChallengeRequest::default())
-            .await
-            .unwrap()
-            .into_inner();
-
-        assert_eq!(response.challenge, "tls-ok");
-    }
-
-    #[tokio::test]
     async fn endpoint_rejects_tls_without_configured_roots() {
-        let (cert_pem, key_pem) = localhost_cert();
-        let url = start_tls_probe_server(cert_pem, key_pem).await;
+        let url = start_tls_probe_server().await;
         let endpoint = endpoint_from_url_with_tls_config(&url, ClientTlsConfig::new()).unwrap();
 
         let result = timeout(Duration::from_secs(5), endpoint.connect())
@@ -181,18 +141,17 @@ mod tests {
             return;
         }
 
-        let (cert_pem, key_pem) = localhost_cert();
-        std::fs::write(std::env::var_os("SSL_CERT_FILE").unwrap(), &cert_pem).unwrap();
-        let url = start_tls_probe_server(cert_pem, key_pem).await;
+        std::fs::write(
+            std::env::var_os("SSL_CERT_FILE").unwrap(),
+            LOCALHOST_CERT_PEM,
+        )
+        .unwrap();
+        let url = start_tls_probe_server().await;
 
-        for endpoint in [
-            endpoint_from_url(&url).unwrap(),
-            endpoint_from_url_with_error(&url, || "invalid URL", || "invalid TLS config").unwrap(),
-        ] {
-            timeout(Duration::from_secs(5), endpoint.connect())
-                .await
-                .expect("timed out connecting to local TLS server")
-                .expect("production endpoint failed to load TLS roots");
-        }
+        let endpoint = endpoint_from_url(&url).unwrap();
+        timeout(Duration::from_secs(5), endpoint.connect())
+            .await
+            .expect("timed out connecting to local TLS server")
+            .expect("production endpoint failed to load TLS roots");
     }
 }

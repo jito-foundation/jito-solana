@@ -1,6 +1,6 @@
 use std::num::Saturating;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct TransactionErrorMetrics {
     pub total: Saturating<usize>,
     pub account_in_use: Saturating<usize>,

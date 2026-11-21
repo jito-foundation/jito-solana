@@ -6,7 +6,7 @@ use {
 /// Encapsulates overridden accounts, typically used for transaction
 /// simulations. Account overrides are currently not used when loading the
 /// durable nonce account or when constructing the instructions sysvar account.
-#[derive(Clone, Default, Debug)]
+#[derive(Default)]
 pub struct AccountOverrides {
     accounts: HashMap<Pubkey, AccountSharedData>,
 }
@@ -30,14 +30,6 @@ impl AccountOverrides {
     /// Gets the account if it's found in the list of overrides
     pub fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
         self.accounts.get(pubkey)
-    }
-
-    pub fn len(&self) -> usize {
-        self.accounts.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty()
     }
 
     pub fn accounts(&self) -> &HashMap<Pubkey, AccountSharedData> {

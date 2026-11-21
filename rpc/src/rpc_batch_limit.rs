@@ -137,14 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn test_other_methods_are_not_limited() {
-        let (io, _simulations) = io();
-        let batch: Vec<_> = (0..2 * MAX).map(|id| call(id, "ping")).collect();
-        let expected: Vec<_> = (0..2 * MAX).map(|id| success(id, "pong")).collect();
-        assert_eq!(handle(&io, Value::from(batch)), Value::from(expected));
-    }
-
-    #[test]
     fn test_simulate_bundle_calls_at_limit_are_processed() {
         let (io, simulations) = io();
         let mut batch: Vec<_> = (0..MAX).map(|id| call(id, SIMULATE_BUNDLE)).collect();

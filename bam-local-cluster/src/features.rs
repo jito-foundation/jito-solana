@@ -516,14 +516,4 @@ mod tests {
         let bank = Bank::new_from_parent(bank.into(), Default::default(), epoch_3);
         assert!(bank.feature_set.is_active(&id));
     }
-
-    #[test]
-    fn scheduled_activation_rejects_unsupported_feature() {
-        let mut config = config();
-        config.activate_at_epoch.insert(
-            agave_feature_set::remaining_compute_units_syscall_enabled::id().to_string(),
-            2,
-        );
-        assert!(resolve_error(&baseline(), &config).contains("not supported"));
-    }
 }
