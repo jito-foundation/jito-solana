@@ -736,7 +736,7 @@ impl BundleStage {
         bank: &Arc<Bank>,
         transactions: &[impl TransactionWithMeta],
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) -> BundleExecutionResult<()> {
         let max_age = MaxAge {
