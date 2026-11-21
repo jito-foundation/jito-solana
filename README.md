@@ -30,14 +30,12 @@ the correct version if it is not already installed.
 On Linux systems you may need to install libssl-dev, pkg-config, zlib1g-dev, protobuf etc.
 
 On Ubuntu:
-
 ```bash
 $ sudo apt-get update
 $ sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang cmake make libprotobuf-dev protobuf-compiler libclang-dev
 ```
 
 On Fedora:
-
 ```bash
 $ sudo dnf install openssl-devel systemd-devel pkg-config zlib-devel llvm clang cmake make protobuf-devel protobuf-compiler perl-core clang-devel
 ```
@@ -80,6 +78,24 @@ $ sudo setcap 'cap_net_admin,cap_net_raw,cap_bpf,cap_perfmon+eip' <path-to-agave
 $ ./cargo nextest run --profile ci  --cargo-profile ci --config-file .config/nextest.toml
 ```
 
+### Local testing
+
+From the repository root, start a single-node test validator with a built-in faucet.
+
+```bash
+git submodule update --init --recursive
+./cargo run --locked -p agave-validator --bin solana-test-validator --features agave-unstable-api -- --ledger local-test-ledger
+```
+
+JSON-RPC is available at `http://127.0.0.1:8899`. Press Ctrl+C to stop the validator.
+
+The bundle tests start their own local fixtures. Run them from the repository root.
+
+```bash
+./cargo test --locked -p solana-core --features agave-unstable-api,dev-context-only-utils --lib bundle_stage::tests
+./cargo test --locked -p solana-rpc-test --features agave-unstable-api --test simulate_bundle
+```
+
 ### Starting a local testnet
 
 Start your own testnet locally, instructions are in the [online docs](https://docs.anza.xyz/clusters/benchmark).
@@ -119,7 +135,7 @@ $ open target/cov/lcov-local/index.html
 
 Why coverage? While most see coverage as a code quality metric, we see it primarily as a developer
 productivity metric. When a developer makes a change to the codebase, presumably it's a *solution* to
-some problem. Our unit-test suite is how we encode the set of *problems* the codebase solves. Running
+some problem.  Our unit-test suite is how we encode the set of *problems* the codebase solves. Running
 the test suite should indicate that your change didn't *infringe* on anyone else's solutions. Adding a
 test *protects* your solution from future changes. Say you don't understand why a line of code exists,
 try deleting it and running the unit-tests. The nearest test failure should tell you what problem
@@ -128,4 +144,3 @@ problem is solved by this code?" On the other hand, if a test does fail and you 
 better way to solve the same problem, a Pull Request with your solution would most certainly be
 welcome! Likewise, if rewriting a test can better communicate what code it's protecting, please
 send us that patch!
-

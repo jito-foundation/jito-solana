@@ -98,9 +98,11 @@ pub(super) fn simulate_bundle(
 
     let bank = match simulation_bank.unwrap_or_default() {
         SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
-        SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
-            Error::invalid_params(format!("bank not found for the provided slot: {slot}"))
-        }),
+        SimulationSlotConfig::Slot(slot) => {
+            meta.bank_forks.read().unwrap().get(slot).ok_or_else(|| {
+                Error::invalid_params(format!("bank not found for the provided slot: {slot}"))
+            })
+        }
         SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
     }?;
 
@@ -194,6 +196,12 @@ pub(super) fn simulate_bundle(
         )));
     }
 
+    let encode_accounts = |accounts: &[KeyedAccountSharedData]| {
+        accounts
+            .iter()
+            .map(|(address, data)| encode_account(data, address, UiAccountEncoding::Base64, None))
+            .collect::<Result<Vec<_>>>()
+    };
     let result = RpcSimulateBundleResult {
         // if any of them errored out, return the first one that did
         summary: if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
@@ -218,32 +226,8 @@ pub(super) fn simulate_bundle(
                 Ok(RpcSimulateBundleTransactionResult {
                     err: result.result.err(),
                     logs: Some(result.logs),
-                    pre_execution_accounts: Some(
-                        pre_accounts
-                            .iter()
-                            .map(|(address, data)| {
-                                encode_account(
-                                    data,
-                                    address,
-                                    UiAccountEncoding::Base64,
-                                    None,
-                                )
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    ),
-                    post_execution_accounts: Some(
-                        post_accounts
-                            .iter()
-                            .map(|(address, data)| {
-                                encode_account(
-                                    data,
-                                    address,
-                                    UiAccountEncoding::Base64,
-                                    None,
-                                )
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    ),
+                    pre_execution_accounts: Some(encode_accounts(&pre_accounts)?),
+                    post_execution_accounts: Some(encode_accounts(&post_accounts)?),
                     units_consumed: Some(result.units_consumed),
                     loaded_accounts_data_size: Some(result.loaded_accounts_data_size),
                     return_data: result.return_data.map(|return_data| return_data.into()),
@@ -265,6 +249,38 @@ pub(super) fn simulate_bundle(
             .collect::<Result<Vec<_>>>()?,
     };
     Ok(new_response(&bank, result))
+}
+
+/// Outer vector is for each transaction, inner vector is for each account
+fn account_configs_to_accounts(
+    accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
+) -> Result<Vec<Vec<Pubkey>>> {
+    let mut execution_accounts = Vec::with_capacity(accounts_config.len());
+    for account_config in accounts_config {
+        let accounts = match account_config {
+            Some(account_config) => {
+                let mut accounts = Vec::with_capacity(account_config.addresses.len());
+                let mut unique_accounts = HashSet::with_capacity(account_config.addresses.len());
+                for address in &account_config.addresses {
+                    let pubkey = Pubkey::from_str(address).map_err(|_| {
+                        Error::invalid_params(format!(
+                            "invalid pubkey for pre/post accounts provided: {address}"
+                        ))
+                    })?;
+                    if !unique_accounts.insert(pubkey) {
+                        return Err(Error::invalid_params(format!(
+                            "duplicate pre/post account address provided: {address}"
+                        )));
+                    }
+                    accounts.push(pubkey);
+                }
+                accounts
+            }
+            _ => Vec::new(),
+        };
+        execution_accounts.push(accounts);
+    }
+    Ok(execution_accounts)
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ use {
     solana_streamer::sendmmsg::{SendPktsError, batch_send},
     solana_time_utils::{AtomicInterval, timestamp},
     std::{
+        collections::HashMap,
         net::{SocketAddr, UdpSocket},
         sync::{
             Arc, Mutex, RwLock,

@@ -180,12 +180,10 @@ their workers may still complete.
 
 Worker failures are handled as follows:
 
-- A failed, panicked, or result-less worker for an unrooted candidate drops that
-  candidate and its boundary children from tracking; the service keeps running.
+- A failed or panicked worker for an unrooted candidate drops that candidate
+  and its boundary children from tracking; the service keeps running.
 - The same failure for the selected winner stops the service with
   `RootedCandidateFailed`.
-- An artifact-store `DirectoryUnavailable` error from any worker stops the
-  service with `ArtifactStoreUnavailable`.
 - On shutdown, the service waits up to 30 s for in-flight workers. If any are
   still running, it sets `exit` and returns `ArtifactWorkersShutdownTimeout`.
 

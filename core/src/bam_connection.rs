@@ -33,7 +33,6 @@ use {
         time::{interval, timeout},
     },
     tokio_stream::wrappers::ReceiverStream,
-    tonic::transport::Endpoint,
 };
 
 pub struct BamConnection {
@@ -71,7 +70,7 @@ impl BamConnection {
         outbound_receiver: &mut Option<mpsc::Receiver<BamOutboundMessage>>,
     ) -> Result<Self, TryInitError> {
         // Create connection and inbound and outbound streams
-        let backend_endpoint = Self::endpoint_from_url(&url)?
+        let backend_endpoint = tonic_endpoint::endpoint_from_url(&url)?
             .connect_timeout(CONNECTION_TIMEOUT)
             .timeout(NETWORK_REQUEST_TIMEOUT);
         let channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect()).await??;
@@ -265,14 +264,7 @@ impl BamConnection {
                             }
                         }
                         SchedulerResponseV0 { resp: Some(Resp::Ping(ping)), .. } => {
-                            let outbound = SchedulerMessageV0 {
-                                msg: Some(Msg::Pong(Pong { id: ping.id })),
-                            };
-                            if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                                metrics.outbound_fail += 1;
-                            } else {
-                                metrics.outbound_sent += 1;
-                            }
+                            Self::send_outbound(&outbound_sender, &mut metrics, Msg::Pong(Pong { id: ping.id }));
                         }
                         _ => {}
                     }
@@ -303,30 +295,18 @@ impl BamConnection {
                             }
 
                             metrics.bundleresult_sent += results.len() as u64;
-                            let outbound = SchedulerMessageV0 {
-                                msg: Some(Msg::MultipleAtomicTxnBatchResult(
-                                    MultipleAtomicTxnBatchResult { results },
-                                )),
-                            };
-                            if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                                metrics.outbound_fail += 1;
-                            } else {
-                                metrics.outbound_sent += 1;
-                            }
+                            Self::send_outbound(
+                                &outbound_sender,
+                                &mut metrics,
+                                Msg::MultipleAtomicTxnBatchResult(MultipleAtomicTxnBatchResult { results }),
+                            );
                             leader_state_to_send
                         }
                     };
 
                     if let Some(leader_state) = leader_state_to_send {
                         metrics.leaderstate_sent += 1;
-                        let outbound = SchedulerMessageV0 {
-                            msg: Some(Msg::LeaderState(leader_state)),
-                        };
-                        if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                            metrics.outbound_fail += 1;
-                        } else {
-                            metrics.outbound_sent += 1;
-                        }
+                        Self::send_outbound(&outbound_sender, &mut metrics, Msg::LeaderState(leader_state));
                     }
 
                 }
@@ -357,6 +337,23 @@ impl BamConnection {
         }
 
         outbound_receiver
+    }
+
+    #[inline]
+    fn send_outbound(
+        outbound_sender: &mpsc::Sender<SchedulerMessage>,
+        metrics: &mut BamConnectionMetrics,
+        msg: Msg,
+    ) {
+        let outbound = SchedulerMessageV0 { msg: Some(msg) };
+        if outbound_sender
+            .try_send(v0_to_versioned_proto(outbound))
+            .is_err()
+        {
+            metrics.outbound_fail += 1;
+        } else {
+            metrics.outbound_sent += 1;
+        }
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -396,13 +393,6 @@ impl BamConnection {
         outbound_receiver
     }
 
-    pub fn get_latest_config(&self) -> Option<ConfigResponse> {
-        if !self.is_healthy() {
-            return None;
-        }
-        self.config.lock().unwrap().clone()
-    }
-
     pub fn get_latest_config_if_changed(
         &self,
         last_seen_version: &mut u64,
@@ -423,14 +413,6 @@ impl BamConnection {
 
     pub fn url(&self) -> &str {
         &self.url
-    }
-
-    /// Bytes that must be signed/verified
-    pub fn labeled_bytes(challenge: &[u8]) -> Vec<u8> {
-        let mut v = Vec::with_capacity(AUTH_LABEL.len() + challenge.len());
-        v.extend_from_slice(AUTH_LABEL);
-        v.extend_from_slice(challenge);
-        v
     }
 
     async fn prepare_auth_proof(
@@ -458,7 +440,7 @@ impl BamConnection {
         let resp = resp.into_inner();
         let challenge_to_sign = resp.challenge_to_sign;
         let challenge_bytes = challenge_to_sign.as_bytes();
-        let to_sign = Self::labeled_bytes(challenge_bytes);
+        let to_sign = [AUTH_LABEL, challenge_bytes].concat();
 
         let signature = cluster_info
             .keypair()
@@ -471,10 +453,6 @@ impl BamConnection {
             validator_pubkey: cluster_info.keypair().pubkey().to_string(),
             signature,
         })
-    }
-
-    fn endpoint_from_url(url: &str) -> Result<Endpoint, TryInitError> {
-        Ok(tonic_endpoint::endpoint_from_url(url)?)
     }
 }
 

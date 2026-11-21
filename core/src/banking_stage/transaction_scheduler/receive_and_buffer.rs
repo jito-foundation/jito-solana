@@ -231,7 +231,7 @@ pub(crate) fn translate_sanitized_to_runtime_view<D: AsRef<[u8]>>(
     Ok((view, deactivation_slot))
 }
 
-pub(crate) fn load_addresses_for_view<D: AsRef<[u8]>>(
+fn load_addresses_for_view<D: AsRef<[u8]>>(
     view: &SanitizedTransactionView<D>,
     bank: &Bank,
 ) -> Result<(Option<LoadedAddresses>, Slot), PacketHandlingError> {

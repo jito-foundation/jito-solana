@@ -362,7 +362,6 @@ pub trait AdminRpc {
 }
 
 pub struct AdminRpcImpl;
-
 impl AdminRpc for AdminRpcImpl {
     type Metadata = AdminRpcRequestMetadata;
 
@@ -1872,6 +1871,13 @@ mod tests {
         );
     }
 
+    fn assert_rpc_response(response: Option<String>, expected_json: &str) {
+        let expected: Value = serde_json::from_str(expected_json).expect("expected response");
+        let actual: Value = serde_json::from_str(&response.expect("actual response"))
+            .expect("actual response deserialization");
+        assert_eq!(actual, expected);
+    }
+
     // This test checks that `setBamUrl` call works as expected when setting and clearing the BAM URL.
     #[test]
     fn test_set_bam_url() {
@@ -1880,24 +1886,14 @@ mod tests {
         let set_initial_bam_url_request = r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":["http://example.com:8080/bam"]}"#;
         let response = test_validator.handle_request(set_initial_bam_url_request);
 
-        let expected_parsed_response: Value = serde_json::from_str(
-            r#"{
-                "id": 1,
-                "jsonrpc": "2.0",
-                "result": null
-            }"#,
-        )
-        .expect("Failed to parse expected response");
-        let actual_parsed_response: Value =
-            serde_json::from_str(&response.expect("actual response"))
-                .expect("actual response deserialization");
-        assert_eq!(actual_parsed_response, expected_parsed_response);
+        assert_rpc_response(response, r#"{"id":1,"jsonrpc":"2.0","result":null}"#);
 
         let set_bad_string_bam_url_request =
             r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":["not a url"]}"#;
         let response = test_validator.handle_request(set_bad_string_bam_url_request);
 
-        let expected_error_response: Value = serde_json::from_str(
+        assert_rpc_response(
+            response,
             r#"{
                 "id": 1,
                 "jsonrpc": "2.0",
@@ -1906,30 +1902,14 @@ mod tests {
                     "message": "BAM Invalid URL format: not a url: invalid international domain name"
                 }
             }"#,
-        )
-        .expect("Failed to parse expected error response");
-        let actual_error_response: Value =
-            serde_json::from_str(&response.expect("actual response"))
-                .expect("actual response deserialization");
-        assert_eq!(actual_error_response, expected_error_response);
+        );
 
         let disable_bam_url_request =
             r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":[null]}"#;
 
         let response = test_validator.handle_request(disable_bam_url_request);
 
-        let expected_parsed_response: Value = serde_json::from_str(
-            r#"{
-                "id": 1,
-                "jsonrpc": "2.0",
-                "result": null
-            }"#,
-        )
-        .expect("Failed to parse expected response");
-        let actual_parsed_response: Value =
-            serde_json::from_str(&response.expect("actual response"))
-                .expect("actual response deserialization");
-        assert_eq!(actual_parsed_response, expected_parsed_response);
+        assert_rpc_response(response, r#"{"id":1,"jsonrpc":"2.0","result":null}"#);
 
         test_validator.meta.enable_scheduler_bindings = true;
         let response = test_validator.handle_request(set_initial_bam_url_request);
