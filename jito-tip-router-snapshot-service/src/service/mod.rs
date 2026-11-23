@@ -38,8 +38,6 @@ pub struct TipRouterSnapshotService {
 pub enum TipRouterSnapshotServiceError {
     #[error("bank notification channel disconnected")]
     BankNotificationChannelDisconnected,
-    #[error("worker completion channel disconnected")]
-    WorkerCompletionChannelDisconnected,
     #[error("rooted snapshot candidate failed for epoch {epoch}, slot {slot}, bank {}", u64::from(*.bank_id))]
     RootedCandidateFailed {
         epoch: Epoch,
@@ -48,12 +46,6 @@ pub enum TipRouterSnapshotServiceError {
     },
     #[error("failed to initialize artifact store at {}: {source}", path.display())]
     ArtifactStoreInitialization {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("artifact store became unavailable at {}: {source}", path.display())]
-    ArtifactStoreUnavailable {
         path: PathBuf,
         #[source]
         source: io::Error,
@@ -123,12 +115,11 @@ impl TipRouterSnapshotService {
                 },
 
                 // StakeMeta generation / writer threads finishing
-                recv(completion_receiver) -> completion => match completion {
-                    Ok(completion) => context.handle_worker_completion(&artifact_store, completion),
-                    Err(_) => Err(
-                        TipRouterSnapshotServiceError::WorkerCompletionChannelDisconnected,
-                    ),
-                },
+                // The context's worker pool holds a completion sender, so this can't disconnect.
+                recv(completion_receiver) -> completion => context.handle_worker_completion(
+                    &artifact_store,
+                    completion.expect("worker pool holds a completion sender"),
+                ),
 
                 // Needed so that the service checks the `exit` bool every so often
                 // Though in theory, this never fires, bc bank-notifs should fire much faster
@@ -168,6 +159,7 @@ mod tests {
             genesis_utils::create_genesis_config,
         },
         std::sync::Arc,
+        test_case::test_case,
     };
 
     fn genesis_bank() -> Arc<Bank> {
@@ -197,7 +189,13 @@ mod tests {
         ))
     }
 
-    fn assert_frozen_bank_wiring(bank: Arc<Bank>, should_forward: bool) {
+    #[test_case(boundary_child_bank(31, 32), true ; "frozen_bank_at_exact_epoch_boundary_is_forwarded")]
+    #[test_case(boundary_child_bank(31, 34), true ; "frozen_bank_with_skipped_leading_slots_of_next_epoch_is_forwarded")]
+    #[test_case(boundary_child_bank(29, 32), true ; "frozen_bank_with_skipped_trailing_slots_of_candidate_epoch_is_forwarded")]
+    #[test_case(boundary_child_bank(29, 64), true ; "frozen_bank_with_an_entire_skipped_epoch_is_forwarded")]
+    #[test_case(boundary_child_bank(5, 6), false ; "frozen_bank_with_parent_in_same_epoch_is_rejected")]
+    #[test_case(genesis_bank(), false ; "frozen_genesis_bank_is_rejected")]
+    fn frozen_bank_wiring(bank: Arc<Bank>, should_forward: bool) {
         let notification = BankNotification::Frozen(bank.clone());
         let filter_result = TipRouterEpochBoundaryFilter.should_forward(&notification);
         assert_eq!(filter_result, should_forward);
@@ -214,36 +212,6 @@ mod tests {
         let broadcaster = BankNotificationBroadcaster::new(vec![sender]);
         assert_eq!(broadcaster.send((notification, None)), Ok(()));
         assert_eq!(receiver.try_recv().is_ok(), should_forward);
-    }
-
-    #[test]
-    fn frozen_bank_at_exact_epoch_boundary_is_forwarded() {
-        assert_frozen_bank_wiring(boundary_child_bank(31, 32), true);
-    }
-
-    #[test]
-    fn frozen_bank_with_skipped_leading_slots_of_next_epoch_is_forwarded() {
-        assert_frozen_bank_wiring(boundary_child_bank(31, 34), true);
-    }
-
-    #[test]
-    fn frozen_bank_with_skipped_trailing_slots_of_candidate_epoch_is_forwarded() {
-        assert_frozen_bank_wiring(boundary_child_bank(29, 32), true);
-    }
-
-    #[test]
-    fn frozen_bank_with_an_entire_skipped_epoch_is_forwarded() {
-        assert_frozen_bank_wiring(boundary_child_bank(29, 64), true);
-    }
-
-    #[test]
-    fn frozen_bank_with_parent_in_same_epoch_is_rejected() {
-        assert_frozen_bank_wiring(boundary_child_bank(5, 6), false);
-    }
-
-    #[test]
-    fn frozen_genesis_bank_is_rejected() {
-        assert_frozen_bank_wiring(genesis_bank(), false);
     }
 
     #[test]

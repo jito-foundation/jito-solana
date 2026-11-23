@@ -384,13 +384,6 @@ impl JsonRpcRequestProcessor {
         Ok(accounts)
     }
 
-    fn bank_from_slot(&self, slot: Slot) -> Option<Arc<Bank>> {
-        debug!("bank_from_slot: {slot}");
-
-        let r_bank_forks = self.bank_forks.read().unwrap();
-        r_bank_forks.get(slot)
-    }
-
     #[allow(deprecated)]
     fn bank(&self, commitment: Option<CommitmentConfig>) -> Arc<Bank> {
         debug!("RPC commitment_config: {commitment:?}");
@@ -4845,38 +4838,6 @@ fn resolve_transaction_view<D: AsRef<[u8]>>(
     .map_err(|err| Error::invalid_params(format!("invalid transaction: {err}")))
 }
 
-/// Outer vector is for each transaction, inner vector is for each account
-pub fn account_configs_to_accounts(
-    accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
-) -> Result<Vec<Vec<Pubkey>>> {
-    let mut execution_accounts = Vec::with_capacity(accounts_config.len());
-    for account_config in accounts_config {
-        let accounts = match account_config {
-            Some(account_config) => {
-                let mut accounts = Vec::with_capacity(account_config.addresses.len());
-                let mut unique_accounts = HashSet::with_capacity(account_config.addresses.len());
-                for address in &account_config.addresses {
-                    let pubkey = Pubkey::from_str(address).map_err(|_| {
-                        Error::invalid_params(format!(
-                            "invalid pubkey for pre/post accounts provided: {address}"
-                        ))
-                    })?;
-                    if !unique_accounts.insert(pubkey) {
-                        return Err(Error::invalid_params(format!(
-                            "duplicate pre/post account address provided: {address}"
-                        )));
-                    }
-                    accounts.push(pubkey);
-                }
-                accounts
-            }
-            _ => Vec::new(),
-        };
-        execution_accounts.push(accounts);
-    }
-    Ok(execution_accounts)
-}
-
 pub fn create_validator_exit(exit: Arc<AtomicBool>) -> Arc<RwLock<Exit>> {
     let mut validator_exit = Exit::default();
     validator_exit.register_exit(Box::new(move || exit.store(true, Ordering::Relaxed)));
@@ -8446,7 +8407,6 @@ pub mod tests {
         )));
 
         let cluster_info = Arc::new(new_test_cluster_info());
-
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
         let config = JsonRpcConfig::default();

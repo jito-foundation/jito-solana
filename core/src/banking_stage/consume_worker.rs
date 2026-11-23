@@ -1,3 +1,6 @@
+// `FinishedConsumeWork` only travels in the error on the terminal disconnect path.
+#![allow(clippy::result_large_err)]
+
 use {
     super::{
         consumer::{Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
@@ -27,17 +30,11 @@ use {
 };
 
 #[derive(Debug, Error)]
-pub enum ConsumeWorkerError {
+pub enum ConsumeWorkerError<Tx> {
     #[error("Failed to receive work from scheduler: {0}")]
     Recv(#[from] TryRecvError),
-    #[error("Scheduler channel disconnected")]
-    Send,
-}
-
-impl<Tx> From<SendError<FinishedConsumeWork<Tx>>> for ConsumeWorkerError {
-    fn from(_: SendError<FinishedConsumeWork<Tx>>) -> Self {
-        Self::Send
-    }
+    #[error("Failed to send finalized consume work to scheduler: {0}")]
+    Send(#[from] SendError<FinishedConsumeWork<Tx>>),
 }
 
 enum ProcessingStatus<Tx> {
@@ -78,7 +75,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError> {
+    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
         let mut did_work = false;
         let mut last_empty_time = Instant::now();
         let mut sleep_duration = STARTING_SLEEP_DURATION;
@@ -116,7 +113,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn consume(
         &self,
         mut work: ConsumeWork<Tx>,
-    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError> {
+    ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let leader_state = self.shared_leader_state.load();
         let Some(bank) = leader_state
             .working_bank()
@@ -175,7 +172,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Retry current batch and all outstanding batches.
-    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
+    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
         for work in try_drain_iter(work, &self.consume_receiver) {
             if self.exit.load(Ordering::Relaxed) {
                 return Ok(());
@@ -186,7 +183,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Send transactions back to scheduler as retryable.
-    fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError> {
+    fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
         let retryable_indexes: Vec<_> = (0..work.transactions.len())
             .map(|index| RetryableIndex {
                 index,
@@ -412,122 +409,104 @@ pub(crate) mod external {
                     .map(|response| (true, response));
             }
 
-            // Loop here to avoid exposing internal error to external scheduler.
-            // In the vast majority of cases, this will iterate a single time;
-            // If we began execution when a slot was still in process, and could
-            // not record at the end because the slot has ended, we will retry
-            // on the next slot.
-            let mut last_attempted_slot = 0;
-            for _ in 0..2 {
-                let Some(leader_state) =
-                    active_leader_state_with_timeout(&self.shared_leader_state)
-                else {
-                    return self
-                        .return_not_included_with_reason(
-                            message,
-                            not_included_reasons::BANK_NOT_AVAILABLE,
-                            last_attempted_slot,
-                        )
-                        .map(|response| (true, response));
-                };
-
-                let bank = leader_state
-                    .working_bank()
-                    .expect("active_leader_state_with_timeout should only return an active bank");
-                last_attempted_slot = bank.slot();
-                if bank.slot() > message.max_working_slot {
-                    return Ok((
-                        false,
-                        self.return_unprocessed_message(
-                            message,
-                            agave_scheduler_bindings::processed_codes::MAX_WORKING_SLOT_EXCEEDED,
-                        ),
-                    ));
-                }
-
-                // SAFETY: Assumption that external scheduler does not pass messages with batch regions
-                //         not pointing to valid regions in the allocator.
-                let batch = unsafe {
-                    TransactionPtrBatch::from_sharable_transaction_batch_region(
-                        &message.batch,
-                        &self.allocator,
-                    )
-                };
-                let (translation_results, transactions, max_ages) = self
-                    .translate_transaction_batch(
-                        &batch,
-                        bank,
-                        !self
-                            .sharable_banks
-                            .root()
-                            .feature_set
-                            .snapshot()
-                            .loaderv3_programdata_size_floor,
-                    );
-
-                // Enforce all or nothing on translation_results.
-                let execution_flags = ExecutionFlags {
-                    simulate,
-                    drop_on_failure: message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
-                    all_or_nothing: message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
-                };
-                if execution_flags.all_or_nothing && translation_results.len() != transactions.len()
-                {
-                    let response = self.execution_response(
+            let Some(leader_state) = active_leader_state(&self.shared_leader_state) else {
+                return self
+                    .return_not_included_with_reason(
                         message,
-                        Self::all_or_nothing_translate_iterator(&translation_results, bank.slot()),
-                    )?;
+                        not_included_reasons::BANK_NOT_AVAILABLE,
+                        0,
+                    )
+                    .map(|response| (true, response));
+            };
 
-                    return Ok((false, response));
-                }
+            let bank = leader_state
+                .working_bank()
+                .expect("active_leader_state should only return an active bank");
+            if bank.slot() > message.max_working_slot {
+                return Ok((
+                    false,
+                    self.return_unprocessed_message(
+                        message,
+                        agave_scheduler_bindings::processed_codes::MAX_WORKING_SLOT_EXCEEDED,
+                    ),
+                ));
+            }
 
-                let output = self
-                    .transaction_consumer
-                    .process_and_record_aged_transactions_with_policy(
-                        bank,
-                        &transactions,
-                        &max_ages,
-                        &execution_flags,
-                        Some(&self.bundle_account_locker),
-                        false,
-                        None,
-                    );
+            // SAFETY: Assumption that external scheduler does not pass messages with batch regions
+            //         not pointing to valid regions in the allocator.
+            let batch = unsafe {
+                TransactionPtrBatch::from_sharable_transaction_batch_region(
+                    &message.batch,
+                    &self.allocator,
+                )
+            };
+            let (translation_results, transactions, max_ages) = self.translate_transaction_batch(
+                &batch,
+                bank,
+                !self
+                    .sharable_banks
+                    .root()
+                    .feature_set
+                    .snapshot()
+                    .loaderv3_programdata_size_floor,
+            );
 
-                self.metrics.update_for_consume(&output);
-                self.metrics.has_data.store(true, Ordering::Relaxed);
-
-                let Ok(commit_results) = output
-                    .execute_and_commit_transactions_output
-                    .commit_transactions_result
-                else {
-                    // If already ON the last possible execution slot,
-                    // immediately give up instead of trying on next slot.
-                    if bank.slot() == message.max_working_slot {
-                        break;
-                    }
-                    continue; // recording failed, try again on next slot if possible.
-                };
-
+            // Enforce all or nothing on translation_results.
+            let execution_flags = ExecutionFlags {
+                simulate,
+                drop_on_failure: message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
+                all_or_nothing: message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
+            };
+            if execution_flags.all_or_nothing && translation_results.len() != transactions.len() {
                 let response = self.execution_response(
                     message,
-                    Self::consume_response_iterator(
-                        &translation_results,
-                        &transactions,
-                        &commit_results,
-                        bank,
-                        &execution_flags,
-                    ),
+                    Self::all_or_nothing_translate_iterator(&translation_results, bank.slot()),
                 )?;
 
                 return Ok((false, response));
             }
+            let output = self
+                .transaction_consumer
+                .process_and_record_aged_transactions_with_policy(
+                    bank,
+                    &transactions,
+                    &max_ages,
+                    &execution_flags,
+                    Some(&self.bundle_account_locker),
+                    false,
+                    None,
+                );
 
-            self.return_not_included_with_reason(
+            self.metrics.update_for_consume(&output);
+            self.metrics.has_data.store(true, Ordering::Relaxed);
+
+            let Ok(commit_results) = output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+            else {
+                // Recording failed (slot ended during processing).
+                // Return as bank not available so the scheduler can retry.
+                return self
+                    .return_not_included_with_reason(
+                        message,
+                        not_included_reasons::BANK_NOT_AVAILABLE,
+                        bank.slot(),
+                    )
+                    .map(|response| (true, response));
+            };
+
+            let response = self.execution_response(
                 message,
-                not_included_reasons::BANK_NOT_AVAILABLE,
-                last_attempted_slot,
-            )
-            .map(|response| (true, response))
+                Self::consume_response_iterator(
+                    &translation_results,
+                    &transactions,
+                    &commit_results,
+                    bank,
+                    &execution_flags,
+                ),
+            )?;
+
+            Ok((false, response))
         }
 
         fn execution_response(
@@ -1342,10 +1321,6 @@ pub(crate) mod external {
                 ),
                 not_included_reasons::SANITIZE_FAILURE
             );
-            assert_eq!(
-                ExternalWorker::reason_from_packet_handling_error(&PacketHandlingError::FilterKey),
-                not_included_reasons::SANITIZE_FAILURE
-            );
 
             assert_eq!(
                 ExternalWorker::reason_from_packet_handling_error(
@@ -1355,8 +1330,9 @@ pub(crate) mod external {
             );
         }
 
-        #[test]
-        fn test_translate_transaction_blacklisted_account() {
+        #[test_case(true; "test_translate_transaction_blacklisted_account")]
+        #[test_case(false; "test_translate_transaction_non_blacklisted_account")]
+        fn test_translate_transaction_filter_keys(blacklisted: bool) {
             let genesis = genesis_utils::create_genesis_config(1_000_000_000);
             let bank = Bank::new_for_tests(&genesis.genesis_config);
             let recipient = Pubkey::new_unique();
@@ -1373,35 +1349,10 @@ pub(crate) mod external {
                     serialized_tx.len(),
                 )
             };
-
-            let result = ExternalWorker::translate_transaction(
-                transaction_ptr,
-                &bank,
-                bank.get_transaction_account_lock_limits(),
-                !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
-                &HashSet::from_iter([recipient]),
-            );
-
-            assert!(matches!(result, Err(PacketHandlingError::FilterKey)));
-        }
-
-        #[test]
-        fn test_translate_transaction_non_blacklisted_account() {
-            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
-            let bank = Bank::new_for_tests(&genesis.genesis_config);
-            let recipient = Pubkey::new_unique();
-            let tx = transfer(
-                &solana_keypair::Keypair::new(),
-                &recipient,
-                1,
-                bank.confirmed_last_blockhash(),
-            );
-            let serialized_tx = bincode::serialize(&tx).unwrap();
-            let transaction_ptr = unsafe {
-                TransactionPtr::from_raw_parts(
-                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
-                    serialized_tx.len(),
-                )
+            let blacklisted_accounts = if blacklisted {
+                HashSet::from_iter([recipient])
+            } else {
+                HashSet::default()
             };
 
             let result = ExternalWorker::translate_transaction(
@@ -1409,10 +1360,14 @@ pub(crate) mod external {
                 &bank,
                 bank.get_transaction_account_lock_limits(),
                 !bank.feature_set.snapshot().loaderv3_programdata_size_floor,
-                &HashSet::default(),
+                &blacklisted_accounts,
             );
 
-            assert!(result.is_ok());
+            if blacklisted {
+                assert!(matches!(result, Err(PacketHandlingError::FilterKey)));
+            } else {
+                assert!(result.is_ok());
+            }
         }
 
         // An external scheduler doesn't know about implicit locks, so the worker's bank lock is what
@@ -2071,23 +2026,6 @@ fn active_leader_state(
     }
 }
 
-/// Returns an active leader state, briefly waiting for the next working bank if the current slot
-/// just completed.
-fn active_leader_state_with_timeout(
-    shared_leader_state: &SharedLeaderState,
-) -> Option<arc_swap::Guard<Arc<LeaderState>>> {
-    let start = Instant::now();
-    loop {
-        if let Some(leader_state) = active_leader_state(shared_leader_state) {
-            return Some(leader_state);
-        }
-        if start.elapsed() >= MAX_SLEEP_DURATION {
-            return None;
-        }
-        std::thread::sleep(STARTING_SLEEP_DURATION);
-    }
-}
-
 const STARTING_SLEEP_DURATION: Duration = Duration::from_micros(250);
 const MAX_SLEEP_DURATION: Duration = Duration::from_millis(1);
 const IDLE_SLEEP_THRESHOLD: Duration = Duration::from_millis(1);
@@ -2630,7 +2568,7 @@ mod tests {
             },
         },
         arc_swap::ArcSwap,
-        crossbeam_channel::{bounded, unbounded},
+        crossbeam_channel::bounded,
         solana_account::{Account, AccountSharedData},
         solana_clock::Slot,
         solana_cost_model::cost_tracker::CostTrackerLimits,
@@ -2741,8 +2679,8 @@ mod tests {
             ))
         };
 
-        let (consume_sender, consume_receiver) = unbounded();
-        let (consumed_sender, consumed_receiver) = unbounded();
+        let (consume_sender, consume_receiver) = bounded(1024);
+        let (consumed_sender, consumed_receiver) = bounded(1024);
         let worker = ConsumeWorker::new(
             Arc::new(AtomicBool::new(false)),
             consume_receiver,

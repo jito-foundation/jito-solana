@@ -12,28 +12,10 @@ use {
 // Empirically derived to constrain max verify latency to ~8ms at lower packet counts
 pub const VERIFY_PACKET_CHUNK_SIZE: usize = 128;
 
-/// Returns `(is_simple_vote_transaction, is_valid)` for a sanitized transaction view.
-#[must_use]
-pub fn verify_transaction_view<D: AsRef<[u8]>>(
-    view: &SanitizedTransactionView<D>,
-    reject_non_vote: bool,
-) -> (bool, bool) {
-    let is_simple_vote_transaction = is_simple_vote_transaction_view(view);
-    let message = view.message_data();
-    let is_valid = (!reject_non_vote || is_simple_vote_transaction)
-        && view
-            .signatures()
-            .iter()
-            .zip(view.static_account_keys())
-            .all(|(signature, pubkey)| signature.verify(pubkey.as_ref(), message));
-
-    (is_simple_vote_transaction, is_valid)
-}
-
 /// Returns true if the signature on the packet verifies.
 /// Caller must do packet.set_discard(true) if this returns false.
 #[must_use]
-pub fn verify_packet(packet: &mut BytesPacket, reject_non_vote: bool) -> bool {
+fn verify_packet(packet: &mut BytesPacket, reject_non_vote: bool) -> bool {
     // If this packet was already marked as discard, drop it
     if packet.meta().discard() {
         return false;
@@ -43,16 +25,24 @@ pub fn verify_packet(packet: &mut BytesPacket, reject_non_vote: bool) -> bool {
         return false;
     };
 
-    let Ok(view) = SanitizedTransactionView::try_new_sanitized(data) else {
-        return false;
-    };
-    let (is_simple_vote_transaction, is_valid) = verify_transaction_view(&view, reject_non_vote);
+    let (is_simple_vote_tx, verified) = {
+        let Ok(view) = SanitizedTransactionView::try_new_sanitized(data) else {
+            return false;
+        };
 
-    if is_simple_vote_transaction {
+        let is_simple_vote_tx = is_simple_vote_transaction_view(&view);
+        if reject_non_vote && !is_simple_vote_tx {
+            (is_simple_vote_tx, false)
+        } else {
+            (is_simple_vote_tx, verify_transaction_view_signatures(&view))
+        }
+    };
+
+    if is_simple_vote_tx {
         packet.meta_mut().flags |= PacketFlags::SIMPLE_VOTE_TX;
     }
 
-    is_valid
+    verified
 }
 
 /// Returns true if every signature on the sanitized transaction verifies
@@ -78,7 +68,7 @@ pub fn count_valid_packets<'a>(batches: impl IntoIterator<Item = &'a PacketBatch
         .sum()
 }
 
-fn is_simple_vote_transaction_view<D: AsRef<[u8]>>(view: &SanitizedTransactionView<D>) -> bool {
+pub fn is_simple_vote_transaction_view<D: AsRef<[u8]>>(view: &SanitizedTransactionView<D>) -> bool {
     // vote could have 1 or 2 sigs; zero sig has already been excluded by sanitization.
     if view.num_signatures() > 2 {
         return false;

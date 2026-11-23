@@ -37,7 +37,6 @@ pub(crate) enum WorkerOutcome {
     Written(PathBuf),
     Failed(SnapshotWorkerError),
     Panicked,
-    MissingResult,
 }
 
 pub(crate) struct SnapshotWorkerHandle {
@@ -72,10 +71,6 @@ impl SnapshotWorkerHandle {
         Ok(Self { candidate, handle })
     }
 
-    pub(crate) fn is_finished(&self) -> bool {
-        self.handle.is_finished()
-    }
-
     pub(crate) fn join_after_completion(self, completion: WorkerCompletion) -> WorkerCompletion {
         let candidate = self.candidate;
         if self.handle.join().is_err() {
@@ -85,15 +80,6 @@ impl SnapshotWorkerHandle {
             };
         }
         completion
-    }
-
-    pub(crate) fn join_without_report(self) -> WorkerCompletion {
-        let candidate = self.candidate;
-        let outcome = match self.handle.join() {
-            Ok(()) => WorkerOutcome::MissingResult,
-            Err(_) => WorkerOutcome::Panicked,
-        };
-        WorkerCompletion { candidate, outcome }
     }
 }
 

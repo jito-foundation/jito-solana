@@ -138,9 +138,7 @@ impl BamManager {
         let mut last_observed_bam_url = Arc::new(None);
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
-        let fallback_client_id = ClientId::JitoLabs;
-        let mut current_client_id = fallback_client_id;
-        let bam_client_id = ClientId::AgaveBam;
+        let mut bam_client_id_set = false;
 
         while !exit.load(Ordering::Relaxed) {
             let latest_bam_url = bam_url.load_full();
@@ -185,9 +183,9 @@ impl BamManager {
                     }
 
                     // Set ClientId to 'JitoSolana'
-                    if current_client_id != fallback_client_id {
-                        Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
-                        current_client_id = fallback_client_id;
+                    if bam_client_id_set {
+                        dependencies.cluster_info.set_client_id(ClientId::JitoLabs);
+                        bam_client_id_set = false;
                     }
 
                     // Try to connect to BAM
@@ -349,9 +347,9 @@ impl BamManager {
             }
 
             // Set BAM Client Id (If not set already)
-            if current_client_id != bam_client_id {
-                Self::set_client_id(&dependencies.cluster_info, bam_client_id);
-                current_client_id = bam_client_id;
+            if !bam_client_id_set {
+                dependencies.cluster_info.set_client_id(ClientId::AgaveBam);
+                bam_client_id_set = true;
             }
 
             current_connection = Some(connection);
@@ -655,14 +653,6 @@ impl BamManager {
             ("timeout_us", timeout.as_micros(), i64)
         );
         false
-    }
-
-    fn set_client_id(cluster_info: &ClusterInfo, new_client_id: ClientId) {
-        let current_client_id = cluster_info.get_client_id();
-        if current_client_id == new_client_id {
-            return;
-        }
-        cluster_info.set_client_id(new_client_id);
     }
 
     pub fn join(self) -> std::thread::Result<()> {

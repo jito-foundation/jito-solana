@@ -81,14 +81,12 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::manage_block_production::command(default_args))
         .subcommand(commands::blockstore::command())
         // bam subcommands
-        .subcommand(commands::bam::command(default_args))
+        .subcommand(commands::bam::command())
         // jito subcommands
-        .subcommand(commands::block_engine::command(default_args))
+        .subcommand(commands::block_engine::command())
         .subcommand(commands::relayer::command(default_args))
-        .subcommand(commands::shred::shred_receiver_command(default_args))
-        .subcommand(commands::shred::shred_retransmit_receiver_command(
-            default_args,
-        ));
+        .subcommand(commands::shred::shred_receiver_command())
+        .subcommand(commands::shred::shred_retransmit_receiver_command());
 
     commands::run::add_args(app, default_args)
         .args(&thread_args(&default_args.thread_args))
@@ -264,13 +262,7 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
                         --tpu-max-connections-per-staked-peer, but will be removed in a future \
                         release. Set both of those instead.",
     );
-    add_arg!(
-        Arg::with_name("trust_relayer_packets")
-            .long("trust-relayer-packets")
-            .takes_value(false)
-            .help("(DEPRECATED): Not used anymore."),
-        usage_warning: "The trust_relayer_packets argument is obsolete",
-    );
+    add_arg!(Arg::with_name("trust_relayer_packets").long("trust-relayer-packets"));
     add_arg!(
         // deprecated in v4.5.0
         Arg::with_name("vote_use_quic")

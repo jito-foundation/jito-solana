@@ -1030,49 +1030,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
-dependencies = [
- "axum-core",
- "bytes",
- "futures-util",
- "http 1.5.0",
- "http-body 1.0.1",
- "http-body-util",
- "itoa",
- "matchit",
- "memchr",
- "mime",
- "percent-encoding 2.3.2",
- "pin-project-lite",
- "serde_core",
- "sync_wrapper",
- "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
-dependencies = [
- "bytes",
- "futures-core",
- "http 1.5.0",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "aya"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3928,12 +3885,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
 
 [[package]]
-name = "matchit"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3977,12 +3928,6 @@ dependencies = [
  "rand_core 0.6.4",
  "zeroize",
 ]
-
-[[package]]
-name = "mime"
-version = "0.3.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "min-max-heap"
@@ -6299,15 +6244,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-bundle"
-version = "4.5.0-beta.0"
-dependencies = [
- "itertools 0.15.0",
- "sha2 0.10.9",
- "solana-runtime-transaction",
-]
-
-[[package]]
 name = "solana-clap-utils"
 version = "4.5.0-beta.0"
 dependencies = [
@@ -6624,11 +6560,9 @@ dependencies = [
  "solana-accounts-db",
  "solana-address-lookup-table-interface",
  "solana-bls-signatures",
- "solana-bundle",
  "solana-client",
  "solana-clock",
  "solana-cluster-type",
- "solana-compute-budget",
  "solana-compute-budget-interface",
  "solana-connection-cache",
  "solana-cost-model",
@@ -6698,7 +6632,6 @@ dependencies = [
  "solana-version",
  "solana-vote",
  "solana-vote-program",
- "spl-memo-interface",
  "static_assertions",
  "strum",
  "strum_macros",
@@ -7717,8 +7650,6 @@ dependencies = [
  "solana-poh-config",
  "solana-pubkey 4.4.0",
  "solana-runtime",
- "solana-runtime-transaction",
- "solana-time-utils",
  "solana-transaction",
  "thiserror 2.0.21",
 ]
@@ -8241,7 +8172,6 @@ dependencies = [
  "solana-rpc-client-types",
  "solana-signature",
  "solana-signer",
- "solana-svm",
  "solana-transaction-error",
  "solana-transaction-status-client-types",
  "thiserror 2.0.21",
@@ -10132,7 +10062,6 @@ dependencies = [
  "agave-votor",
  "agave-votor-messages",
  "agave-worker-pool",
- "agave-xdp",
  "arc-swap",
  "bytes",
  "crossbeam-channel",
@@ -11178,7 +11107,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
 dependencies = [
  "async-trait",
- "axum",
  "base64 0.22.1",
  "bytes",
  "h2",
