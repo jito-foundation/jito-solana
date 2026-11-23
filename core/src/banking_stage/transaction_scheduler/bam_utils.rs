@@ -5,8 +5,48 @@ use {
         scheduler_messages::{NotCommittedReason, TransactionResult},
     },
     jito_protos::proto::bam_types::{TransactionCommittedResult, TransactionErrorReason},
+    solana_clock::MAX_PROCESSING_AGE,
+    solana_runtime::bank::Bank,
+    solana_runtime_transaction::transaction_with_meta::{TransactionWithMeta, writable_accounts},
+    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_transaction_error::TransactionError,
 };
+
+/// Earlier atomic-bundle writes are visible only during execution, including writes via CPI.
+/// Recover only a failed nonce check, then repeat the committed-status lookup it skipped.
+pub(super) fn recover_dependent_nonce_error<'a, Tx: TransactionWithMeta + 'a>(
+    bank: &Bank,
+    transaction: &Tx,
+    mut prior_transactions: impl Iterator<Item = &'a Tx>,
+    result: Result<(), TransactionError>,
+    error_counters: &mut TransactionErrorMetrics,
+) -> Result<(), TransactionError> {
+    if result != Err(TransactionError::BlockhashNotFound) {
+        return result;
+    }
+    let Some(nonce_account) = transaction.get_durable_nonce(true) else {
+        return result;
+    };
+    if !prior_transactions.any(|prior| writable_accounts(prior).any(|key| key == nonce_account))
+        || bank.is_hash_valid_for_age(transaction.recent_blockhash(), MAX_PROCESSING_AGE)
+    {
+        return result;
+    }
+
+    error_counters.blockhash_not_found -= 1;
+    if bank
+        .get_transaction_status_and_slot_from_status_cache(
+            transaction.message_hash(),
+            transaction.recent_blockhash(),
+        )
+        .is_some()
+    {
+        error_counters.already_processed += 1;
+        Err(TransactionError::AlreadyProcessed)
+    } else {
+        Ok(())
+    }
+}
 
 pub fn convert_txn_error_to_proto(err: TransactionError) -> TransactionErrorReason {
     match err {
@@ -134,4 +174,151 @@ pub(in crate::banking_stage) fn build_finished_consume_work_extra_info(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+pub(in crate::banking_stage) mod tests {
+    use {
+        solana_account::{AccountSharedData, state_traits::StateMutWincode as _},
+        solana_compute_budget_interface::ComputeBudgetInstruction,
+        solana_hash::Hash,
+        solana_keypair::Keypair,
+        solana_message::Message,
+        solana_nonce::{
+            state::{Data, DurableNonce, State},
+            versions::Versions,
+        },
+        solana_pubkey::Pubkey,
+        solana_runtime::bank::Bank,
+        solana_signer::Signer,
+        solana_system_interface::{instruction, program},
+        solana_transaction::Transaction,
+    };
+
+    #[derive(Clone, Copy)]
+    pub enum NoncePrecheckCase {
+        Rotation,
+        NoPrior,
+        Standalone,
+        SeparateBatches,
+        Readonly,
+        Unrelated,
+        Reversed,
+        CommittedDuplicate,
+        MalformedBudget,
+    }
+
+    pub struct NonceRotationFixture {
+        pub payer: Keypair,
+        pub old_authority: Keypair,
+        pub new_authority: Keypair,
+        pub nonce_account: Pubkey,
+        pub nonce: DurableNonce,
+        pub recipient: Pubkey,
+    }
+
+    impl NonceRotationFixture {
+        pub fn new(bank: &Bank) -> Self {
+            let fixture = Self {
+                payer: Keypair::new(),
+                old_authority: Keypair::new(),
+                new_authority: Keypair::new(),
+                nonce_account: Pubkey::new_unique(),
+                nonce: DurableNonce::from_blockhash(&Hash::new_unique()),
+                recipient: Pubkey::new_unique(),
+            };
+            bank.store_account(
+                &fixture.payer.pubkey(),
+                &AccountSharedData::empty(1_000_000_000_000, &program::id()),
+            );
+            let account = AccountSharedData::new_data(
+                bank.get_minimum_balance_for_rent_exemption(State::size()),
+                &Versions::new(State::Initialized(Data::new(
+                    fixture.old_authority.pubkey(),
+                    fixture.nonce,
+                    5000,
+                ))),
+                &program::id(),
+            )
+            .unwrap();
+            bank.store_account(&fixture.nonce_account, &account);
+            fixture
+        }
+
+        pub fn rotation(
+            &self,
+            bank: &Bank,
+            account: Pubkey,
+            authority: &Keypair,
+            writable: bool,
+        ) -> Transaction {
+            let mut ix = instruction::authorize_nonce_account(
+                &account,
+                &authority.pubkey(),
+                &self.new_authority.pubkey(),
+            );
+            ix.accounts[0].is_writable = writable;
+            Transaction::new_signed_with_payer(
+                &[ix],
+                Some(&self.payer.pubkey()),
+                &[&self.payer, authority],
+                bank.last_blockhash(),
+            )
+        }
+
+        pub fn transfer(&self, authority: &Keypair, hash: Hash) -> Transaction {
+            solana_system_transaction::nonced_transfer(
+                &self.payer,
+                &self.recipient,
+                1,
+                &self.nonce_account,
+                authority,
+                hash,
+            )
+        }
+
+        pub fn transactions(&self, bank: &Bank, case: NoncePrecheckCase) -> Vec<Transaction> {
+            let prior = self.rotation(
+                bank,
+                if matches!(case, NoncePrecheckCase::Unrelated) {
+                    Pubkey::new_unique()
+                } else {
+                    self.nonce_account
+                },
+                &self.old_authority,
+                !matches!(case, NoncePrecheckCase::Readonly),
+            );
+            let followup = if matches!(case, NoncePrecheckCase::MalformedBudget) {
+                Transaction::new(
+                    &[&self.payer, &self.new_authority],
+                    Message::new_with_nonce(
+                        vec![ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(0)],
+                        Some(&self.payer.pubkey()),
+                        &self.nonce_account,
+                        &self.new_authority.pubkey(),
+                    ),
+                    *self.nonce.as_hash(),
+                )
+            } else {
+                self.transfer(&self.new_authority, *self.nonce.as_hash())
+            };
+            if matches!(case, NoncePrecheckCase::CommittedDuplicate) {
+                bank.status_cache.write().unwrap().insert(
+                    self.nonce.as_hash(),
+                    followup.message.hash(),
+                    bank.slot(),
+                    Ok(()),
+                );
+            }
+            let mut transactions = vec![prior, followup];
+            match case {
+                NoncePrecheckCase::NoPrior | NoncePrecheckCase::Standalone => {
+                    transactions.remove(0);
+                }
+                NoncePrecheckCase::Reversed => transactions.reverse(),
+                _ => {}
+            }
+            transactions
+        }
+    }
 }

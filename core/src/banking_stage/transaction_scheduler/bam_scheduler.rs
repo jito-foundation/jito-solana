@@ -20,7 +20,8 @@ use {
                 TransactionResult,
             },
             transaction_scheduler::{
-                bam_utils::convert_txn_error_to_proto, scheduler_common::SchedulingCommon,
+                bam_utils::{convert_txn_error_to_proto, recover_dependent_nonce_error},
+                scheduler_common::SchedulingCommon,
             },
         },
         proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -209,22 +210,38 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         &self,
         bank: &Bank,
         txns: &[impl Borrow<Tx>],
+        revert_on_error: bool,
     ) -> Option<(usize, TransactionError)> {
         if !self.extra_checks_enabled {
             return None;
         }
         let lock_results = SmallVec::<[_; MAX_PACKETS_PER_BUNDLE]>::from_elem(Ok(()), txns.len());
+        let mut error_counters = TransactionErrorMetrics::default();
         let check_results = Consumer::check_transactions_for_scheduling::<Tx>(
             bank,
             txns,
             &lock_results,
             MAX_PROCESSING_AGE,
-            &mut TransactionErrorMetrics::default(),
+            &mut error_counters,
         );
         check_results
             .into_iter()
             .enumerate()
-            .find_map(|(i, res)| res.err().map(|err| (i, err)))
+            .find_map(|(i, result)| {
+                let result = result.map(|_| ());
+                let result = if revert_on_error {
+                    recover_dependent_nonce_error(
+                        bank,
+                        txns[i].borrow(),
+                        txns[..i].iter().map(Borrow::borrow),
+                        result,
+                        &mut error_counters,
+                    )
+                } else {
+                    result
+                };
+                result.err().map(|err| (i, err))
+            })
     }
 
     /// Insert all incoming transactions into the `PrioGraph`.
@@ -236,7 +253,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         let slot = working_bank.slot();
 
         while let Some(next_batch_id) = container.pop() {
-            let Some((batch_ids, _, max_schedule_slot, seq_id)) =
+            let Some((batch_ids, revert_on_error, max_schedule_slot, seq_id)) =
                 container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
@@ -256,7 +273,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
                 .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
-            if let Some((index, err)) = self.check_transactions(working_bank, &txns) {
+            if let Some((index, err)) =
+                self.check_transactions(working_bank, &txns, revert_on_error)
+            {
                 drop(txns);
                 container.remove_by_id(next_batch_id.id);
 
@@ -394,7 +413,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     txns.push(tx);
                     None
                 });
-                missing.or_else(|| self.check_transactions(admission_bank, &txns))
+                missing.or_else(|| self.check_transactions(admission_bank, &txns, revert_on_error))
             };
             if let Some((index, err)) = check_error {
                 container.remove_by_id(id.id);
@@ -2324,5 +2343,129 @@ mod tests {
                 if not_committed.reason
                     == Some(Reason::SchedulingError(SchedulingError::PohTimeout as i32))
         ));
+    }
+
+    #[test_case::test_case(false; "queueing")]
+    #[test_case::test_case(true; "admission")]
+    fn nonce_rotation_bundle_prechecks(admission_only: bool) {
+        use {
+            super::super::bam_utils::tests::{NoncePrecheckCase::*, NonceRotationFixture},
+            jito_protos::proto::bam_types::TransactionErrorReason,
+        };
+        for (case, atomic, expected) in [
+            (Rotation, true, None),
+            (
+                Rotation,
+                false,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                NoPrior,
+                true,
+                Some((0, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                Readonly,
+                true,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                Unrelated,
+                true,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                Reversed,
+                true,
+                Some((0, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                CommittedDuplicate,
+                true,
+                Some((1, TransactionErrorReason::AlreadyProcessed)),
+            ),
+            (
+                MalformedBudget,
+                true,
+                Some((
+                    1,
+                    TransactionErrorReason::InvalidLoadedAccountsDataSizeLimit,
+                )),
+            ),
+        ] {
+            let (bank_forks, _) = test_bank_forks();
+            let mut test = create_test_scheduler(&bank_forks);
+            let bank = Arc::new(Bank::new_from_parent(
+                bank_forks.read().unwrap().working_bank(),
+                SlotLeader::new_unique(),
+                1,
+            ));
+            set_leader_bank(&mut test.scheduler.shared_leader_state, Some(bank.clone()));
+            let fixture = NonceRotationFixture::new(&bank);
+            let transactions = fixture.transactions(&bank, case);
+            let mut container = TransactionStateContainer::with_capacity(16);
+            container
+                .insert_new_batch(
+                    transactions
+                        .into_iter()
+                        .map(|tx| {
+                            (
+                                RuntimeTransaction::from_transaction_for_tests(tx),
+                                MaxAge::MAX,
+                            )
+                        })
+                        .collect(),
+                    1,
+                    atomic,
+                    u64::MAX,
+                    7,
+                )
+                .unwrap();
+            test.scheduler
+                .receive_completed(
+                    &mut container,
+                    &BufferedPacketsDecision::Consume(bank.clone()),
+                )
+                .unwrap();
+            // Isolate admission: bypass queue validation only while inserting into the graph.
+            test.scheduler.extra_checks_enabled = !admission_only;
+            test.scheduler.pull_into_prio_graph(&mut container, &bank);
+            test.scheduler.extra_checks_enabled = true;
+            if admission_only {
+                assert!(!test.scheduler.prio_graph.is_empty());
+            }
+            let scheduled = test
+                .scheduler
+                .send_to_workers(&mut container, &bank)
+                .unwrap();
+            if let Some((index, error)) = expected {
+                assert_eq!(scheduled, 0);
+                assert!(test.consume_work_receiver.try_recv().is_err());
+                let (seq_id, result) = next_result(&mut test.response_receiver);
+                assert_eq!(seq_id, 7);
+                let NotCommitted(result) = result else {
+                    panic!("expected rejection");
+                };
+                assert_eq!(
+                    result.reason,
+                    Some(Reason::TransactionError(
+                        jito_protos::proto::bam_types::TransactionError {
+                            index,
+                            reason: error as i32,
+                        }
+                    ))
+                );
+            } else {
+                assert!(
+                    scheduled > 0,
+                    "{:?}",
+                    next_result(&mut test.response_receiver)
+                );
+                let work = test.consume_work_receiver.try_recv().unwrap();
+                assert_eq!(work.transactions.len(), 2);
+                assert!(work.revert_on_error);
+                assert!(test.response_receiver.try_recv().is_err());
+            }
+        }
     }
 }
