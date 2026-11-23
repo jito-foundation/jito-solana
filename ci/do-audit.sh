@@ -72,6 +72,37 @@ default_cargo_audit_extra_args=(
   # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
   # patched 1.0.10; no fixed 0.26 exists.
   --ignore RUSTSEC-2026-0381
+
+  # Crate:     quinn-udp
+  # Version:   0.5.14 (dev-bins), 0.5.4 (programs/sbf)
+  # Title:     Receive loop can spin after a truncated datagram
+  # ID:        RUSTSEC-2026-0538
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0538
+  # Solution:  Upgrade to >=0.5.16
+  # Agave Ok:  only the single-recvmsg fallback (macOS, OpenBSD, Solaris) is affected; Linux
+  # uses recvmmsg. On macOS, agave-ledger-tool (dev-bins) links it via solana-core but
+  # never opens a QUIC socket.
+  --ignore RUSTSEC-2026-0538
+
+  # Crate:     libz-sys
+  # Version:   1.1.31
+  # Title:     libs-sys: heap buffer overflow
+  # Date:      2026-11-11
+  # ID:        RUSTSEC-2026-0544
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0544
+  # Solution:  Upgrade to >=1.1.33
+  # Agave Ok:  optional rocksdb zlib dep, not built; the bug is in the gzFile API rocksdb never calls.
+  --ignore RUSTSEC-2026-0544
+
+  # Crate:     url
+  # Version:   2.5.8 (1.7.2 via jsonrpc-client-transports)
+  # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
+  # Date:      2026-11-22
+  # ID:        RUSTSEC-2026-0592
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
+  # Solution:  Upgrade to >=2.5.9
+  # Agave Ok:  Agave never calls `Url::origin` or `url::quirks::origin` (clippy disallows them).
+  --ignore RUSTSEC-2026-0592
 )
 
 xtask_cargo_audit_extra_args=(
@@ -84,6 +115,27 @@ xtask_cargo_audit_extra_args=(
   # Severity:  5.9 (medium)
   # Solution:  No fixed upgrade is available!
   --ignore RUSTSEC-2023-0071
+
+  # Crate:     quinn-udp
+  # Version:   0.5.14
+  # Title:     Receive loop can spin after a truncated datagram
+  # ID:        RUSTSEC-2026-0538
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0538
+  # Solution:  Upgrade to >=0.5.16
+  # Agave Ok:  only in xtask's lockfile as an optional dep of Reqwest's HTTP/3 feature, which
+  # xtask does not enable, so upstream Quinn and quinn-udp are never built.
+  --ignore RUSTSEC-2026-0538
+
+  # Crate:     url
+  # Version:   2.5.8
+  # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
+  # Date:      2026-11-22
+  # ID:        RUSTSEC-2026-0592
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
+  # Solution:  Upgrade to >=2.5.9
+  # Agave Ok:  only octocrab and reqwest use url in xtask, and neither calls `Url::origin`
+  # or `url::quirks::origin`. xtask doesn't call them either.
+  --ignore RUSTSEC-2026-0592
 )
 
 lock_files="$(git ls-files ':**Cargo.lock')"
