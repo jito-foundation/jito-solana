@@ -3736,9 +3736,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.8.1"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ab2d4f250c3d7b1c9fcdff1cece94ea4e2dfbec68614f7b87cb205f24ca9d11"
+checksum = "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3751,7 +3751,6 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "pin-utils",
  "smallvec",
  "tokio",
  "want",
@@ -3765,7 +3764,7 @@ checksum = "2d191583f3da1305256f22463b9bb0471acad48a4e534a5218b9963e9c1f59b2"
 dependencies = [
  "futures-util",
  "http 1.5.0",
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "hyper-util",
  "rustls",
  "rustls-native-certs",
@@ -3782,7 +3781,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b90d566bffbce6a75bd8b09a05aa8c2cb1fabb6cb348f8840c9e4c90a0d83b0"
 dependencies = [
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "hyper-util",
  "pin-project-lite",
  "tokio",
@@ -3797,7 +3796,7 @@ checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
 dependencies = [
  "bytes",
  "http-body-util",
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "hyper-util",
  "native-tls",
  "tokio",
@@ -3817,7 +3816,7 @@ dependencies = [
  "futures-util",
  "http 1.5.0",
  "http-body 1.0.1",
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "ipnet",
  "libc",
  "percent-encoding 2.3.2",
@@ -5501,12 +5500,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bda66fc9667c18cb2758a2ac84d1167245054bcf85d5d1aaa6923f45801bdd02"
 
 [[package]]
-name = "pin-utils"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
-
-[[package]]
 name = "pkcs8"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6303,7 +6296,7 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "hyper-rustls",
  "hyper-util",
  "js-sys",
@@ -6344,7 +6337,7 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "hyper-tls",
  "hyper-util",
  "js-sys",
@@ -9633,12 +9626,7 @@ dependencies = [
  "solana-svm-type-overrides",
  "thiserror 2.0.20",
  "tokio",
-<<<<<<< HEAD
- "url 2.5.8",
-=======
  "url 2.5.9",
- "wincode",
->>>>>>> 092e70e445 (update tonic package. (#1790))
 ]
 
 [[package]]
@@ -13145,14 +13133,8 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-<<<<<<< HEAD
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
-=======
 version = "0.14.9"
 source = "git+https://github.com/jito-foundation/grpc-rust.git?rev=a545ddc4cde802ad40c6b1b5db716f650b9f4b54#a545ddc4cde802ad40c6b1b5db716f650b9f4b54"
->>>>>>> 092e70e445 (update tonic package. (#1790))
 dependencies = [
  "async-trait",
  "axum",
@@ -13162,7 +13144,7 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.0.1",
  "http-body-util",
- "hyper 1.8.1",
+ "hyper 1.11.1",
  "hyper-timeout",
  "hyper-util",
  "percent-encoding 2.3.2",
@@ -13173,6 +13155,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "tokio-util 0.7.19",
  "tower",
  "tower-layer",
  "tower-service",
