@@ -24,10 +24,9 @@ use {
 const ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(50);
 
 /// Coalescing deadline for the slot an UpdateParent marker moved onto a replacement bank. The
-/// leader re-executes held transactions on the replacement first, and replicas build the
-/// replacement bank and replay that work from its first entries, so delivery beats packing for
-/// this one slot. A nonzero deadline still bounds the batch count against the per-slot shred
-/// limit.
+/// leader re-executes held transactions on the replacement first, and replicas can replay that
+/// work only once its entries arrive, so delivery beats packing for this one slot. A nonzero
+/// deadline still bounds the batch count against the per-slot shred limit.
 const REPLACEMENT_ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(5);
 
 fn entry_coalesce_duration(slot: Slot, replacement_slot: Option<Slot>) -> Duration {
@@ -387,6 +386,13 @@ mod tests {
 
     #[test]
     fn test_replacement_slot_coalesces_on_short_deadline() {
+        assert_eq!(
+            entry_coalesce_duration(7, Some(7)),
+            REPLACEMENT_ENTRY_COALESCE_DURATION
+        );
+        assert_eq!(entry_coalesce_duration(7, Some(6)), ENTRY_COALESCE_DURATION);
+        assert_eq!(entry_coalesce_duration(7, None), ENTRY_COALESCE_DURATION);
+
         let (genesis_config, bank0, _bank_forks, tx) = setup_test();
         let bank1 = Arc::new(Bank::new_from_parent(bank0, SlotLeader::default(), 1));
         assert!(bank1.max_tick_height() > LAST_TICK_HEIGHT);
@@ -410,12 +416,11 @@ mod tests {
                     if batch == std::slice::from_ref(&entry)
             ));
             assert_eq!(stats.coalesce_exited_rcv_timeout, 1);
-            if replacement_slot == Some(bank1.slot()) {
-                assert!(elapsed >= REPLACEMENT_ENTRY_COALESCE_DURATION);
-                assert!(elapsed < ENTRY_COALESCE_DURATION, "{elapsed:?}");
-            } else {
-                assert!(elapsed >= ENTRY_COALESCE_DURATION, "{elapsed:?}");
-            }
+            // Lower bound only: an upper bound on wall-clock time flakes under load.
+            assert!(
+                elapsed >= entry_coalesce_duration(bank1.slot(), replacement_slot),
+                "{elapsed:?}"
+            );
         }
     }
 

@@ -42,7 +42,7 @@ pub struct StandardBroadcastRun {
     // can change after an UpdateParent marker.
     parent_for_double_merkle: Block,
     // Slot of the last UpdateParent marker broadcast. Its replacement bank's entries coalesce on a
-    // short deadline, so replicas can rebuild the bank and replay its held work promptly.
+    // short deadline, so replicas can replay its held work promptly.
     replacement_slot: Option<Slot>,
     chained_merkle_root: Hash,
     carryover_message: Option<WorkingBankMessage>,
@@ -279,7 +279,7 @@ impl StandardBroadcastRun {
     ///
     /// The shred-header parent remains `self.parent` for the whole slot so
     /// PARENT_OFFSET stays stable and receivers do not see parent mismatches.
-    fn maybe_update_parent_from_component(&mut self, slot: Slot, component: &BlockComponent) {
+    fn maybe_update_parent_from_component(&mut self, component: &BlockComponent) {
         let Some(VersionedBlockMarker::V1(marker)) = component.as_marker() else {
             return;
         };
@@ -293,7 +293,7 @@ impl StandardBroadcastRun {
             },
         };
         self.parent_for_double_merkle = parent_for_double_merkle;
-        self.replacement_slot = Some(slot);
+        self.replacement_slot = Some(self.slot);
     }
 
     /// Leaf that binds the current replay parent into the double-merkle block id.
@@ -454,7 +454,7 @@ impl StandardBroadcastRun {
                 )
                 .unwrap(),
             );
-            self.maybe_update_parent_from_component(slot, &component);
+            self.maybe_update_parent_from_component(&component);
         }
 
         // Insert the first data shred synchronously so that blockstore stores
@@ -1561,7 +1561,7 @@ mod test {
         );
 
         assert_eq!(bs.replacement_slot, None);
-        bs.maybe_update_parent_from_component(12, &component);
+        bs.maybe_update_parent_from_component(&component);
         assert_eq!(bs.replacement_slot, Some(12));
         assert_eq!(bs.parent, 10);
         assert_eq!(bs.parent_block_id, original_parent_block_id);
