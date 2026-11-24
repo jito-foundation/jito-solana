@@ -20,7 +20,7 @@ jobs:
   backport:
     strategy:
       matrix:
-        target: [v4.3, v4.4]
+        target: [v4.3, v4.4, v4.5]
     if: >
       github.event_name == 'workflow_dispatch' || (
         github.event.pull_request.merged == true &&
