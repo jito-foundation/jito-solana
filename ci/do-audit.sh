@@ -283,6 +283,7 @@ default_cargo_audit_extra_args=(
   # patched 1.0.10; no fixed 0.26 exists.
   --ignore RUSTSEC-2026-0381
 
+<<<<<<< HEAD
   # Crate:     quinn-proto
   # Version:   0.11.18
   # Title:     MAX_STREAM_DATA frame can open streams beyond the stream limit
@@ -315,6 +316,19 @@ default_cargo_audit_extra_args=(
   # On macOS, agave-ledger-tool (dev-bins) links 0.5.14 via solana-core but never opens a
   # QUIC socket.
   --ignore RUSTSEC-2026-0538
+=======
+  # Crate:     url
+  # Version:   1.7.2
+  # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
+  # Date:      2026-11-20
+  # ID:        RUSTSEC-2026-0592
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
+  # Solution:  Upgrade to >=2.5.9
+  # 2.x is patched. 1.7.2 only comes via jsonrpc-client-transports, whose ws
+  # feature is disabled, and has no fixed release. Clippy disallows both origin APIs.
+  # Remove this exception when url 1.x leaves the lockfiles.
+  --ignore RUSTSEC-2026-0592
+>>>>>>> 092e70e445 (update tonic package. (#1790))
 )
 
 xtask_cargo_audit_extra_args=(
