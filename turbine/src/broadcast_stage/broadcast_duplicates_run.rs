@@ -109,6 +109,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             receiver,
             &mut self.carryover_message,
             &mut stats,
+            None,
         )?;
         let bank = receive_results.bank.clone();
         let last_tick_height = receive_results.last_tick_height;

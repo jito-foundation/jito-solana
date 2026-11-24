@@ -23,6 +23,21 @@ use {
 
 const ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(50);
 
+/// Coalescing deadline for the slot an UpdateParent marker moved onto a replacement bank. The
+/// leader re-executes held transactions on the replacement first, and replicas build the
+/// replacement bank and replay that work from its first entries, so delivery beats packing for
+/// this one slot. A nonzero deadline still bounds the batch count against the per-slot shred
+/// limit.
+const REPLACEMENT_ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(5);
+
+fn entry_coalesce_duration(slot: Slot, replacement_slot: Option<Slot>) -> Duration {
+    if replacement_slot == Some(slot) {
+        REPLACEMENT_ENTRY_COALESCE_DURATION
+    } else {
+        ENTRY_COALESCE_DURATION
+    }
+}
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(super) enum BroadcastItem {
@@ -87,15 +102,21 @@ fn keep_coalescing_entries(
     true
 }
 
+/// Receives the next block component. `replacement_slot` is the slot whose UpdateParent marker
+/// this broadcast sent last: its entries coalesce for [`REPLACEMENT_ENTRY_COALESCE_DURATION`].
 pub(super) fn recv_slot_components(
     receiver: &Receiver<WorkingBankMessage>,
     carryover_message: &mut Option<WorkingBankMessage>,
     process_stats: &mut ProcessShredsStats,
+    replacement_slot: Option<Slot>,
 ) -> Result<ReceiveResults> {
     loop {
-        if let Some(result) =
-            recv_slot_components_maybe_empty(receiver, carryover_message, process_stats)?
-        {
+        if let Some(result) = recv_slot_components_maybe_empty(
+            receiver,
+            carryover_message,
+            process_stats,
+            replacement_slot,
+        )? {
             return Ok(result);
         }
     }
@@ -105,6 +126,7 @@ fn recv_slot_components_maybe_empty(
     receiver: &Receiver<WorkingBankMessage>,
     carryover_message: &mut Option<WorkingBankMessage>,
     process_stats: &mut ProcessShredsStats,
+    replacement_slot: Option<Slot>,
 ) -> Result<Option<ReceiveResults>> {
     let recv_start = Instant::now();
 
@@ -153,11 +175,12 @@ fn recv_slot_components_maybe_empty(
 
     // Coalesce entries until one of the following conditions are hit:
     // 1. We ticked through the entire slot.
-    // 2. We hit the timeout.
+    // 2. We hit the timeout, which is shorter in a slot an UpdateParent marker restarted.
     // 3. We're over the max data target.
     // 4. We hit a block marker.
     // 5. We're "close enough" to tightly packing erasure batches.
     let mut coalesce_start = Instant::now();
+    let mut coalesce_duration = entry_coalesce_duration(bank.slot(), replacement_slot);
     while keep_coalescing_entries(
         last_tick_height,
         bank.max_tick_height(),
@@ -166,7 +189,7 @@ fn recv_slot_components_maybe_empty(
         process_stats,
     ) {
         let Ok((try_bank, (message, tick_height))) =
-            receiver.recv_deadline(coalesce_start + ENTRY_COALESCE_DURATION)
+            receiver.recv_deadline(coalesce_start + coalesce_duration)
         else {
             process_stats.coalesce_exited_rcv_timeout += 1;
             break;
@@ -181,6 +204,7 @@ fn recv_slot_components_maybe_empty(
             last_tick_height = 0;
             bank = try_bank.clone();
             coalesce_start = Instant::now();
+            coalesce_duration = entry_coalesce_duration(bank.slot(), replacement_slot);
             debug_assert!(carryover_message.is_none());
         }
 
@@ -349,7 +373,7 @@ mod tests {
         let mut res_entries = vec![];
         let mut last_tick_height = 0;
         while let Ok(result) =
-            recv_slot_components(&r, &mut None, &mut ProcessShredsStats::default())
+            recv_slot_components(&r, &mut None, &mut ProcessShredsStats::default(), None)
         {
             assert_eq!(result.bank.slot(), bank1.slot());
             last_tick_height = result.last_tick_height;
@@ -359,6 +383,40 @@ mod tests {
         }
         assert_eq!(last_tick_height, bank1.max_tick_height());
         assert_eq!(res_entries, entries);
+    }
+
+    #[test]
+    fn test_replacement_slot_coalesces_on_short_deadline() {
+        let (genesis_config, bank0, _bank_forks, tx) = setup_test();
+        let bank1 = Arc::new(Bank::new_from_parent(bank0, SlotLeader::default(), 1));
+        assert!(bank1.max_tick_height() > LAST_TICK_HEIGHT);
+        let (s, r) = bounded(1024);
+        let entry = Entry::new(&genesis_config.hash(), 1, vec![tx]);
+
+        for replacement_slot in [Some(bank1.slot()), Some(bank1.slot() + 1), None] {
+            s.send((
+                bank1.clone(),
+                (RecorderMessage::Entry(entry.clone()), LAST_TICK_HEIGHT),
+            ))
+            .unwrap();
+            let mut stats = ProcessShredsStats::default();
+            let start = Instant::now();
+            let result = recv_slot_components(&r, &mut None, &mut stats, replacement_slot).unwrap();
+            let elapsed = start.elapsed();
+
+            assert!(matches!(
+                result.item,
+                BroadcastItem::Component(BlockComponent::EntryBatch(ref batch))
+                    if batch == std::slice::from_ref(&entry)
+            ));
+            assert_eq!(stats.coalesce_exited_rcv_timeout, 1);
+            if replacement_slot == Some(bank1.slot()) {
+                assert!(elapsed >= REPLACEMENT_ENTRY_COALESCE_DURATION);
+                assert!(elapsed < ENTRY_COALESCE_DURATION, "{elapsed:?}");
+            } else {
+                assert!(elapsed >= ENTRY_COALESCE_DURATION, "{elapsed:?}");
+            }
+        }
     }
 
     #[test]
@@ -381,7 +439,8 @@ mod tests {
 
         let mut carryover = None;
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
 
         assert_eq!(result.last_tick_height, 1);
         assert!(matches!(
@@ -440,7 +499,7 @@ mod tests {
         let mut last_tick_height = 0;
         let mut bank_slot = 0;
         while let Ok(result) =
-            recv_slot_components(&r, &mut None, &mut ProcessShredsStats::default())
+            recv_slot_components(&r, &mut None, &mut ProcessShredsStats::default(), None)
         {
             bank_slot = result.bank.slot();
             last_tick_height = result.last_tick_height;
@@ -479,7 +538,8 @@ mod tests {
 
         let mut carryover = None;
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
 
         assert!(matches!(
             result.item,
@@ -489,7 +549,8 @@ mod tests {
         assert!(carryover.is_some());
 
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::BlockMarker(_))
@@ -527,7 +588,8 @@ mod tests {
 
         // First call should return only entry1
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 1
@@ -539,7 +601,8 @@ mod tests {
 
         // Second call should return the marker
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::BlockMarker(_))
@@ -548,7 +611,8 @@ mod tests {
 
         // Third call should return entry2
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::EntryBatch(ref e)) if e.len() == 1
@@ -601,6 +665,7 @@ mod tests {
             &r,
             &mut carryover,
             &mut ProcessShredsStats::default(),
+            None,
         )
         .unwrap();
         assert!(result.is_none());
@@ -615,7 +680,8 @@ mod tests {
         // Verify that the outer function skips the empty batch and returns the carried-over marker.
         // last_tick_height must be 3 (from the marker), not 5 (stale value from bank1).
         let result =
-            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default()).unwrap();
+            recv_slot_components(&r, &mut carryover, &mut ProcessShredsStats::default(), None)
+                .unwrap();
         assert!(matches!(
             result.item,
             BroadcastItem::Component(BlockComponent::BlockMarker(_))
