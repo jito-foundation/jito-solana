@@ -488,31 +488,26 @@ impl BamReceiveAndBuffer {
                 // Check 4: Ensure valid blockhash and blockhash is not too old
                 let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
                 let (result, duration_us) = measure_us!({
-                    let mut error_counters = TransactionErrorMetrics::default();
                     let result = working_bank
                         .check_transactions_external(
                             std::slice::from_ref(&view),
                             &lock_results,
                             MAX_PROCESSING_AGE,
                             false,
-                            &mut error_counters,
+                            &mut TransactionErrorMetrics::default(),
                         )
                         .0
                         .into_iter()
                         .next()
                         .unwrap()
                         .map(|_| ());
-                    if revert_on_error {
-                        recover_dependent_nonce_error(
-                            working_bank,
-                            &view,
-                            txns_max_age.iter().map(|(tx, _)| tx),
-                            result,
-                            &mut error_counters,
-                        )
-                    } else {
-                        result
-                    }
+                    // Prevalidation permits multiple transactions only in an atomic bundle.
+                    recover_dependent_nonce_error(
+                        working_bank,
+                        &view,
+                        txns_max_age.iter().map(|(tx, _)| tx),
+                        result,
+                    )
                 });
                 metrics.check_transactions_us += duration_us;
                 if let Err(err) = result {
@@ -2262,15 +2257,31 @@ pub(super) mod tests {
     fn nonce_rotation_intake_prechecks() {
         use super::super::bam_utils::tests::{NoncePrecheckCase::*, NonceRotationFixture};
         for (case, expected) in [
+            (
+                StaleNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                UnadvanceableNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                MissingNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                InvalidNonceSize,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                MalformedNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                WrongNonceOwner,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
             (Rotation, None),
-            (
-                Standalone,
-                Some((0, TransactionErrorReason::BlockhashNotFound)),
-            ),
-            (
-                SeparateBatches,
-                Some((0, TransactionErrorReason::BlockhashNotFound)),
-            ),
             (
                 NoPrior,
                 Some((0, TransactionErrorReason::BlockhashNotFound)),
@@ -2284,12 +2295,8 @@ pub(super) mod tests {
                 Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
-                Reversed,
-                Some((0, TransactionErrorReason::BlockhashNotFound)),
-            ),
-            (
-                CommittedDuplicate,
-                Some((1, TransactionErrorReason::AlreadyProcessed)),
+                AgedRecentHashReplay,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
                 MalformedBudget,
@@ -2303,7 +2310,7 @@ pub(super) mod tests {
             let root = forks.read().unwrap().root_bank();
             let bank = child_bank(&root, 1);
             let fixture = NonceRotationFixture::new(&bank);
-            let mut batch = AtomicTxnBatch {
+            let batch = AtomicTxnBatch {
                 seq_id: 7,
                 packets: fixture
                     .transactions(&bank, case)
@@ -2312,7 +2319,7 @@ pub(super) mod tests {
                         data: wincode::serialize(&VersionedTransaction::from(tx))
                             .unwrap()
                             .into(),
-                        meta: if matches!(case, Standalone) {
+                        meta: if matches!(case, NoPrior) {
                             None
                         } else {
                             revert_on_error_packet().meta
@@ -2321,21 +2328,13 @@ pub(super) mod tests {
                     .collect(),
                 max_schedule_slot: Slot::MAX,
             };
-            if matches!(case, SeparateBatches) {
-                let prior_batch = AtomicTxnBatch {
-                    packets: vec![batch.packets.remove(0)],
-                    seq_id: 6,
-                    max_schedule_slot: Slot::MAX,
-                };
-                assert!(
-                    parse_single_batch(prior_batch, (&root, &bank), &HashSet::new())
-                        .0
-                        .is_ok()
-                );
-            }
             let (result, stats) = parse_single_batch(batch, (&root, &bank), &HashSet::new());
             if let Some((index, reason)) = expected {
-                assert_eq!(result.err(), Some(transaction_error(index, reason)));
+                assert_eq!(
+                    result.err(),
+                    Some(transaction_error(index, reason)),
+                    "{case:?}"
+                );
                 assert_eq!(
                     stats.num_dropped_on_compute_budget,
                     usize::from(matches!(case, MalformedBudget))

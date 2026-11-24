@@ -210,36 +210,30 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         &self,
         bank: &Bank,
         txns: &[impl Borrow<Tx>],
-        revert_on_error: bool,
     ) -> Option<(usize, TransactionError)> {
         if !self.extra_checks_enabled {
             return None;
         }
         let lock_results = SmallVec::<[_; MAX_PACKETS_PER_BUNDLE]>::from_elem(Ok(()), txns.len());
-        let mut error_counters = TransactionErrorMetrics::default();
         let check_results = Consumer::check_transactions_for_scheduling::<Tx>(
             bank,
             txns,
             &lock_results,
             MAX_PROCESSING_AGE,
-            &mut error_counters,
+            &mut TransactionErrorMetrics::default(),
         );
         check_results
             .into_iter()
             .enumerate()
             .find_map(|(i, result)| {
                 let result = result.map(|_| ());
-                let result = if revert_on_error {
-                    recover_dependent_nonce_error(
-                        bank,
-                        txns[i].borrow(),
-                        txns[..i].iter().map(Borrow::borrow),
-                        result,
-                        &mut error_counters,
-                    )
-                } else {
-                    result
-                };
+                // Intake admits only atomic multi-transaction batches; singletons have no prefix.
+                let result = recover_dependent_nonce_error(
+                    bank,
+                    txns[i].borrow(),
+                    txns[..i].iter().map(Borrow::borrow),
+                    result,
+                );
                 result.err().map(|err| (i, err))
             })
     }
@@ -253,7 +247,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         let slot = working_bank.slot();
 
         while let Some(next_batch_id) = container.pop() {
-            let Some((batch_ids, revert_on_error, max_schedule_slot, seq_id)) =
+            let Some((batch_ids, _, max_schedule_slot, seq_id)) =
                 container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
@@ -273,9 +267,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
                 .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
-            if let Some((index, err)) =
-                self.check_transactions(working_bank, &txns, revert_on_error)
-            {
+            if let Some((index, err)) = self.check_transactions(working_bank, &txns) {
                 drop(txns);
                 container.remove_by_id(next_batch_id.id);
 
@@ -413,7 +405,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     txns.push(tx);
                     None
                 });
-                missing.or_else(|| self.check_transactions(admission_bank, &txns, revert_on_error))
+                missing.or_else(|| self.check_transactions(admission_bank, &txns))
             };
             if let Some((index, err)) = check_error {
                 container.remove_by_id(id.id);
@@ -2352,41 +2344,50 @@ mod tests {
             super::super::bam_utils::tests::{NoncePrecheckCase::*, NonceRotationFixture},
             jito_protos::proto::bam_types::TransactionErrorReason,
         };
-        for (case, atomic, expected) in [
-            (Rotation, true, None),
+        for (case, expected) in [
             (
-                Rotation,
-                false,
+                StaleNonce,
                 Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
-                NoPrior,
-                true,
-                Some((0, TransactionErrorReason::BlockhashNotFound)),
+                UnadvanceableNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
+                MissingNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                InvalidNonceSize,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                MalformedNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                WrongNonceOwner,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (Rotation, None),
+            (
                 Readonly,
-                true,
                 Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
                 Unrelated,
-                true,
                 Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
                 Reversed,
-                true,
                 Some((0, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
-                CommittedDuplicate,
-                true,
-                Some((1, TransactionErrorReason::AlreadyProcessed)),
+                AgedRecentHashReplay,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
             ),
             (
                 MalformedBudget,
-                true,
                 Some((
                     1,
                     TransactionErrorReason::InvalidLoadedAccountsDataSizeLimit,
@@ -2416,7 +2417,7 @@ mod tests {
                         })
                         .collect(),
                     1,
-                    atomic,
+                    true,
                     u64::MAX,
                     7,
                 )
@@ -2439,7 +2440,7 @@ mod tests {
                 .send_to_workers(&mut container, &bank)
                 .unwrap();
             if let Some((index, error)) = expected {
-                assert_eq!(scheduled, 0);
+                assert_eq!(scheduled, 0, "{case:?}");
                 assert!(test.consume_work_receiver.try_recv().is_err());
                 let (seq_id, result) = next_result(&mut test.response_receiver);
                 assert_eq!(seq_id, 7);
