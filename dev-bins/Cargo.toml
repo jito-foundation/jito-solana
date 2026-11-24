@@ -221,5 +221,6 @@ lto = "fat"
 codegen-units = 1
 
 [patch.crates-io]
+tonic = { git = "https://github.com/jito-foundation/grpc-rust.git", rev = "a545ddc4cde802ad40c6b1b5db716f650b9f4b54" }
 librocksdb-sys = { git = "https://github.com/anza-xyz/rust-rocksdb", rev = "4dba80dfe9434e595a971f5b2985ff9ba4fb31e7" }
 rocksdb = { git = "https://github.com/anza-xyz/rust-rocksdb", rev = "4dba80dfe9434e595a971f5b2985ff9ba4fb31e7" }
