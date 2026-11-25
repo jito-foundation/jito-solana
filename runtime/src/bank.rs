@@ -102,6 +102,7 @@ use {
     },
     ahash::AHashSet,
     crossbeam_utils::CachePadded,
+    itertools::izip,
     log::*,
     partitioned_epoch_rewards::PartitionedRewardsCalculation,
     rayon::ThreadPool,
@@ -159,6 +160,7 @@ use {
             ebpp::EpochBoundaryPreparation,
             entry::ProgramCacheEntry,
             env::{ProgramRuntimeEnvironment, ProgramRuntimeEnvironments},
+            tx_batch::ProgramCacheForTxBatch,
         },
     },
     solana_pubkey::Pubkey,
@@ -250,9 +252,12 @@ mod accounts_lt_hash;
 mod address_lookup_table;
 pub mod bank_hash_details;
 pub mod builtins;
+mod bundle_simulation;
 mod check_transactions;
 pub mod entry_bytes_budget;
 mod fee_distribution;
+#[cfg(test)]
+mod jito_tests;
 mod metrics;
 pub(crate) mod partitioned_epoch_rewards;
 mod recent_blockhashes_account;
@@ -4042,7 +4047,7 @@ impl Bank {
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
-            mut processing_results,
+            processing_results,
             balance_collector,
             ..
         } = self.load_and_execute_transactions(
@@ -4074,6 +4079,14 @@ impl Bank {
 
         debug!("simulate_transaction: {timings:?}");
 
+        Self::simulation_result(processing_results, balance_collector, number_of_accounts)
+    }
+
+    fn simulation_result(
+        mut processing_results: Vec<TransactionProcessingResult>,
+        balance_collector: Option<BalanceCollector>,
+        number_of_accounts: usize,
+    ) -> TransactionSimulationResult {
         let processing_result = processing_results
             .pop()
             .unwrap_or(Err(TransactionError::InvalidProgramForExecution));
@@ -4260,6 +4273,28 @@ impl Bank {
         )
     }
 
+    fn load_and_execute_transactions_with_program_cache(
+        &self,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        max_age: usize,
+        timings: &mut ExecuteTimings,
+        error_counters: &mut TransactionErrorMetrics,
+        processing_config: TransactionProcessingConfig,
+        program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
+    ) -> LoadAndExecuteTransactionsOutput {
+        let Some(_execution_guard) = self.try_enter_transaction_execution() else {
+            return Self::cancelled_load_and_execute_tx_batch(batch);
+        };
+        self.load_and_execute_transactions_with_program_cache_internal(
+            batch,
+            max_age,
+            timings,
+            error_counters,
+            processing_config,
+            Some(program_cache_for_tx_batch),
+        )
+    }
+
     fn do_load_and_execute_transactions(
         &self,
         batch: &TransactionBatch<impl TransactionWithMeta>,
@@ -4267,6 +4302,25 @@ impl Bank {
         timings: &mut ExecuteTimings,
         error_counters: &mut TransactionErrorMetrics,
         processing_config: TransactionProcessingConfig,
+    ) -> LoadAndExecuteTransactionsOutput {
+        self.load_and_execute_transactions_with_program_cache_internal(
+            batch,
+            max_age,
+            timings,
+            error_counters,
+            processing_config,
+            None,
+        )
+    }
+
+    fn load_and_execute_transactions_with_program_cache_internal(
+        &self,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        max_age: usize,
+        timings: &mut ExecuteTimings,
+        error_counters: &mut TransactionErrorMetrics,
+        processing_config: TransactionProcessingConfig,
+        program_cache_for_tx_batch: Option<&mut ProgramCacheForTxBatch>,
     ) -> LoadAndExecuteTransactionsOutput {
         let sanitized_txs = batch.sanitized_transactions();
 
@@ -4303,15 +4357,28 @@ impl Bank {
             rent: self.rent_collector.rent.clone(),
         };
 
-        let sanitized_output = self
-            .transaction_processor
-            .load_and_execute_sanitized_transactions(
-                self,
-                sanitized_txs,
-                check_results,
-                &processing_environment,
-                &processing_config,
-            );
+        let sanitized_output = if let Some(program_cache_for_tx_batch) = program_cache_for_tx_batch
+        {
+            self.transaction_processor
+                .load_and_execute_sanitized_transactions_with_program_cache(
+                    self,
+                    sanitized_txs,
+                    check_results,
+                    &processing_environment,
+                    &processing_config,
+                    program_cache_for_tx_batch,
+                    false,
+                )
+        } else {
+            self.transaction_processor
+                .load_and_execute_sanitized_transactions(
+                    self,
+                    sanitized_txs,
+                    check_results,
+                    &processing_environment,
+                    &processing_config,
+                )
+        };
 
         // Accumulate the errors returned by the batch processor.
         error_counters.accumulate(&sanitized_output.error_metrics);
@@ -4564,6 +4631,26 @@ impl Bank {
         processed_counts: &ProcessedTransactionCounts,
         timings: &mut ExecuteTimings,
     ) -> Vec<TransactionCommitResult> {
+        self.commit_transactions_with_transaction_refs(
+            sanitized_txs,
+            processing_results,
+            processed_counts,
+            timings,
+            None,
+        )
+    }
+
+    /// Like `commit_transactions`, but account notifications borrow `transaction_refs` if given.
+    /// `transaction_refs` must line up with `sanitized_txs` by position.
+    pub fn commit_transactions_with_transaction_refs(
+        &self,
+        sanitized_txs: &[impl TransactionWithMeta],
+        processing_results: Vec<TransactionProcessingResult>,
+        processed_counts: &ProcessedTransactionCounts,
+        timings: &mut ExecuteTimings,
+        transaction_refs: Option<&[SanitizedTransaction]>,
+    ) -> Vec<TransactionCommitResult> {
+        debug_assert!(transaction_refs.is_none_or(|refs| refs.len() == sanitized_txs.len()));
         assert!(
             !self.freeze_started(),
             "commit_transactions() working on a bank that is already frozen or is undergoing \
@@ -4603,11 +4690,12 @@ impl Bank {
                 .accounts()
                 .accounts_db
                 .has_accounts_update_notifier()
-                .then(|| {
-                    sanitized_txs
+                .then(|| match transaction_refs {
+                    Some(txs) => txs.iter().map(std::borrow::Cow::Borrowed).collect(),
+                    None => sanitized_txs
                         .iter()
                         .map(|tx| tx.as_sanitized_transaction())
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>(),
                 });
 
             let (accounts_to_store, transactions) = collect_accounts_to_store(
@@ -6760,6 +6848,15 @@ impl Bank {
             self.minimum_vote_account_balance_for_vat(),
             self.feature_set.snapshot().block_revenue_sharing,
         )
+    }
+
+    /// The live `Stakes` at this bank's slot, never VAT-filtered, including the
+    /// complete delegated stake-account map.
+    ///
+    /// Unlike [`Self::get_top_epoch_stakes`], this remains independent of
+    /// SIMD-0357, whose filtering rebuilds `Stakes` from vote accounts alone.
+    pub fn unfiltered_stakes(&self) -> Stakes<StakeAccount<Delegation>> {
+        self.stakes_cache.stakes().clone()
     }
 
     /// Calculates and sets block id for `bank`.

@@ -69,22 +69,27 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrayvec = { workspace = true }
 bitvec = { workspace = true }
+borsh = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
 crossbeam-channel = { workspace = true }
 dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 futures = { workspace = true }
+histogram = { workspace = true }
 itertools = { workspace = true }
+jito-protos = { workspace = true }
 lazy-lru = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 min-max-heap = { workspace = true }
 num_cpus = { workspace = true }
 num_enum = { workspace = true }
+prio-graph = { workspace = true }
 qualifier_attr = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rts-alloc = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
@@ -125,6 +130,7 @@ solana-message = { workspace = true }
 solana-metrics = { workspace = true }
 solana-native-token = { workspace = true }
 solana-net-utils = { workspace = true }
+solana-nohash-hasher = { workspace = true }
 solana-nonce = { workspace = true, features = ["wincode"] }
 solana-packet = { workspace = true }
 solana-perf = { workspace = true }
@@ -173,7 +179,9 @@ sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
+tonic = { workspace = true, features = ["channel", "codegen", "server", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
 trees = { workspace = true }
 wincode = { workspace = true }
 
@@ -186,8 +194,10 @@ sysctl = { workspace = true }
 [dev-dependencies]
 agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["agave-unstable-api"] }
 bencher = { workspace = true }
+bincode = { workspace = true }
 bitvec = { workspace = true }
 criterion = { workspace = true }
+serde_json = { workspace = true }
 serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["wincode"] }
 solana-bpf-loader-program = { path = "../programs/bpf_loader", default-features = false, features = ["agave-unstable-api", "svm-internal"] }
@@ -213,6 +223,7 @@ solana-vote-program = { path = "../programs/vote", features = ["agave-unstable-a
 spl-memo-interface = { workspace = true }
 static_assertions = { workspace = true }
 test-case = { workspace = true }
+tonic = { workspace = true, features = ["router"] }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dev-dependencies]
 jemallocator = { workspace = true }
@@ -223,6 +234,10 @@ harness = false
 
 [[bench]]
 name = "shredder"
+harness = false
+
+[[bench]]
+name = "proto_to_packet"
 harness = false
 
 [lints]

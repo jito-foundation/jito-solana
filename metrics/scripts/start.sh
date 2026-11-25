@@ -79,7 +79,7 @@ docker run \
   --detach \
   --name=influxdb \
   --net=influxdb \
-  --publish 8086:8086 \
+  --publish 127.0.0.1:8086:8086 \
   --user "$(id -u):$(id -g)" \
   --volume "$PWD"/influxdb.conf:/etc/influxdb/influxdb.conf:ro \
   --volume "$PWD"/lib/influxdb:/var/lib/influxdb \
@@ -97,7 +97,7 @@ docker run \
   --detach \
   --name=grafana \
   --net=influxdb \
-  --publish 3000:3000 \
+  --publish 127.0.0.1:3000:3000 \
   --user "$(id -u):$(id -g)" \
   --env-file "$PWD"/lib/grafana-env-file \
   --volume "$PWD"/grafana.ini:/grafana.ini:ro \

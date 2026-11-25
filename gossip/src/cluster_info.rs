@@ -73,6 +73,7 @@ use {
         streamer::{ChannelSend, PacketBatchReceiver},
     },
     solana_time_utils::timestamp,
+    solana_version::ClientId,
     std::{
         borrow::Borrow,
         collections::{HashMap, HashSet},
@@ -2179,6 +2180,11 @@ impl ClusterInfo {
             shred_version,
         );
         (contact_info, gossip_socket, None)
+    }
+
+    pub fn set_client_id(&self, client_id: ClientId) {
+        self.my_contact_info.write().version.set_client(client_id);
+        self.refresh_my_gossip_contact_info();
     }
 }
 

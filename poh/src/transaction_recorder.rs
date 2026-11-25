@@ -50,10 +50,13 @@ impl TransactionRecorder {
     /// Hashes `transactions` and sends them to the block creation loop for recording. Waits for
     /// response up to 1s.
     /// Panics on unexpected (non-`MaxHeightReached`) errors.
+    /// `reschedule_on_sad_handover` must be false when the transactions have all-or-nothing
+    /// execution semantics that ordinary ingress cannot preserve.
     pub fn record_transactions(
         &self,
         bank_id: BankId,
         transactions: Vec<VersionedTransaction>,
+        reschedule_on_sad_handover: bool,
     ) -> RecordTransactionsSummary {
         let mut record_transactions_timings = RecordTransactionsTimings::default();
         let mut starting_transaction_index = None;
@@ -62,7 +65,8 @@ impl TransactionRecorder {
             let (hash, hash_us) = measure_us!(hash_transactions(&transactions));
             record_transactions_timings.hash_us = Saturating(hash_us);
 
-            let (res, poh_record_us) = measure_us!(self.record(bank_id, hash, transactions));
+            let (res, poh_record_us) =
+                measure_us!(self.record(bank_id, hash, transactions, reschedule_on_sad_handover,));
             record_transactions_timings.poh_record_us = Saturating(poh_record_us);
 
             match res {
@@ -106,8 +110,13 @@ impl TransactionRecorder {
         bank_id: BankId,
         mixin: Hash,
         transactions: Vec<VersionedTransaction>,
+        reschedule_on_sad_handover: bool,
     ) -> Result<Option<usize>, RecordSenderError> {
-        self.record_sender
-            .try_send(Record::new(mixin, transactions, bank_id))
+        self.record_sender.try_send(Record::new(
+            mixin,
+            transactions,
+            bank_id,
+            reschedule_on_sad_handover,
+        ))
     }
 }

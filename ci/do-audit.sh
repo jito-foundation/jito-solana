@@ -61,6 +61,29 @@ default_cargo_audit_extra_args=(
   # solana-secp256k1-recover, which verify and recover over public data.
   # The fix needs those SDK crates to move to elliptic-curve 0.14.
   --ignore RUSTSEC-2026-0387
+
+  # Crate:     webpki-roots
+  # Version:   0.26.11
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
+  # patched 1.0.10; no fixed 0.26 exists.
+  --ignore RUSTSEC-2026-0381
+
+  # Crate:     url
+  # Version:   1.7.2
+  # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
+  # Date:      2026-11-20
+  # ID:        RUSTSEC-2026-0592
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
+  # Solution:  Upgrade to >=2.5.9
+  # 2.x is patched. 1.7.2 only comes via jsonrpc-client-transports, whose ws
+  # feature is disabled, and has no fixed release. Clippy disallows both origin APIs.
+  # Remove this exception when url 1.x leaves the lockfiles.
+  --ignore RUSTSEC-2026-0592
 )
 
 xtask_cargo_audit_extra_args=(
