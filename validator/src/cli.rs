@@ -50,6 +50,9 @@ const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 // with less than 2 ticks per slot.
 const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 
+const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: u64 = 500;
+const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: u64 = 3;
+
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     let app = App::new(crate_name!())
         .about(crate_description!())
@@ -76,7 +79,14 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::wait_for_restart_window::command())
         .subcommand(commands::set_public_address::command())
         .subcommand(commands::manage_block_production::command(default_args))
-        .subcommand(commands::blockstore::command());
+        .subcommand(commands::blockstore::command())
+        // bam subcommands
+        .subcommand(commands::bam::command())
+        // jito subcommands
+        .subcommand(commands::block_engine::command())
+        .subcommand(commands::relayer::command(default_args))
+        .subcommand(commands::shred::shred_receiver_command())
+        .subcommand(commands::shred::shred_retransmit_receiver_command());
 
     commands::run::add_args(app, default_args)
         .args(&thread_args(&default_args.thread_args))
@@ -252,6 +262,7 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
                         --tpu-max-connections-per-staked-peer, but will be removed in a future \
                         release. Set both of those instead.",
     );
+    add_arg!(Arg::with_name("trust_relayer_packets").long("trust-relayer-packets"));
     add_arg!(
         // deprecated in v4.5.0
         Arg::with_name("vote_use_quic")
@@ -342,6 +353,9 @@ pub struct DefaultArgs {
     pub block_production_pacing_fill_time_millis: String,
 
     pub thread_args: DefaultThreadArgs,
+
+    pub relayer_expected_heartbeat_interval_ms: String,
+    pub relayer_max_failed_heartbeats: String,
 }
 
 impl DefaultArgs {
@@ -393,6 +407,9 @@ impl DefaultArgs {
             block_production_pacing_fill_time_millis: BankingStage::default_fill_time_millis()
                 .to_string(),
             thread_args: DefaultThreadArgs::default(),
+            relayer_expected_heartbeat_interval_ms: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
+                .to_string(),
+            relayer_max_failed_heartbeats: DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS.to_string(),
         }
     }
 }
@@ -956,6 +973,7 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 ),
         )
         .args(&pub_sub_config::args(/*test_validator:*/ true))
+        .arg(commands::bam::argument())
 }
 
 pub struct DefaultTestArgs {

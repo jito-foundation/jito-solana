@@ -2214,6 +2214,86 @@ mod tests {
         assert!(state_machine.has_no_active_task());
     }
 
+    #[test_matrix([Capability::FifoQueueing, Capability::PriorityQueueing], [false, true])]
+    fn test_implicit_programdata_read_orders_explicit_write(
+        capability: Capability,
+        loaded_program: bool,
+    ) {
+        use solana_runtime_transaction::transaction_meta::TransactionMeta;
+
+        let program = Pubkey::new_unique();
+        let programdata = Pubkey::find_program_address(
+            &[program.as_ref()],
+            &"BPFLoaderUpgradeab1e11111111111111111111111"
+                .parse()
+                .unwrap(),
+        )
+        .0;
+        let mut reader = if loaded_program {
+            transaction_with_loaded_address_with_payer(
+                program,
+                &Pubkey::new_unique(),
+                LoadedAddressAccess::Readable,
+            )
+        } else {
+            transaction_with_readonly_address(program)
+        };
+        reader.load_implicit_read_locks();
+        assert!(reader.implicit_read_locks().contains(&programdata));
+        let writer = transaction_with_writable_address(programdata);
+        let address_loader = &mut create_address_loader(None, &capability);
+        let reader_task = SchedulingStateMachine::create_task(reader, 101, address_loader);
+        let writer_task = SchedulingStateMachine::create_task(writer, 102, address_loader);
+        let mut state_machine = unsafe {
+            SchedulingStateMachine::exclusively_initialize_current_thread_for_scheduling_for_test()
+        };
+        assert_eq!(
+            state_machine
+                .schedule_task(reader_task.clone())
+                .map(|task| task.task_id()),
+            Some(101)
+        );
+        assert!(state_machine.schedule_task(writer_task.clone()).is_none());
+        assert!(state_machine.schedule_next_unblocked_task().is_none());
+        state_machine.deschedule_task(&reader_task);
+        assert_eq!(
+            state_machine
+                .schedule_next_unblocked_task()
+                .map(|task| task.task_id()),
+            Some(102)
+        );
+        state_machine.deschedule_task(&writer_task);
+        assert!(state_machine.has_no_active_task());
+
+        // A transaction that writes the same program's explicitly listed PDA
+        // must acquire a single write lock and complete, without blocking itself.
+        let combined = ReplayTransaction::from(Transaction::new_unsigned(Message::new(
+            &[Instruction {
+                program_id: Pubkey::default(),
+                accounts: vec![
+                    AccountMeta::new_readonly(program, false),
+                    AccountMeta::new(programdata, false),
+                ],
+                data: vec![],
+            }],
+            Some(&Pubkey::new_unique()),
+        )));
+        assert!(!combined.implicit_read_locks().contains(&programdata));
+        assert_eq!(
+            combined.implicit_read_locks().len(),
+            combined.account_keys().len().saturating_sub(1),
+        );
+        let combined_task = SchedulingStateMachine::create_task(combined, 103, address_loader);
+        assert_eq!(
+            state_machine
+                .schedule_task(combined_task.clone())
+                .map(|task| task.task_id()),
+            Some(103)
+        );
+        state_machine.deschedule_task(&combined_task);
+        assert!(state_machine.has_no_active_task());
+    }
+
     #[test_matrix([Capability::FifoQueueing, Capability::PriorityQueueing])]
     fn test_readonly_then_writable(capability: Capability) {
         let conflicting_address = Pubkey::new_unique();
