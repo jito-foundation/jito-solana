@@ -1,0 +1,263 @@
+//! Handles pre-locking bundle accounts so that accounts bundles touch can be reserved ahead
+
+// of time for execution. Also, ensures that ALL accounts mentioned across a bundle are locked
+// to avoid race conditions between BundleStage and BankingStage.
+//
+// For instance, imagine a bundle with three transactions and the set of accounts for each transaction
+// is: {{A, B}, {B, C}, {C, D}}. We need to lock A, B, and C even though only one is executed at a time.
+// Imagine BundleStage is in the middle of processing {C, D} and we didn't have a lock on accounts {A, B, C}.
+// In this situation, there's a chance that BankingStage can process a transaction containing A or B
+// and commit the results before the bundle completes. By the time the bundle commits the new account
+// state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
+// replayed improperly and that leader would have produced an invalid block.
+use {
+    ahash::HashMap,
+    solana_accounts_db::{
+        account_locks::validate_account_locks, accounts::TransactionAccountLocksIterator,
+    },
+    solana_pubkey::Pubkey,
+    solana_runtime::bank::Bank,
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
+    std::{
+        collections::hash_map::Entry,
+        sync::{Arc, Mutex, MutexGuard},
+    },
+    thiserror::Error,
+};
+
+#[derive(Clone, Error, Debug)]
+pub enum BundleAccountLockerError {
+    #[error("locking error")]
+    LockingError,
+}
+
+pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
+
+#[derive(Default, Clone)]
+pub struct BundleAccountLocks {
+    read_locks: HashMap<Pubkey, u64>,
+    write_locks: HashMap<Pubkey, u64>,
+}
+
+impl BundleAccountLocks {
+    pub fn read_locks(&self) -> &HashMap<Pubkey, u64> {
+        &self.read_locks
+    }
+
+    pub fn write_locks(&self) -> &HashMap<Pubkey, u64> {
+        &self.write_locks
+    }
+
+    pub fn lock_accounts<'a, T: Iterator<Item = (&'a Pubkey, bool)>, I: IntoIterator<Item = T>>(
+        &mut self,
+        transaction_locks: I,
+    ) {
+        for transaction_lock in transaction_locks {
+            for (acc, writable) in transaction_lock {
+                if writable {
+                    *self.write_locks.entry(*acc).or_insert(0) += 1;
+                } else {
+                    *self.read_locks.entry(*acc).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    pub fn unlock_accounts<
+        'a,
+        T: Iterator<Item = (&'a Pubkey, bool)>,
+        I: IntoIterator<Item = T>,
+    >(
+        &mut self,
+        transaction_locks: I,
+    ) {
+        for transaction_lock in transaction_locks {
+            for (acc, writable) in transaction_lock {
+                let locks = if writable {
+                    &mut self.write_locks
+                } else {
+                    &mut self.read_locks
+                };
+                if let Entry::Occupied(mut entry) = locks.entry(*acc) {
+                    *entry.get_mut() = entry.get().saturating_sub(1);
+                    if *entry.get() == 0 {
+                        entry.remove();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct BundleAccountLocker {
+    account_locks: Arc<Mutex<BundleAccountLocks>>,
+}
+
+impl BundleAccountLocker {
+    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
+    /// doesn't lock anything currently locked in the BundleAccountLocker
+    pub fn account_locks(&self) -> MutexGuard<'_, BundleAccountLocks> {
+        self.account_locks.lock().unwrap()
+    }
+
+    /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
+    /// When a LockedBundle is dropped, the accounts are automatically unlocked
+    pub fn lock_bundle<Tx: TransactionWithMeta>(
+        &self,
+        transactions: &[Tx],
+        bank: &Bank,
+    ) -> BundleAccountLockerResult<()> {
+        let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
+        self.account_locks
+            .lock()
+            .unwrap()
+            .lock_accounts(transaction_locks);
+        Ok(())
+    }
+
+    /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
+    pub fn unlock_bundle<Tx: TransactionWithMeta>(
+        &self,
+        transactions: &[Tx],
+        bank: &Bank,
+    ) -> BundleAccountLockerResult<()> {
+        let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
+        self.account_locks
+            .lock()
+            .unwrap()
+            .unlock_accounts(transaction_locks);
+        Ok(())
+    }
+
+    /// Returns the read and write locks for this bundle
+    /// Each lock type contains a HashMap which maps Pubkey to number of locks held
+    fn get_transaction_locks<'a, Tx: TransactionWithMeta>(
+        transactions: &'a [Tx],
+        bank: &Bank,
+    ) -> BundleAccountLockerResult<
+        impl Iterator<Item = impl Iterator<Item = (&'a Pubkey, bool)> + use<'a, Tx>> + use<'a, Tx>,
+    > {
+        let transaction_account_lock_limits = bank.get_transaction_account_lock_limits();
+        for tx in transactions {
+            if transaction_account_lock_limits
+                .for_version(tx.version())
+                .and_then(|limit| validate_account_locks(tx.account_keys(), limit))
+                .is_err()
+            {
+                return Err(BundleAccountLockerError::LockingError);
+            }
+        }
+
+        Ok(transactions
+            .iter()
+            .map(|tx| TransactionAccountLocksIterator::new(tx).accounts_with_is_writable()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        crate::{
+            banking_stage::transaction_scheduler::{
+                receive_and_buffer::TransactionViewReceiveAndBuffer,
+                transaction_state_container::RuntimeTransactionView,
+            },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
+        },
+        ahash::HashMap,
+        solana_genesis_config::GenesisConfig,
+        solana_keypair::Keypair,
+        solana_ledger::genesis_utils::create_genesis_config,
+        solana_perf::packet::BytesPacket,
+        solana_pubkey::Pubkey,
+        solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
+        solana_signer::Signer,
+        solana_system_transaction::transfer,
+        solana_transaction::versioned::VersionedTransaction,
+        std::collections::HashSet,
+    };
+
+    fn scheduled_transfer(
+        bank: &Bank,
+        genesis_config: &GenesisConfig,
+        from: &Keypair,
+        to: &Pubkey,
+    ) -> Vec<RuntimeTransactionView> {
+        let tx = VersionedTransaction::from(transfer(from, to, 1, genesis_config.hash()));
+        let packet = BytesPacket::from_data(&tx).unwrap();
+        let mut tx = TransactionViewReceiveAndBuffer::try_handle_packet(
+            bytes::Bytes::copy_from_slice(packet.data(..).unwrap()),
+            bank,
+            bank,
+            bank.get_transaction_account_lock_limits(),
+            &HashSet::default(),
+        )
+        .unwrap();
+        vec![tx.take_transaction_for_scheduling().0]
+    }
+
+    fn assert_locks<const N: usize>(locker: &BundleAccountLocker, write_locks: [Pubkey; N]) {
+        let locks = locker.account_locks();
+        assert_eq!(
+            locks.write_locks().keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from_iter(write_locks)
+        );
+        assert_eq!(
+            locks.read_locks().keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from_iter([solana_system_interface::program::id()])
+        );
+    }
+
+    #[test]
+    fn test_simple_lock_bundles() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let (bank, _) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let bundle_account_locker = BundleAccountLocker::default();
+
+        let kp0 = Keypair::new();
+        let kp1 = Keypair::new();
+        let mint = mint_keypair.pubkey();
+
+        let tx0 = scheduled_transfer(&bank, &genesis_config, &mint_keypair, &kp0.pubkey());
+        let tx1 = scheduled_transfer(&bank, &genesis_config, &mint_keypair, &kp1.pubkey());
+
+        bundle_account_locker.lock_bundle(&tx0, &bank).unwrap();
+
+        assert_locks(&bundle_account_locker, [mint, kp0.pubkey()]);
+
+        bundle_account_locker.lock_bundle(&tx1, &bank).unwrap();
+        assert_eq!(
+            bundle_account_locker.account_locks().write_locks(),
+            &HashMap::from_iter([(mint, 2), (kp0.pubkey(), 1), (kp1.pubkey(), 1)])
+        );
+        assert_eq!(
+            bundle_account_locker.account_locks().read_locks(),
+            &HashMap::from_iter([(solana_system_interface::program::id(), 2)])
+        );
+
+        bundle_account_locker.unlock_bundle(&tx0, &bank).unwrap();
+
+        assert_locks(&bundle_account_locker, [mint, kp1.pubkey()]);
+
+        bundle_account_locker.unlock_bundle(&tx1, &bank).unwrap();
+
+        assert!(
+            bundle_account_locker
+                .account_locks()
+                .write_locks()
+                .is_empty()
+        );
+        assert!(
+            bundle_account_locker
+                .account_locks()
+                .read_locks()
+                .is_empty()
+        );
+    }
+}

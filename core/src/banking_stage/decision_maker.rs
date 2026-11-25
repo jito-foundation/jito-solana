@@ -55,15 +55,32 @@ impl DecisionMaker {
         }
     }
 
+    #[inline]
     pub(crate) fn make_consume_or_forward_decision(&self) -> BufferedPacketsDecision {
-        self.make_consume_or_forward_decision_at(Instant::now())
+        self.make_decision_at(Instant::now(), false)
     }
 
+    #[inline]
+    pub(crate) fn make_atomic_consume_or_forward_decision(&self) -> BufferedPacketsDecision {
+        self.make_decision_at(Instant::now(), true)
+    }
+
+    #[cfg(test)]
     fn make_consume_or_forward_decision_at(&self, now: Instant) -> BufferedPacketsDecision {
+        self.make_decision_at(now, false)
+    }
+
+    fn make_decision_at(&self, now: Instant, require_atomic_bank: bool) -> BufferedPacketsDecision {
         let state = self.shared_leader_state.load();
 
         if let Some(working_bank) = state.working_bank() {
-            BufferedPacketsDecision::Consume(working_bank.clone())
+            if require_atomic_bank && !state.atomic_batches_enabled() {
+                BufferedPacketsDecision::Hold
+            } else {
+                BufferedPacketsDecision::Consume(working_bank.clone())
+            }
+        } else if state.bank_slot().is_some() {
+            BufferedPacketsDecision::Hold
         } else if self.migration_status.is_alpenglow_enabled() {
             self.make_decision_alpenglow(&state, now)
         } else {
@@ -214,6 +231,29 @@ mod tests {
             BufferedPacketsDecision::Forward
         );
 
+        // Atomic batches wait until the optimistic parent is confirmed, even after migration.
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(Arc::new(Bank::default_for_tests())),
+            0,
+            None,
+            None,
+            false,
+        )));
+        assert_matches!(
+            decision_maker.make_decision_at(started_at, true),
+            BufferedPacketsDecision::Hold
+        );
+        shared_leader_state.load().enable_atomic_batches();
+        assert_matches!(
+            decision_maker.make_decision_at(started_at, true),
+            BufferedPacketsDecision::Consume(_)
+        );
+        shared_leader_state.set_bank_replacement();
+        assert_matches!(
+            decision_maker.make_consume_or_forward_decision_at(started_at),
+            BufferedPacketsDecision::Hold
+        );
+
         // A working bank takes precedence over timing and schedule information.
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(Arc::new(Bank::default_for_tests())),
@@ -244,6 +284,13 @@ mod tests {
             decision_maker.make_consume_or_forward_decision(),
             BufferedPacketsDecision::Forward
         );
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            None, 0, None, None, false,
+        )));
+        assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
+            BufferedPacketsDecision::Forward
+        );
 
         // Active bank.
         shared_leader_state.store(Arc::new(LeaderState::new(
@@ -253,9 +300,31 @@ mod tests {
             None,
         )));
         assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
+            BufferedPacketsDecision::Consume(_)
+        );
+
+        shared_leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(bank.clone()),
+            0,
+            None,
+            None,
+            false,
+        )));
+        assert_matches!(
             decision_maker.make_consume_or_forward_decision(),
             BufferedPacketsDecision::Consume(_)
         );
+        assert_matches!(
+            decision_maker.make_atomic_consume_or_forward_decision(),
+            BufferedPacketsDecision::Hold
+        );
+
+        shared_leader_state.set_bank_replacement();
+        assert!(matches!(
+            decision_maker.make_consume_or_forward_decision(),
+            BufferedPacketsDecision::Hold
+        ));
         shared_leader_state.store(Arc::new(LeaderState::new(None, 0, None, None)));
 
         // Will be leader shortly - Hold
