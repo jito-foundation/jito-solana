@@ -15,10 +15,11 @@ use {
             FromClapArgMatches,
             run::{
                 args::{self, RunArgs},
-                storage,
+                storage, tip_router,
             },
         },
         ledger_lockfile, lock_ledger,
+        shred_receiver_addresses::parse_shred_receiver_addresses,
     },
     agave_votor::vote_history_storage,
     agave_votor_transport::MAX_ENDPOINTS,
@@ -32,9 +33,11 @@ use {
     solana_clock::Slot,
     solana_core::{
         banking_stage::transaction_scheduler::scheduler_controller::SchedulerConfig,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::repair_handler::RepairHandlerType,
         snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{
             BlockProductionMethod, BlockVerificationMethod, SchedulerPacing, Validator,
             ValidatorConfig, ValidatorLogConfig, ValidatorStartProgress,
@@ -62,11 +65,13 @@ use {
         collections::HashSet,
         env,
         fs::File,
+        io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        num::NonZeroUsize,
+        num::{NonZeroU64, NonZeroUsize},
         path::PathBuf,
         str::{self, FromStr},
         sync::{Arc, RwLock, atomic::AtomicBool},
+        time::Duration,
     },
 };
 
@@ -437,6 +442,51 @@ pub fn execute(
         );
     }
 
+    let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
+
+    let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
+    let mut extra_bank_notification_senders = Vec::new();
+    let tip_router_service_setup =
+        tip_router::setup(matches, &mut extra_bank_notification_senders)?;
+
+    let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig {
+        block_engine_url: value_of(matches, "block_engine_url").unwrap_or_default(),
+        disable_block_engine_autoconfig: matches.is_present("disable_block_engine_autoconfig"),
+        trust_packets: matches.is_present("trust_block_engine_packets"),
+    }));
+
+    let bam_url = Arc::new(ArcSwap::from_pointee(
+        crate::commands::bam::extract_bam_url(matches)?,
+    ));
+
+    // Defaults are set in cli definition, safe to use unwrap() here
+    let expected_heartbeat_interval_ms =
+        value_of::<NonZeroU64>(matches, "relayer_expected_heartbeat_interval_ms")
+            .expect("couldn't parse relayer_expected_heartbeat_interval_ms")
+            .get();
+    let max_failed_heartbeats = value_of::<NonZeroU64>(matches, "relayer_max_failed_heartbeats")
+        .expect("couldn't parse relayer_max_failed_heartbeats")
+        .get();
+
+    let relayer_config = Arc::new(ArcSwap::from_pointee(RelayerConfig {
+        relayer_url: value_of(matches, "relayer_url").unwrap_or_default(),
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
+    }));
+
+    let parse_receiver_addresses = |arg: &str| {
+        parse_shred_receiver_addresses(matches.values_of(arg).into_iter().flatten())
+            .map(|addresses| Arc::new(ArcSwap::from_pointee(addresses)))
+            .map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("{arg} invalid: {err}"))
+            })
+    };
+    let shred_receiver_addresses = parse_receiver_addresses("shred_receiver_address")?;
+    let shred_retransmit_receiver_addresses =
+        parse_receiver_addresses("shred_retransmit_receiver_address")?;
+
     let mut validator_config = ValidatorConfig {
         log_config,
         require_vote_history: !matches.is_present("do_not_require_vote_history"),
@@ -469,7 +519,7 @@ pub fn execute(
             )
         }),
         pubsub_config: run_args.pub_sub_config,
-        voting_disabled: matches.is_present("no_voting") || restricted_repair_only_mode,
+        voting_disabled,
         wait_for_supermajority: value_t!(matches, "wait_for_supermajority", Slot).ok(),
         known_validators: run_args.known_validators,
         repair_validators,
@@ -551,6 +601,15 @@ pub fn execute(
             "snapshot_packager_niceness_adj",
             i8
         ),
+        // jito config
+        relayer_config,
+        block_engine_config,
+        shred_receiver_addresses,
+        shred_retransmit_receiver_addresses,
+        multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+        tip_manager_config,
+        bam_url,
+        disable_multicast_shred_check: matches.is_present("disable_multicast_shred_check"),
     };
 
     storage::prepare(
@@ -616,6 +675,8 @@ pub fn execute(
             vote_history_storage: validator_config.vote_history_storage.clone(),
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
+            enable_scheduler_bindings: validator_config.enable_scheduler_bindings,
+            bam_url: validator_config.bam_url.clone(),
         },
     );
 
@@ -696,6 +757,7 @@ pub fn execute(
     // the one pushed by bootstrap.
     node.info.hot_swap_pubkey(identity_keypair.pubkey());
 
+    let tip_router_exit = exit.clone();
     let validator = Validator::new_with_exit(
         node,
         identity_keypair,
@@ -710,17 +772,31 @@ pub fn execute(
         tpu_config,
         admin_service_post_init,
         xdp_transmit_setup,
+        extra_bank_notification_senders,
         exit,
     )
     .map_err(|err| format!("{err:?}"))?;
 
-    if let Some(filename) = init_complete_file {
-        File::create(filename).map_err(|err| format!("unable to create {filename}: {err}"))?;
+    let tip_router_service = match tip_router::start(tip_router_service_setup, tip_router_exit) {
+        Ok(service) => service,
+        Err(err) => {
+            validator.close();
+            return Err(err);
+        }
+    };
+    if let Some(filename) = init_complete_file
+        && let Err(err) = File::create(filename)
+    {
+        validator.close();
+        tip_router::join(tip_router_service);
+        return Err(format!("unable to create {filename}: {err}").into());
     }
     info!("Validator initialized");
-    validator.listen_for_signals()?;
+    let listen_result = validator.listen_for_signals();
     validator.close();
+    tip_router::join(tip_router_service);
     info!("Validator exiting");
+    listen_result?;
 
     Ok(())
 }
@@ -772,4 +848,35 @@ fn get_cluster_shred_version(entrypoints: &[SocketAddr], bind_address: IpAddr) -
         }
     }
     None
+}
+
+fn tip_manager_config_from_matches(
+    matches: &ArgMatches,
+    voting_disabled: bool,
+) -> TipManagerConfig {
+    // A voting validator needs every tip argument; a non-voting one gets placeholders.
+    let pubkey = |name: &str| {
+        pubkey_of(matches, name).unwrap_or_else(|| {
+            assert!(
+                voting_disabled,
+                "--{} argument required when validator is voting",
+                name.replace('_', "-")
+            );
+            Pubkey::new_unique()
+        })
+    };
+    let commission_bps = value_t!(matches, "commission_bps", u16);
+    TipManagerConfig {
+        tip_payment_program_id: pubkey("tip_payment_program_pubkey"),
+        tip_distribution_program_id: pubkey("tip_distribution_program_pubkey"),
+        tip_distribution_account_config: TipDistributionAccountConfig {
+            merkle_root_upload_authority: pubkey("merkle_root_upload_authority"),
+            vote_account: pubkey("vote_account"),
+            commission_bps: if voting_disabled {
+                commission_bps.unwrap_or_default()
+            } else {
+                commission_bps.expect("--commission-bps argument required when validator is voting")
+            },
+        },
+    }
 }

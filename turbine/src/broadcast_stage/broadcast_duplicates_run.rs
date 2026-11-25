@@ -1,6 +1,9 @@
 use {
     super::*,
-    crate::{broadcast_stage::broadcast_utils::BroadcastItem, cluster_nodes::ClusterNodesCache},
+    crate::{
+        ShredReceiverAddresses, broadcast_stage::broadcast_utils::BroadcastItem,
+        cluster_nodes::ClusterNodesCache,
+    },
     agave_votor::event::VotorEventSender,
     crossbeam_channel::Sender,
     itertools::Itertools,
@@ -11,7 +14,7 @@ use {
     solana_signature::Signature,
     solana_signer::Signer,
     solana_system_transaction as system_transaction,
-    std::collections::HashSet,
+    std::{collections::HashSet, net::SocketAddr},
 };
 
 // Shreds in a Merkle FEC set share a signature, while duplicate variants share shred IDs.
@@ -342,6 +345,11 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {

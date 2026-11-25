@@ -38,6 +38,7 @@ wincode = { workspace = true }
 agave-logger = { path = "../logger", features = ["agave-unstable-api"] }
 solana-clock = { workspace = true }
 solana-commitment-config = { workspace = true }
+solana-fee-calculator = { workspace = true }
 solana-hash = { workspace = true }
 solana-keypair = { workspace = true }
 solana-pubkey = { workspace = true }

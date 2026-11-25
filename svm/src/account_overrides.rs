@@ -13,7 +13,7 @@ pub struct AccountOverrides {
 
 impl AccountOverrides {
     /// Insert or remove an account with a given pubkey to/from the list of overrides.
-    fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
+    pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
         match account {
             Some(account) => self.accounts.insert(*pubkey, account),
             None => self.accounts.remove(pubkey),
@@ -28,8 +28,16 @@ impl AccountOverrides {
     }
 
     /// Gets the account if it's found in the list of overrides
-    pub(crate) fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
+    pub fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
         self.accounts.get(pubkey)
+    }
+
+    pub fn accounts(&self) -> &HashMap<Pubkey, AccountSharedData> {
+        &self.accounts
+    }
+
+    pub fn merge(&mut self, other: AccountOverrides) {
+        self.accounts.extend(other.accounts);
     }
 }
 
