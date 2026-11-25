@@ -389,15 +389,18 @@ impl PohRecorder {
         self.grace_ticks = grace_ticks;
 
         let state = self.shared_leader_state.load();
-        let new_state = Arc::new(LeaderState::new(
+        let mut new_state = LeaderState::new_with_atomic_batches_enabled(
             state.working_bank().cloned(),
             state.tick_height(),
             leader_first_tick_height,
             next_leader_slot,
-        ));
+            state.atomic_batches_enabled(),
+        );
+        // Carried, not derived from `working_bank`, which is `None` during a bank replacement.
+        new_state.bank_slot = state.bank_slot();
         drop(state);
 
-        self.shared_leader_state.store(new_state);
+        self.shared_leader_state.store(Arc::new(new_state));
     }
 
     /// Send the block marker to be broadcast
@@ -1426,6 +1429,7 @@ mod tests {
             false,
         );
         assert!(poh_recorder.working_bank.is_some());
+        poh_recorder.update_next_leader_slot(Some((8, 11))); // must keep the gate closed
         poh_recorder.clear_bank(true);
         assert!(poh_recorder.working_bank.is_none());
         assert!(
@@ -2116,6 +2120,7 @@ mod tests {
         poh_recorder.set_bank_for_test(bank.clone());
         assert_eq!(bank.slot(), 0);
         let shared_leader_state = poh_recorder.shared_leader_state();
+        poh_recorder.update_next_leader_slot(Some((4, 4))); // must not close an open gate
         let old_state = shared_leader_state.load();
         poh_recorder.set_bank_replacement();
         assert!(Arc::ptr_eq(old_state.working_bank().unwrap(), &bank));
@@ -2133,6 +2138,7 @@ mod tests {
             replacement_state.next_leader_slot_range(),
             old_state.next_leader_slot_range()
         );
+        poh_recorder.update_next_leader_slot(Some((8, 11))); // must keep the replacement slot
         poh_recorder.reset_for_bank_replacement(bank.clone(), Some((4, 4)));
         let reconstructed_state = shared_leader_state.load();
         assert!(reconstructed_state.working_bank().is_none());
