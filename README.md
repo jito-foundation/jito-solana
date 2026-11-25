@@ -4,13 +4,16 @@
   </a>
 </p>
 
-[![Agave validator](https://img.shields.io/crates/v/agave-validator.svg)](https://crates.io/crates/agave-validator)
-[![Agave documentation](https://docs.rs/agave-validator/badge.svg)](https://docs.rs/agave-validator)
-[![Build status](https://badge.buildkite.com/b2b925facfdbb575573084bb4b7e1f1ce7f395239672941bf7.svg?branch=master)](https://buildkite.com/anza/agave-secondary)
-[![Release status](https://github.com/anza-xyz/agave/actions/workflows/release.yml/badge.svg)](https://github.com/anza-xyz/agave/actions/workflows/release.yml)
-[![codecov](https://codecov.io/gh/anza-xyz/agave/branch/master/graph/badge.svg)](https://codecov.io/gh/anza-xyz/agave)
+[![Build status](https://badge.buildkite.com/3a7c88c0f777e1a0fddacc190823565271ae4c251ef78d83a8.svg)](https://buildkite.com/jito/jito-solana)
 
-# Building
+# About
+
+This repository contains Jito's fork of the Solana validator.
+
+We recommend checking out our [Gitbook](https://jito-foundation.gitbook.io/mev/jito-solana/building-the-software) for
+more detailed instructions on building and running Jito-Solana.
+
+---
 
 ## **1. Install rustc, cargo and rustfmt.**
 
@@ -40,8 +43,8 @@ $ sudo dnf install openssl-devel systemd-devel pkg-config zlib-devel llvm clang 
 ## **2. Download the source code.**
 
 ```bash
-$ git clone https://github.com/anza-xyz/agave.git
-$ cd agave
+$ git clone https://github.com/jito-foundation/jito-solana.git
+$ cd jito-solana
 ```
 
 ## **3. Build.**
@@ -73,6 +76,24 @@ $ sudo setcap 'cap_net_admin,cap_net_raw,cap_bpf,cap_perfmon+eip' <path-to-agave
 
 ```bash
 $ ./cargo nextest run --profile ci  --cargo-profile ci --config-file .config/nextest.toml
+```
+
+### Local testing
+
+From the repository root, start a single-node test validator with a built-in faucet.
+
+```bash
+git submodule update --init --recursive
+./cargo run --locked -p agave-validator --bin solana-test-validator --features agave-unstable-api -- --ledger local-test-ledger
+```
+
+JSON-RPC is available at `http://127.0.0.1:8899`. Press Ctrl+C to stop the validator.
+
+The bundle tests start their own local fixtures. Run them from the repository root.
+
+```bash
+./cargo test --locked -p solana-core --features agave-unstable-api,dev-context-only-utils --lib bundle_stage::tests
+./cargo test --locked -p solana-rpc-test --features agave-unstable-api --test simulate_bundle
 ```
 
 ### Starting a local testnet

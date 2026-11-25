@@ -84,14 +84,27 @@ default_cargo_audit_extra_args=(
   --ignore RUSTSEC-2026-0544
 
   # Crate:     url
-  # Version:   2.5.8 (1.7.2 via jsonrpc-client-transports)
+  # Version:   1.7.2
   # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
-  # Date:      2026-11-22
+  # Date:      2026-11-20
   # ID:        RUSTSEC-2026-0592
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
   # Solution:  Upgrade to >=2.5.9
-  # Agave Ok:  Agave never calls `Url::origin` or `url::quirks::origin` (clippy disallows them).
+  # 2.x is patched. 1.7.2 only comes via jsonrpc-client-transports, whose ws
+  # feature is disabled, and has no fixed release. Clippy disallows both origin APIs.
+  # Remove this exception when url 1.x leaves the lockfiles.
   --ignore RUSTSEC-2026-0592
+
+  # Crate:     webpki-roots
+  # Version:   0.26.11
+  # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+  # Date:      2026-10-19
+  # ID:        RUSTSEC-2026-0381
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0381
+  # Solution:  Upgrade to >=1.0.10
+  # 0.26.11 is a shim that re-exports the 1.x roots, which resolve to
+  # patched 1.0.10; no fixed 0.26 exists.
+  --ignore RUSTSEC-2026-0381
 )
 
 xtask_cargo_audit_extra_args=(
@@ -114,17 +127,6 @@ xtask_cargo_audit_extra_args=(
   # Agave Ok:  only in xtask's lockfile as an optional dep of Reqwest's HTTP/3 feature, which
   # xtask does not enable, so upstream Quinn and quinn-udp are never built.
   --ignore RUSTSEC-2026-0538
-
-  # Crate:     url
-  # Version:   2.5.8
-  # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
-  # Date:      2026-11-22
-  # ID:        RUSTSEC-2026-0592
-  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
-  # Solution:  Upgrade to >=2.5.9
-  # Agave Ok:  only octocrab and reqwest use url in xtask, and neither calls `Url::origin`
-  # or `url::quirks::origin`. xtask doesn't call them either.
-  --ignore RUSTSEC-2026-0592
 )
 
 lock_files="$(git ls-files ':**Cargo.lock')"

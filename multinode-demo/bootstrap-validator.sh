@@ -133,6 +133,7 @@ args+=(
   --no-incremental-snapshots
   --identity "$identity"
   --vote-account "$vote_account"
+  --merkle-root-upload-authority "$identity"
   --rpc-faucet-address 127.0.0.1:9900
   --no-poh-speed-test
   --no-os-network-limits-test
@@ -143,6 +144,9 @@ args+=(
 )
 default_arg --gossip-port 8001
 default_arg --log -
+default_arg --tip-payment-program-pubkey "DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT"
+default_arg --tip-distribution-program-pubkey "FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM"
+default_arg --commission-bps 0
 
 
 pid=

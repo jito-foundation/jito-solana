@@ -68,7 +68,7 @@ pub fn count_valid_packets<'a>(batches: impl IntoIterator<Item = &'a PacketBatch
         .sum()
 }
 
-fn is_simple_vote_transaction_view<D: AsRef<[u8]>>(view: &SanitizedTransactionView<D>) -> bool {
+pub fn is_simple_vote_transaction_view<D: AsRef<[u8]>>(view: &SanitizedTransactionView<D>) -> bool {
     // vote could have 1 or 2 sigs; zero sig has already been excluded by sanitization.
     if view.num_signatures() > 2 {
         return false;
