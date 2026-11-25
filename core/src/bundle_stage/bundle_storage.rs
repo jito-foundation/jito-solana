@@ -18,7 +18,7 @@ use {
     solana_accounts_db::account_locks::TransactionAccountLockLimits,
     solana_clock::Slot,
     solana_pubkey::Pubkey,
-    solana_runtime::bank::{Bank, BankId},
+    solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_meta::TransactionMeta,
     std::collections::VecDeque,
 };
@@ -35,16 +35,12 @@ pub enum BundleStorageError {
 
 struct BundleTransactionId {
     container_ids: SmallVec<[usize; 5]>,
-    sanitized_bank_id: BankId,
-    sanitized_bank_slot: Slot,
 }
 
 pub struct BundleStorageEntry {
     pub container_ids: SmallVec<[usize; 5]>,
     pub transactions: SmallVec<[RuntimeTransactionView; 5]>,
     pub max_ages: SmallVec<[MaxAge; 5]>,
-    sanitized_bank_id: BankId,
-    sanitized_bank_slot: Slot,
 }
 
 /// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
@@ -98,8 +94,6 @@ impl BundleStorage {
         self.cost_model_buffered_bundles
             .push_back(BundleTransactionId {
                 container_ids: bundle.container_ids,
-                sanitized_bank_id: bundle.sanitized_bank_id,
-                sanitized_bank_slot: bundle.sanitized_bank_slot,
             });
     }
 
@@ -115,7 +109,8 @@ impl BundleStorage {
 
     /// Pops a bundle from the unprocessed_bundles queue and returns it as a BundleStorageEntry.
     /// Returns None if there are no bundles to pop.
-    pub fn pop_bundle(&mut self, slot: Slot, bank_id: BankId) -> Option<BundleStorageEntry> {
+    /// Bundles survive a same-slot bank replacement; execution re-checks fork-dependent state.
+    pub fn pop_bundle(&mut self, slot: Slot) -> Option<BundleStorageEntry> {
         if slot != self.last_slot {
             // the cost_model_buffered_bundles has the oldest bundles at the front of the queue
             // we need to pop from the back of that queue and insert to the front of the unprocessed_bundles queue so by the time we reach the front,
@@ -128,39 +123,26 @@ impl BundleStorage {
         }
 
         // only want to pop from the unprocessed bundles queue and wait for slot boundary to refresh from cost_model_buffered_bundles
-        while let Some(bundle) = self.unprocessed_bundles.pop_front() {
-            if bundle.sanitized_bank_slot == slot && bundle.sanitized_bank_id != bank_id {
-                for container_id in bundle.container_ids {
-                    self.transaction_view_state_container
-                        .remove_by_id(container_id);
-                }
-                continue;
-            }
+        let bundle = self.unprocessed_bundles.pop_front()?;
+        let (bundle_transactions, bundle_max_ages): (
+            SmallVec<[RuntimeTransactionView; 5]>,
+            SmallVec<[MaxAge; 5]>,
+        ) = bundle
+            .container_ids
+            .iter()
+            .map(|id| {
+                self.transaction_view_state_container
+                    .get_mut_transaction_state(*id)
+                    .unwrap()
+                    .take_transaction_for_scheduling()
+            })
+            .unzip();
 
-            let (bundle_transactions, bundle_max_ages): (
-                SmallVec<[RuntimeTransactionView; 5]>,
-                SmallVec<[MaxAge; 5]>,
-            ) = bundle
-                .container_ids
-                .iter()
-                .map(|id| {
-                    self.transaction_view_state_container
-                        .get_mut_transaction_state(*id)
-                        .unwrap()
-                        .take_transaction_for_scheduling()
-                })
-                .unzip();
-
-            return Some(BundleStorageEntry {
-                container_ids: bundle.container_ids,
-                transactions: bundle_transactions,
-                max_ages: bundle_max_ages,
-                sanitized_bank_id: bundle.sanitized_bank_id,
-                sanitized_bank_slot: bundle.sanitized_bank_slot,
-            });
-        }
-
-        None
+        Some(BundleStorageEntry {
+            container_ids: bundle.container_ids,
+            transactions: bundle_transactions,
+            max_ages: bundle_max_ages,
+        })
     }
 
     pub fn insert_bundle(
@@ -243,11 +225,8 @@ impl BundleStorage {
             return Err(BundleStorageError::DuplicateTransaction);
         }
 
-        self.unprocessed_bundles.push_back(BundleTransactionId {
-            container_ids,
-            sanitized_bank_id: working_bank.bank_id(),
-            sanitized_bank_slot: working_bank.slot(),
-        });
+        self.unprocessed_bundles
+            .push_back(BundleTransactionId { container_ids });
 
         Ok(())
     }
@@ -379,9 +358,7 @@ mod tests {
                 &HashSet::new(),
             )
             .unwrap();
-        let entry = storage
-            .pop_bundle(working_bank.slot(), working_bank.bank_id())
-            .unwrap();
+        let entry = storage.pop_bundle(working_bank.slot()).unwrap();
         assert_eq!(
             entry.transactions[0]
                 .implicit_read_locks()
@@ -564,17 +541,16 @@ mod tests {
         let mut bundle_storage = BundleStorage::with_capacity(10);
 
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let bank_id = bank.bank_id();
         let packet_1 = BytesPacket::from_data(test_tx()).unwrap();
         let packet_2 = BytesPacket::from_data(test_tx()).unwrap();
         let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert!(result.is_ok());
 
-        let bundle_storage_entry = bundle_storage.pop_bundle(bank.slot(), bank_id).unwrap();
+        let bundle_storage_entry = bundle_storage.pop_bundle(bank.slot()).unwrap();
         bundle_storage.retry_bundle(bundle_storage_entry);
 
-        assert!(bundle_storage.pop_bundle(bank.slot(), bank_id).is_none());
+        assert!(bundle_storage.pop_bundle(bank.slot()).is_none());
         assert!(bundle_storage.unprocessed_bundles.is_empty());
         assert_eq!(bundle_storage.cost_model_buffered_bundles.len(), 1);
         assert_eq!(
@@ -584,25 +560,8 @@ mod tests {
             2
         );
 
-        let bundle = bundle_storage.pop_bundle(bank.slot() + 1, bank_id).unwrap();
+        let bundle = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
         bundle_storage.destroy_bundle(bundle);
-        assert_eq!(bundle_storage.num_packets_buffered(), 0);
-
-        let packet = BytesPacket::from_data(test_tx()).unwrap();
-        bundle_storage
-            .insert_bundle(
-                VerifiedPacketBundle::new(PacketBatch::from(vec![packet])),
-                &bank,
-                &bank,
-                &HashSet::new(),
-            )
-            .unwrap();
-
-        assert!(
-            bundle_storage
-                .pop_bundle(bank.slot(), bank.bank_id_generator().next())
-                .is_none()
-        );
         assert_eq!(bundle_storage.num_packets_buffered(), 0);
     }
 
@@ -610,7 +569,6 @@ mod tests {
     fn test_retry_bundle_ordering_preserved() {
         let mut bundle_storage = BundleStorage::with_capacity(100);
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let bank_id = bank.bank_id();
 
         let tx_1 = test_tx();
         let tx_2 = test_tx();
@@ -621,12 +579,12 @@ mod tests {
             insert_tx(&mut bundle_storage, &bank, tx);
         }
 
-        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot(), bank_id).unwrap();
+        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot()).unwrap();
         assert_eq!(
             bundle_storage_entry_1.transactions[0].signatures()[0],
             tx_1.signatures[0]
         );
-        let bundle_storage_entry_2 = bundle_storage.pop_bundle(bank.slot(), bank_id).unwrap();
+        let bundle_storage_entry_2 = bundle_storage.pop_bundle(bank.slot()).unwrap();
         assert_eq!(
             bundle_storage_entry_2.transactions[0].signatures()[0],
             tx_2.signatures[0]
@@ -635,17 +593,17 @@ mod tests {
         bundle_storage.retry_bundle(bundle_storage_entry_1);
         bundle_storage.destroy_bundle(bundle_storage_entry_2);
 
-        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot() + 1, bank_id).unwrap();
+        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
         assert_eq!(
             bundle_storage_entry_1.transactions[0].signatures()[0],
             tx_1.signatures[0]
         );
-        let bundle_storage_entry_3 = bundle_storage.pop_bundle(bank.slot() + 1, bank_id).unwrap();
+        let bundle_storage_entry_3 = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
         assert_eq!(
             bundle_storage_entry_3.transactions[0].signatures()[0],
             tx_3.signatures[0]
         );
-        let bundle_storage_entry_4 = bundle_storage.pop_bundle(bank.slot() + 1, bank_id).unwrap();
+        let bundle_storage_entry_4 = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
         assert_eq!(
             bundle_storage_entry_4.transactions[0].signatures()[0],
             tx_4.signatures[0]
