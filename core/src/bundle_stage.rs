@@ -25,14 +25,13 @@ use {
     arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvTimeoutError},
     smallvec::SmallVec,
-    solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_measure::measure_us,
     solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
     solana_pubkey::Pubkey,
     solana_runtime::{
-        bank::Bank,
+        bank::{Bank, BankId},
         bank_forks::{BankForks, BankPair, SharableBanks},
         prioritization_fee_cache::PrioritizationFeeCache,
         transaction_execution::TransactionStatusSender,
@@ -347,7 +346,7 @@ impl BundleStage {
         let mut bundle_stage_metrics = BundleStageLoopMetrics::default();
         let consume_worker_metrics = ConsumeWorkerMetrics::new();
 
-        let mut last_tip_update_slot = Slot::MAX;
+        let mut last_tip_update_bank_id = None;
         while !exit.load(Ordering::Relaxed) {
             let block_engine_processing =
                 Self::block_engine_processing_enabled(&bam_enabled, &mut bundle_storage);
@@ -363,7 +362,7 @@ impl BundleStage {
                         &mut bundle_storage,
                         &bundle_account_locker,
                         &mut bundle_stage_metrics,
-                        &mut last_tip_update_slot,
+                        &mut last_tip_update_bank_id,
                         &block_builder_fee_info,
                         &tip_manager,
                         &cluster_info,
@@ -469,7 +468,7 @@ impl BundleStage {
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
-        last_tip_update_slot: &mut Slot,
+        last_tip_update_bank_id: &mut Option<BankId>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
@@ -485,7 +484,7 @@ impl BundleStage {
                     bundle_account_locker,
                     consumer,
                     bundle_stage_metrics,
-                    last_tip_update_slot,
+                    last_tip_update_bank_id,
                     block_builder_fee_info,
                     tip_manager,
                     cluster_info,
@@ -511,7 +510,7 @@ impl BundleStage {
         bundle_account_locker: &BundleAccountLocker,
         consumer: &BundleConsumer,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
-        last_tip_update_slot: &mut Slot,
+        last_tip_update_bank_id: &mut Option<BankId>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
@@ -521,7 +520,8 @@ impl BundleStage {
 
         let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
 
-        if bank.slot() != *last_tip_update_slot {
+        // Tip state lives in the bank, so a same-slot replacement bank needs its own upkeep.
+        if *last_tip_update_bank_id != Some(bank.bank_id()) {
             match Self::handle_tip_programs(
                 bank,
                 bundle_account_locker,
@@ -532,7 +532,7 @@ impl BundleStage {
                 consume_worker_metrics,
             ) {
                 Ok(()) => {
-                    *last_tip_update_slot = bank.slot();
+                    *last_tip_update_bank_id = Some(bank.bank_id());
                 }
                 Err(BundleExecutionError::ErrorRetryable) => {
                     bundle_stage_metrics.tip_programs_error += 1;
@@ -541,10 +541,10 @@ impl BundleStage {
                 }
                 Err(err) => {
                     // Instruction failures and missing accounts will not succeed on retry
-                    // in this slot. Advance so we do not tight-loop every 10ms poll.
+                    // on this bank. Advance so we do not tight-loop every 10ms poll.
                     bundle_stage_metrics.tip_programs_error += 1;
                     error!("tip programs error, not processing bundles: {err:?}");
-                    *last_tip_update_slot = bank.slot();
+                    *last_tip_update_bank_id = Some(bank.bank_id());
                     return;
                 }
             }
@@ -1071,7 +1071,7 @@ mod tests {
             None,
         );
         let mut metrics = BundleStageLoopMetrics::default();
-        let mut last_tip_update_slot = Slot::MAX;
+        let mut last_tip_update_bank_id = None;
         let identity = Arc::new(Keypair::new());
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&identity.pubkey(), timestamp()),
@@ -1089,7 +1089,7 @@ mod tests {
                 &mut storage,
                 &BundleAccountLocker::default(),
                 &mut metrics,
-                &mut last_tip_update_slot,
+                &mut last_tip_update_bank_id,
                 &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
                 &TipManager::new(TipManagerConfig::default()),
                 &cluster_info,
@@ -1320,6 +1320,70 @@ mod tests {
             bundle_stage,
             _poh_recorder: poh_recorder,
             _ledger_path: ledger_path,
+        }
+    }
+
+    #[test]
+    fn test_tip_upkeep_runs_on_same_slot_replacement_bank() {
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config(2);
+        let (root, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        let tip_manager = TipManager::new(TipManagerConfig {
+            tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+            tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: Pubkey::new_unique(),
+                vote_account: genesis_config_info.voting_keypair.pubkey(),
+                commission_bps: 10,
+            },
+        });
+        let block_builder_fee_info = Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+            block_builder: leader_keypair.pubkey(),
+            block_builder_commission: 10,
+        }));
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
+            Arc::new(leader_keypair),
+            SocketAddrSpace::Unspecified,
+        ));
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let consumer = BundleConsumer::new(
+            Committer::new(None, None),
+            TransactionRecorder::new(record_sender),
+            None,
+        );
+
+        // A bank, then its same-slot replacement: each needs its own tip upkeep.
+        let mut last_tip_update_bank_id = None;
+        for which in ["first", "replacement"] {
+            let bank = Bank::new_from_parent(root.clone(), SlotLeader::new_unique(), 1);
+            bank_forks.write().unwrap().insert(bank);
+            let bank = bank_forks.read().unwrap().working_bank();
+            record_receiver.restart(bank.bank_id());
+            BundleStage::consume_bundles(
+                &bank,
+                &mut BundleStorage::with_capacity(1),
+                &BundleAccountLocker::default(),
+                &consumer,
+                &mut BundleStageLoopMetrics::default(),
+                &mut last_tip_update_bank_id,
+                &block_builder_fee_info,
+                &tip_manager,
+                &cluster_info,
+                &ConsumeWorkerMetrics::new(),
+            );
+            assert!(
+                bank.get_account(&tip_manager.tip_payment_config_pubkey())
+                    .is_some(),
+                "no tip upkeep on the {which} bank"
+            );
+            record_receiver.shutdown();
+            for _ in record_receiver.drain_after_shutdown() {}
+            // Abandon the bank as the block creation loop does, which also clears its signatures.
+            bank_forks.write().unwrap().clear_bank(1, false);
         }
     }
 
