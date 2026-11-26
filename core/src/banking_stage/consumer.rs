@@ -2027,4 +2027,150 @@ mod tests {
             Vec::<RetryableIndex>::new(),
         );
     }
+    #[derive(Clone, Copy)]
+    enum RotationExecutionCase {
+        Valid,
+        OldAuthority,
+        WrongAuthority,
+        FailedRotation,
+        StaleNonce,
+    }
+
+    #[test_case(RotationExecutionCase::Valid; "valid")]
+    #[test_case(RotationExecutionCase::OldAuthority; "old_authority")]
+    #[test_case(RotationExecutionCase::WrongAuthority; "wrong_authority")]
+    #[test_case(RotationExecutionCase::FailedRotation; "failed_rotation")]
+    #[test_case(RotationExecutionCase::StaleNonce; "stale_nonce")]
+    fn nonce_rotation_atomic_execution(case: RotationExecutionCase) {
+        use crate::banking_stage::transaction_scheduler::bam_utils::tests::NonceRotationFixture;
+        let TestFrame {
+            bank,
+            bank_forks: _forks,
+            consumer,
+            record_receiver: _records,
+            ..
+        } = setup_test(None);
+        let fixture = NonceRotationFixture::new(&bank);
+        let wrong_authority = Keypair::new();
+        let rotation_authority = if matches!(case, RotationExecutionCase::FailedRotation) {
+            &wrong_authority
+        } else {
+            &fixture.old_authority
+        };
+        let use_authority = match case {
+            RotationExecutionCase::OldAuthority => &fixture.old_authority,
+            RotationExecutionCase::WrongAuthority => &wrong_authority,
+            _ => &fixture.new_authority,
+        };
+        let transactions = sanitize_transactions(vec![
+            fixture.rotation(&bank, fixture.nonce_account, rotation_authority, true),
+            fixture.transfer(
+                use_authority,
+                if matches!(case, RotationExecutionCase::StaleNonce) {
+                    Hash::new_unique()
+                } else {
+                    *fixture.nonce.as_hash()
+                },
+            ),
+        ]);
+        let nonce_before = bank.get_account(&fixture.nonce_account).unwrap();
+        let payer_before = bank.get_account(&fixture.payer.pubkey()).unwrap();
+        let max_age = MaxAge {
+            sanitized_epoch: bank.epoch(),
+            alt_invalidation_slot: bank.slot(),
+        };
+        let (admission, _) = try_admit_transactions(
+            &bank,
+            &transactions,
+            transactions.iter().map(|tx| {
+                bank.resanitize_transaction_minimally(
+                    tx,
+                    max_age.sanitized_epoch,
+                    max_age.alt_invalidation_slot,
+                )
+            }),
+            0,
+            true,
+        )
+        .unwrap();
+        let output = consumer.process_and_record_aged_transactions_with_policy(
+            &bank,
+            &transactions,
+            &[max_age; 2],
+            &ExecutionFlags {
+                simulate: false,
+                drop_on_failure: true,
+                all_or_nothing: true,
+            },
+            None,
+            true,
+            Some(admission),
+        );
+        let results = output
+            .execute_and_commit_transactions_output
+            .commit_transactions_result
+            .unwrap();
+        if matches!(case, RotationExecutionCase::Valid) {
+            assert!(
+                results.iter().all(|result| matches!(
+                    result,
+                    CommitTransactionDetails::Committed { result: Ok(()), .. }
+                )),
+                "{results:?}"
+            );
+            assert_eq!(bank.get_balance(&fixture.recipient), 1);
+            let account = bank.get_account(&fixture.nonce_account).unwrap();
+            let advanced = DurableNonce::from_blockhash(&bank.last_blockhash());
+            assert_eq!(
+                verify_nonce_account(&account, advanced.as_hash())
+                    .unwrap()
+                    .authority,
+                fixture.new_authority.pubkey()
+            );
+        } else {
+            assert!(
+                results
+                    .iter()
+                    .all(|result| matches!(result, CommitTransactionDetails::NotCommitted(_))),
+                "{results:?}"
+            );
+            let expected = if matches!(case, RotationExecutionCase::FailedRotation) {
+                (
+                    0,
+                    TransactionError::InstructionError(
+                        0,
+                        InstructionError::MissingRequiredSignature,
+                    ),
+                )
+            } else {
+                (1, TransactionError::BlockhashNotFound)
+            };
+            let first_failure =
+                results
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, result)| match result {
+                        CommitTransactionDetails::NotCommitted(error)
+                            if error != &TransactionError::CommitCancelled =>
+                        {
+                            Some((index, error))
+                        }
+                        _ => None,
+                    });
+            assert_eq!(
+                first_failure,
+                Some((expected.0, &expected.1)),
+                "{results:?}"
+            );
+            assert_eq!(bank.get_balance(&fixture.recipient), 0);
+            assert_eq!(
+                bank.get_account(&fixture.nonce_account).unwrap(),
+                nonce_before
+            );
+            assert_eq!(
+                bank.get_account(&fixture.payer.pubkey()).unwrap(),
+                payer_before
+            );
+        }
+    }
 }

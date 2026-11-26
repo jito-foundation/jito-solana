@@ -6520,6 +6520,7 @@ dependencies = [
  "solana-net-utils",
  "solana-nohash-hasher",
  "solana-nonce",
+ "solana-nonce-account",
  "solana-packet",
  "solana-perf",
  "solana-poh",

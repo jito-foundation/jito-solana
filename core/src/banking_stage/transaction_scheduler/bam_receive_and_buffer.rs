@@ -15,7 +15,7 @@ use {
             scheduler_messages::MaxAge,
             transaction_scheduler::{
                 bam_scheduler::MAX_PACKETS_PER_BUNDLE,
-                bam_utils::convert_txn_error_to_proto,
+                bam_utils::{convert_txn_error_to_proto, recover_dependent_nonce_error},
                 receive_and_buffer::{
                     DisconnectedError, ReceivingStats, calculate_max_age,
                     contains_blacklisted_account, has_short_precompile_data,
@@ -487,17 +487,31 @@ impl BamReceiveAndBuffer {
             if bank_checks_enabled {
                 // Check 4: Ensure valid blockhash and blockhash is not too old
                 let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
-                let ((check_results, _), duration_us) =
-                    measure_us!(working_bank.check_transactions_external(
-                        std::slice::from_ref(&view),
-                        &lock_results,
-                        MAX_PROCESSING_AGE,
-                        false,
-                        &mut TransactionErrorMetrics::default(),
-                    ));
+                let (result, duration_us) = measure_us!({
+                    let result = working_bank
+                        .check_transactions_external(
+                            std::slice::from_ref(&view),
+                            &lock_results,
+                            MAX_PROCESSING_AGE,
+                            false,
+                            &mut TransactionErrorMetrics::default(),
+                        )
+                        .0
+                        .into_iter()
+                        .next()
+                        .unwrap()
+                        .map(|_| ());
+                    // Prevalidation permits multiple transactions only in an atomic bundle.
+                    recover_dependent_nonce_error(
+                        working_bank,
+                        &view,
+                        txns_max_age.iter().map(|(tx, _)| tx),
+                        result,
+                    )
+                });
                 metrics.check_transactions_us += duration_us;
-                if let Some(Err(err)) = check_results.first() {
-                    let reason = convert_txn_error_to_proto(err.clone());
+                if let Err(err) = result {
+                    let reason = convert_txn_error_to_proto(err);
                     stats.num_dropped_on_age += 1;
                     return (Err(transaction_error(index, reason)), stats);
                 }
@@ -2236,6 +2250,105 @@ pub(super) mod tests {
             )
             .0;
             assert!(implicit_locks.contains(&programdata));
+        }
+    }
+
+    #[test]
+    fn nonce_rotation_intake_prechecks() {
+        use super::super::bam_utils::tests::{NoncePrecheckCase::*, NonceRotationFixture};
+        for (case, expected) in [
+            (
+                StaleNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                UnadvanceableNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                MissingNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                InvalidNonceSize,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                MalformedNonce,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                WrongNonceOwner,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (Rotation, None),
+            (
+                NoPrior,
+                Some((0, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                Readonly,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                Unrelated,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                AgedRecentHashReplay,
+                Some((1, TransactionErrorReason::BlockhashNotFound)),
+            ),
+            (
+                MalformedBudget,
+                Some((
+                    1,
+                    TransactionErrorReason::InvalidLoadedAccountsDataSizeLimit,
+                )),
+            ),
+        ] {
+            let (forks, _) = test_bank_forks();
+            let root = forks.read().unwrap().root_bank();
+            let bank = child_bank(&root, 1);
+            let fixture = NonceRotationFixture::new(&bank);
+            let batch = AtomicTxnBatch {
+                seq_id: 7,
+                packets: fixture
+                    .transactions(&bank, case)
+                    .into_iter()
+                    .map(|tx| Packet {
+                        data: wincode::serialize(&VersionedTransaction::from(tx))
+                            .unwrap()
+                            .into(),
+                        meta: if matches!(case, NoPrior) {
+                            None
+                        } else {
+                            revert_on_error_packet().meta
+                        },
+                    })
+                    .collect(),
+                max_schedule_slot: Slot::MAX,
+            };
+            let (result, stats) = parse_single_batch(batch, (&root, &bank), &HashSet::new());
+            if let Some((index, reason)) = expected {
+                assert_eq!(
+                    result.err(),
+                    Some(transaction_error(index, reason)),
+                    "{case:?}"
+                );
+                assert_eq!(
+                    stats.num_dropped_on_compute_budget,
+                    usize::from(matches!(case, MalformedBudget))
+                );
+                assert_eq!(
+                    stats.num_dropped_on_age,
+                    usize::from(!matches!(case, MalformedBudget))
+                );
+            } else {
+                let parsed = result.unwrap();
+                assert_eq!(parsed.txns_max_age.len(), 2);
+                assert!(parsed.revert_on_error);
+                assert_eq!(stats.num_dropped_on_age, 0);
+            }
         }
     }
 }
