@@ -568,7 +568,7 @@ impl BundleStage {
         loop {
             // Always ensure the window is filled with bundles, breaking out when the bundle deque is full or no more bundles are available to pop
             while bundles.len() < BUNDLE_WINDOW_SIZE.get() {
-                let Some(bundle) = bundle_storage.pop_bundle(bank.slot(), bank.bank_id()) else {
+                let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
                     break;
                 };
 
@@ -1145,9 +1145,7 @@ mod tests {
         for _ in 0..2 {
             insert_bundle(&mut bundle_storage);
         }
-        let retryable_bundle = bundle_storage
-            .pop_bundle(bank.slot(), bank.bank_id())
-            .unwrap();
+        let retryable_bundle = bundle_storage.pop_bundle(bank.slot()).unwrap();
         bundle_storage.retry_bundle(retryable_bundle);
 
         std::thread::scope(|scope| {
@@ -1192,6 +1190,91 @@ mod tests {
             bam_enabled.load(Ordering::Acquire),
             BamConnectionState::Connected as u8
         );
+    }
+
+    #[test]
+    fn test_bundle_survives_same_slot_bank_replacement() {
+        use solana_poh::poh_recorder::{LeaderState, SharedLeaderState};
+
+        let TestFixture {
+            genesis_config_info,
+            ..
+        } = create_genesis_config_with_rent(2, Rent::free(), FeeRateGovernor::new(0, 0));
+        let mint = &genesis_config_info.mint_keypair;
+        let (root, _bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
+        // A provisional bank and its same-slot replacement.
+        let new_bank = || {
+            Arc::new(Bank::new_from_parent(
+                root.clone(),
+                SlotLeader::new_unique(),
+                1,
+            ))
+        };
+        let (b1, b2) = (new_bank(), new_bank());
+
+        let recipient = Pubkey::new_unique();
+        let tx = transfer(mint, &recipient, 1, root.last_blockhash());
+        let bundle =
+            VerifiedPacketBundle::new(PacketBatch::from(vec![BytesPacket::from_data(tx).unwrap()]));
+        let mut storage = BundleStorage::with_capacity(1);
+        storage
+            .insert_bundle(bundle, &root, &b1, &HashSet::default())
+            .unwrap();
+
+        let mut leader_state = SharedLeaderState::new(0, None, None);
+        leader_state.store(Arc::new(LeaderState::new_with_atomic_batches_enabled(
+            Some(b1),
+            0,
+            None,
+            None,
+            false,
+        )));
+        let mut decision_maker = DecisionMaker::new(
+            leader_state.clone(),
+            Arc::default(),
+            SharedAlpenglowSlotClock::default(),
+        );
+        let (record_sender, mut record_receiver) = record_channels(false);
+        record_receiver.restart(b2.bank_id());
+        let consumer = BundleConsumer::new(
+            Committer::new(None, None),
+            TransactionRecorder::new(record_sender),
+            None,
+        );
+        let identity = Arc::new(Keypair::new());
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&identity.pubkey(), timestamp()),
+            identity,
+            SocketAddrSpace::Unspecified,
+        ));
+        let mut last_tip_update_slot = Slot::MAX;
+        let mut process = |storage: &mut BundleStorage| {
+            BundleStage::process_buffered_bundles(
+                &mut decision_maker,
+                &consumer,
+                storage,
+                &BundleAccountLocker::default(),
+                &mut BundleStageLoopMetrics::default(),
+                &mut last_tip_update_slot,
+                &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+                &TipManager::new(TipManagerConfig::default()),
+                &cluster_info,
+                &ConsumeWorkerMetrics::new(),
+            )
+        };
+
+        // Provisional bank, then the replacement gap: hold without executing.
+        process(&mut storage);
+        leader_state.set_bank_replacement();
+        process(&mut storage);
+        assert_eq!(storage.unprocessed_bundles_len(), 1);
+
+        // The replacement bank runs what queued during the provisional bank.
+        leader_state.store(Arc::new(LeaderState::new(Some(b2.clone()), 0, None, None)));
+        process(&mut storage);
+        assert_eq!(b2.get_balance(&recipient), 1);
+        assert_eq!(storage.num_packets_buffered(), 0);
     }
 
     #[test_case::test_case(Rent::free(), false; "free_rent_drops_accounts")]
