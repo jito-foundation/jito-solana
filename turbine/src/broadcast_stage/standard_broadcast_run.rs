@@ -41,6 +41,9 @@ pub struct StandardBroadcastRun {
     // Parent slot and block id committed into the double-merkle block id. This
     // can change after an UpdateParent marker.
     parent_for_double_merkle: Block,
+    // Slot of the last UpdateParent marker broadcast. Its replacement bank's entries coalesce on a
+    // short deadline, so replicas can replay its held work promptly.
+    replacement_slot: Option<Slot>,
     chained_merkle_root: Hash,
     carryover_message: Option<WorkingBankMessage>,
     double_merkle_leaves: Vec<Hash>,
@@ -88,6 +91,7 @@ impl StandardBroadcastRun {
                 slot: Slot::MAX,
                 block_id: BlockId::default(),
             },
+            replacement_slot: None,
             chained_merkle_root: Hash::default(),
             double_merkle_leaves: vec![],
             carryover_message: None,
@@ -289,6 +293,7 @@ impl StandardBroadcastRun {
             },
         };
         self.parent_for_double_merkle = parent_for_double_merkle;
+        self.replacement_slot = Some(self.slot);
     }
 
     /// Leaf that binds the current replay parent into the double-merkle block id.
@@ -665,6 +670,7 @@ impl BroadcastRun for StandardBroadcastRun {
             receiver,
             &mut self.carryover_message,
             &mut process_stats,
+            self.replacement_slot,
         )?;
         // TODO: Confirm that last chunk of coding shreds
         // will not be lost or delayed for too long.
@@ -1554,7 +1560,9 @@ mod test {
                 .all(|shred| shred.parent().unwrap() == 10)
         );
 
+        assert_eq!(bs.replacement_slot, None);
         bs.maybe_update_parent_from_component(&component);
+        assert_eq!(bs.replacement_slot, Some(12));
         assert_eq!(bs.parent, 10);
         assert_eq!(bs.parent_block_id, original_parent_block_id);
         assert_eq!(
