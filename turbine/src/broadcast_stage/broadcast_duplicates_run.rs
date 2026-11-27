@@ -1,6 +1,9 @@
 use {
     super::*,
-    crate::{broadcast_stage::broadcast_utils::BroadcastItem, cluster_nodes::ClusterNodesCache},
+    crate::{
+        ShredReceiverAddresses, broadcast_stage::broadcast_utils::BroadcastItem,
+        cluster_nodes::ClusterNodesCache,
+    },
     agave_votor::event::VotorEventSender,
     agave_votor_messages::migration::MigrationStatus,
     crossbeam_channel::Sender,
@@ -12,7 +15,7 @@ use {
     solana_signature::Signature,
     solana_signer::Signer,
     solana_system_transaction as system_transaction,
-    std::{borrow::Cow, collections::HashSet},
+    std::{borrow::Cow, collections::HashSet, net::SocketAddr},
 };
 
 // Shreds in a Merkle FEC set share a signature, while duplicate variants share shred IDs.
@@ -112,6 +115,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             receiver,
             &mut self.carryover_message,
             &mut stats,
+            self.current_slot,
         )?;
         let bank = receive_results.bank.clone();
         let last_tick_height = receive_results.last_tick_height;
@@ -138,7 +142,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             // This test only TowerBFT implementation does not use block markers
             return Ok(());
         };
-        // We are guarenteed by coalesce that this is not empty
+        // We are guaranteed by coalesce that this is not empty
         assert!(!entries.is_empty());
         // Update the recent blockhash based on transactions in the entries
         for entry in entries.iter() {
@@ -352,6 +356,11 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {

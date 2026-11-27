@@ -29,6 +29,8 @@ pub struct ProcessShredsStats {
     // The number of times entry coalescing exited because the maximum coalesce
     // duration was reached.
     pub coalesce_exited_rcv_timeout: u64,
+    // The number of times entry coalescing exited because a new slot was encountered.
+    pub coalesce_exited_new_slot: u64,
     // Histogram count of num_data_shreds obtained from serializing entries
     // counted in 5 buckets.
     num_data_shreds_hist: [usize; 5],
@@ -124,6 +126,11 @@ impl ProcessShredsStats {
             (
                 "coalesce_exited_rcv_timeout",
                 self.coalesce_exited_rcv_timeout,
+                i64
+            ),
+            (
+                "coalesce_exited_new_slot",
+                self.coalesce_exited_new_slot,
                 i64
             ),
         );
@@ -235,6 +242,7 @@ impl AddAssign<ProcessShredsStats> for ProcessShredsStats {
             coalesce_exited_tightly_packed,
             coalesce_exited_slot_ended,
             coalesce_exited_rcv_timeout,
+            coalesce_exited_new_slot,
             num_data_shreds_hist,
             num_extant_slots,
             padding_bytes,
@@ -255,6 +263,7 @@ impl AddAssign<ProcessShredsStats> for ProcessShredsStats {
         self.coalesce_exited_tightly_packed += coalesce_exited_tightly_packed;
         self.coalesce_exited_slot_ended += coalesce_exited_slot_ended;
         self.coalesce_exited_rcv_timeout += coalesce_exited_rcv_timeout;
+        self.coalesce_exited_new_slot += coalesce_exited_new_slot;
         self.num_extant_slots += num_extant_slots;
         self.padding_bytes += padding_bytes;
         self.data_bytes += data_bytes;

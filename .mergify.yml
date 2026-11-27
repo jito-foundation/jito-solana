@@ -5,6 +5,7 @@ shared:
 pull_request_rules:
   - name: label changes from community
     conditions:
+      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -16,6 +17,7 @@ pull_request_rules:
           - need:merge-assist
   - name: request review for community changes
     conditions:
+      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -30,7 +32,18 @@ pull_request_rules:
     actions:
       request_reviews:
         teams:
-          - "@anza-xyz/community-pr-subscribers"
+          - "@jito-foundation/jito-solana"
+  - name: label changes from monorepo-triage
+    conditions:
+      - author≠@anza
+      - author≠mergify[bot]
+      - author≠dependabot[bot]
+      - author≠github-actions[bot]
+      - author=@agave-external-triage
+    actions:
+      label:
+        add:
+          - need:merge-assist
   - name: automatic merge (squash) on CI success
     conditions:
       - and:
@@ -63,6 +76,7 @@ pull_request_rules:
         message: automerge label removed due to a CI failure
   - name: v4.2 feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.2
       - label=feature-gate
     actions:
@@ -76,6 +90,7 @@ pull_request_rules:
           - v4.2
   - name: v4.2 non-feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.2
       - label!=feature-gate
     actions:
@@ -87,6 +102,7 @@ pull_request_rules:
           - v4.2
   - name: v4.3 feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.3
       - label=feature-gate
     actions:
@@ -100,6 +116,7 @@ pull_request_rules:
           - v4.3
   - name: v4.3 non-feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.3
       - label!=feature-gate
     actions:
@@ -129,6 +146,7 @@ pull_request_rules:
   - name: close PRs against EoL version branches
     conditions:
       - base ~= ^v[0-9]+\.[0-9]+$
+      - base != v4.1 # still maintained by Jito
       - base != v4.2
       - base != v4.3
     actions:
@@ -175,4 +193,4 @@ commands_restrictions:
   # Restrict `copy` access to Core Contributors
   copy:
     conditions:
-    - author=@anza
+    - sender=@jito-foundation/jito-solana

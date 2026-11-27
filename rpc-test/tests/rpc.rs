@@ -9,7 +9,7 @@ use {
     solana_commitment_config::CommitmentConfig,
     solana_hash::Hash,
     solana_keypair::Keypair,
-    solana_net_utils::{SocketAddrSpace, sockets},
+    solana_net_utils::{SocketAddrSpace, sockets::bind_to_localhost_unique},
     solana_pubkey::Pubkey,
     solana_pubsub_client::nonblocking::pubsub_client::PubsubClient,
     solana_rent::Rent,
@@ -39,6 +39,7 @@ use {
         },
         thread::sleep,
         time::{Duration, Instant},
+        vec,
     },
     tokio::runtime::{Builder, Runtime},
     tokio_util::sync::CancellationToken,
@@ -424,7 +425,7 @@ fn test_rpc_subscriptions() {
         .value;
     assert!(mint_balance >= transactions.len() as u64);
 
-    let bind_socket = sockets::bind_to_localhost_unique().unwrap();
+    let bind_socket = bind_to_localhost_unique().unwrap();
     let tpu_address = *test_validator.tpu_quic();
 
     let leader_updater = create_pinned_leader_updater(tpu_address);
@@ -518,7 +519,7 @@ fn test_run_tpu_send_transaction() {
 
     // Send transaction using tpu-client-next
     let rt = Runtime::new().unwrap();
-    let bind_socket = sockets::bind_to_localhost_unique().unwrap();
+    let bind_socket = bind_to_localhost_unique().unwrap();
     let tpu_address = *test_validator.tpu_quic();
 
     let leader_updater = create_pinned_leader_updater(tpu_address);

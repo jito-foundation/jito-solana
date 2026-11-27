@@ -70,6 +70,7 @@ pub enum RpcRequest {
     RequestAirdrop,
     SendTransaction,
     SimulateTransaction,
+    SimulateBundle,
     SignVote,
 }
 
@@ -137,6 +138,7 @@ impl RpcRequest {
             RpcRequest::RequestAirdrop => "requestAirdrop",
             RpcRequest::SendTransaction => "sendTransaction",
             RpcRequest::SimulateTransaction => "simulateTransaction",
+            RpcRequest::SimulateBundle => "simulateBundle",
             RpcRequest::SignVote => "signVote",
         }
     }
