@@ -571,6 +571,7 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
+        let decision = self.tpu_receive_decision(decision);
         self.receive_and_buffer
             .receive_and_buffer_packets(&mut self.container, decision)
     }
@@ -630,6 +631,25 @@ where
         let bam_connected = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Acquire))
             == BamConnectionState::Connected;
         self.bam_controller == bam_connected
+    }
+
+    /// While BAM schedules, the TPU controller only buffers. `ForwardAndHold` buffers
+    /// the same way but blocks on an empty channel instead of spinning.
+    fn tpu_receive_decision<'a>(
+        &self,
+        decision: &'a BufferedPacketsDecision,
+    ) -> &'a BufferedPacketsDecision {
+        if !self.bam_controller
+            && !self.scheduling_enabled()
+            && matches!(
+                decision,
+                BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold
+            )
+        {
+            &BufferedPacketsDecision::ForwardAndHold
+        } else {
+            decision
+        }
     }
 }
 
@@ -1545,6 +1565,54 @@ mod tests {
         );
 
         exit.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn test_tpu_controller_blocks_while_bam_schedules() {
+        let (mut test_frame, mut scheduler_controller) =
+            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
+        let TestFrame {
+            bank,
+            mint_keypair,
+            shared_leader_state,
+            banking_packet_sender,
+            ..
+        } = &mut test_frame;
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+        scheduler_controller
+            .bam_enabled
+            .store(BamConnectionState::Connected as u8, Ordering::Release);
+        let decision = scheduler_controller
+            .decision_maker
+            .make_consume_or_forward_decision();
+        assert!(matches!(decision, BufferedPacketsDecision::Consume(_)));
+
+        let start = Instant::now();
+        scheduler_controller
+            .receive_and_buffer_packets(&decision)
+            .unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(10));
+
+        // Packets are still buffered for a fallback if BAM disconnects.
+        let transaction = create_and_fund_prioritized_transfer(
+            bank,
+            mint_keypair,
+            &Keypair::new(),
+            &Pubkey::new_unique(),
+            1,
+            1000,
+            bank.last_blockhash(),
+        );
+        banking_packet_sender
+            .send(to_banking_packet_batch(&[transaction]))
+            .unwrap();
+        test_receive_all(&mut scheduler_controller, &decision);
+        assert_eq!(scheduler_controller.container.queue_size(), 1);
     }
 }
 

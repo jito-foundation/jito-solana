@@ -17,8 +17,8 @@ use {
                 bam_scheduler::MAX_PACKETS_PER_BUNDLE,
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
-                    DisconnectedError, ReceivingStats, calculate_max_age,
-                    contains_blacklisted_account, has_short_precompile_data,
+                    DisconnectedError, PacketHandlingError, ReceivingStats, calculate_max_age,
+                    contains_blacklisted_account, translate_sanitized_to_runtime_view,
                 },
                 transaction_state_container::StateContainer,
             },
@@ -26,7 +26,7 @@ use {
     },
     agave_transaction_view::{
         resolved_transaction_view::ResolvedTransactionView,
-        transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
+        transaction_view::SanitizedTransactionView,
     },
     ahash::HashSet,
     bytes::Bytes,
@@ -39,7 +39,6 @@ use {
     },
     rayon::prelude::*,
     smallvec::SmallVec,
-    solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{MAX_PROCESSING_AGE, Slot},
     solana_measure::{measure::Measure, measure_us},
     solana_message::v1::{MAX_TRANSACTION_SIZE, V1_PREFIX},
@@ -53,7 +52,6 @@ use {
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_svm_transaction::svm_message::SVMMessage,
-    solana_transaction::sanitized::MessageHash,
     std::{
         sync::{
             Arc,
@@ -381,35 +379,13 @@ impl BamReceiveAndBuffer {
         let transaction_account_lock_limits = working_bank.get_transaction_account_lock_limits();
         let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
 
-        // Checks are taken from receive_and_buffer.rs:
-        // SanitizedTransactionReceiveAndBuffer::buffer_packets
+        // Checks mirror `precheck_transaction` in receive_and_buffer.rs.
         for (index, verified_packet) in verified_batch.iter_mut().enumerate() {
-            // Load static runtime metadata from the view retained by sigverify.
-            let sanitization_start = Instant::now();
             let Ok((view, is_simple_vote_transaction)) =
                 core::mem::replace(verified_packet, Err(PacketVerificationError::Consumed))
             else {
                 unreachable!("signature failures are handled before parsing");
             };
-
-            let Some(view) = RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
-                view,
-                MessageHash::Compute,
-            )
-            .ok()
-            .filter(|view| !has_short_precompile_data(view)) else {
-                return (
-                    Err(deserialization_error(
-                        index,
-                        DeserializationErrorReason::SanitizeError,
-                    )),
-                    stats,
-                );
-            };
-            let sanitization_end = Instant::now();
-            metrics.sanitization_us += sanitization_end
-                .duration_since(sanitization_start)
-                .as_micros() as u64;
 
             // Check 0: Reject vote transactions
             if is_simple_vote_transaction {
@@ -423,54 +399,40 @@ impl BamReceiveAndBuffer {
                 );
             }
 
-            // Check 1: Load addresses for transaction and convert to ResolvedTransactionView
-            let resolution_start = sanitization_end;
-            let load_addresses_result = match view.version() {
-                TransactionVersion::Legacy | TransactionVersion::V1 => Ok((None, u64::MAX)),
-                TransactionVersion::V0 => root_bank
-                    .load_addresses_from_ref(view.address_table_lookup_iter())
-                    .map(|(loaded_addresses, deactivation_slot)| {
-                        (Some(loaded_addresses), deactivation_slot)
-                    }),
-            };
-            let Ok((loaded_addresses, deactivation_slot)) = load_addresses_result else {
-                return (
-                    Err(deserialization_error(
-                        index,
-                        DeserializationErrorReason::SanitizeError,
-                    )),
-                    stats,
-                );
-            };
-
-            let Ok(view) = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
+            // Checks 1-2: Load runtime metadata and addresses, then validate account locks.
+            // Implicit read locks are loaded below, once the whole batch passes.
+            let (result, duration_us) = measure_us!(translate_sanitized_to_runtime_view(
                 view,
-                loaded_addresses,
-                root_bank.get_reserved_account_keys(),
-            ) else {
-                return (
-                    Err(deserialization_error(
-                        index,
-                        DeserializationErrorReason::SanitizeError,
-                    )),
-                    stats,
-                );
+                root_bank,
+                transaction_account_lock_limits,
+                None,
+                false,
+            ));
+            metrics.resolution_us += duration_us;
+            let (view, deactivation_slot) = match result {
+                Ok(translated) => translated,
+                // Duplicate keys fail runtime construction as a sanitize error first.
+                Err(PacketHandlingError::LockValidation) => {
+                    stats.num_dropped_on_lock_validation += 1;
+                    return (
+                        Err(transaction_error(
+                            index,
+                            TransactionErrorReason::TooManyAccountLocks,
+                        )),
+                        stats,
+                    );
+                }
+                Err(_) => {
+                    stats.num_dropped_on_parsing_and_sanitization += 1;
+                    return (
+                        Err(deserialization_error(
+                            index,
+                            DeserializationErrorReason::SanitizeError,
+                        )),
+                        stats,
+                    );
+                }
             };
-            let resolution_end = Instant::now();
-            metrics.resolution_us +=
-                resolution_end.duration_since(resolution_start).as_micros() as u64;
-
-            // Check 2: Ensure no duplicates and valid number of account locks
-            let start = Instant::now();
-            if let Err(err) = transaction_account_lock_limits
-                .for_version(solana_svm_transaction::svm_message::SVMStaticMessage::version(&view))
-                .and_then(|limit| validate_account_locks(view.account_keys(), limit))
-            {
-                let reason = convert_txn_error_to_proto(err);
-                stats.num_dropped_on_lock_validation += 1;
-                return (Err(transaction_error(index, reason)), stats);
-            }
-            metrics.lock_validation_us += start.elapsed().as_micros() as u64;
 
             // Check 3: Ensure the compute budget limits are valid
             let (result, duration_us) =
@@ -871,8 +833,7 @@ impl Drop for BamReceiveAndBuffer {
 #[derive(Default)]
 struct BamReceiveAndBufferMetrics {
     total_us: u64,
-    sanitization_us: u64,
-    lock_validation_us: u64,
+    /// Sanitization, address loading and account-lock validation.
     resolution_us: u64,
     fee_budget_extraction_us: u64,
     check_transactions_us: u64,
@@ -889,8 +850,6 @@ struct BamReceiveAndBufferMetrics {
 impl BamReceiveAndBufferMetrics {
     fn has_data(&self) -> bool {
         self.total_us > 0
-            || self.sanitization_us > 0
-            || self.lock_validation_us > 0
             || self.resolution_us > 0
             || self.fee_budget_extraction_us > 0
             || self.check_transactions_us > 0
@@ -910,8 +869,6 @@ impl BamReceiveAndBufferMetrics {
         datapoint_info!(
             "bam-receive-and-buffer",
             ("total_us", self.total_us, i64),
-            ("sanitization_us", self.sanitization_us, i64),
-            ("lock_validation_us", self.lock_validation_us, i64),
             ("resolution_us", self.resolution_us, i64),
             (
                 "fee_budget_extraction_us",
@@ -2090,7 +2047,7 @@ pub(super) mod tests {
         else {
             panic!("signature verification failed");
         };
-        let (result, _) = BamReceiveAndBuffer::parse_batch(
+        let (result, receiving_stats) = BamReceiveAndBuffer::parse_batch(
             &mut verified_packets,
             seq_id,
             revert_on_error,
@@ -2106,6 +2063,7 @@ pub(super) mod tests {
                 jito_protos::proto::bam_types::DeserializationError { index: 0, reason }
             )) if reason == DeserializationErrorReason::SanitizeError as i32
         ));
+        assert_eq!(receiving_stats.num_dropped_on_parsing_and_sanitization, 1);
     }
 
     // Activation on the working bank isn't enough: a buffered batch may still execute in a bank
