@@ -173,15 +173,13 @@ impl BamConnection {
         while !connection_exit.load(Relaxed) {
             tokio::select! {
                 _ = heartbeat_interval.tick() => {
-                    let _ = outbound_sender.try_send(v0_to_versioned_proto(SchedulerMessageV0 {
-                        msg: Some(Msg::HeartBeat(ValidatorHeartBeat {
-                            time_sent_microseconds: u64::try_from(SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_micros()).unwrap_or_default(),
-                        })),
-                    }));
                     metrics.heartbeat_sent += 1;
+                    Self::send_outbound(&outbound_sender, &mut metrics, Msg::HeartBeat(ValidatorHeartBeat {
+                        time_sent_microseconds: u64::try_from(SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_micros()).unwrap_or_default(),
+                    }));
                 }
                 _ = health_check_interval.tick() => {
                     is_healthy.store(
@@ -190,7 +188,7 @@ impl BamConnection {
                     );
                 }
                 _ = metrics_report_interval.tick() => {
-                    metrics.report(is_healthy.load(Relaxed));
+                    metrics.report(is_healthy.load(Relaxed), outbound_receiver.len());
                 }
                 inbound = inbound_stream.message() => {
                     let inbound = match inbound {
@@ -485,7 +483,7 @@ struct BamConnectionMetrics {
 }
 
 impl BamConnectionMetrics {
-    fn report(&mut self, connection_healthy: bool) {
+    fn report(&mut self, connection_healthy: bool, outbound_queue_len: usize) {
         datapoint_info!(
             "bam_connection-metrics",
             ("bundle_received", self.bundle_received, i64),
@@ -505,7 +503,8 @@ impl BamConnectionMetrics {
             ("bundleresult_sent", self.bundleresult_sent, i64),
             ("heartbeat_sent", self.heartbeat_sent, i64),
             ("outbound_sent", self.outbound_sent, i64),
-            ("outbound_fail", self.outbound_fail, i64)
+            ("outbound_fail", self.outbound_fail, i64),
+            ("outbound_queue_len", outbound_queue_len, i64),
         );
         self.bundle_received = 0;
         self.bundle_forward_to_scheduler_fail = 0;

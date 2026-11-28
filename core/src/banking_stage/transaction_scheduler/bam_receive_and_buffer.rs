@@ -212,7 +212,6 @@ impl BamReceiveAndBuffer {
                 TIMEOUT,
                 ATOMIC_TXN_BATCH_BURST,
             );
-            stats.receive_time_us += loop_start.elapsed().as_micros() as u64;
 
             match recv_info {
                 Ok(num_batches_received) => stats.num_received += num_batches_received,
@@ -265,6 +264,7 @@ impl BamReceiveAndBuffer {
                             verified_batch.iter().position(|result| result.is_err())
                         {
                             metrics.sigverify_metrics.total_packets_verified += index;
+                            stats.num_dropped_on_parsing_and_sanitization += 1;
                             return Err((
                                 deserialization_error(
                                     index,
@@ -297,7 +297,6 @@ impl BamReceiveAndBuffer {
                             let reason = SchedulingError::ContainerFull as i32;
                             return Err((Reason::SchedulingError(reason), seq_id));
                         }
-                        stats.num_buffered = stats.num_buffered.saturating_add(packet_count);
                         Ok(())
                     },
                 );
@@ -498,7 +497,11 @@ impl BamReceiveAndBuffer {
                 metrics.check_transactions_us += duration_us;
                 if let Some(Err(err)) = check_results.first() {
                     let reason = convert_txn_error_to_proto(err.clone());
-                    stats.num_dropped_on_age += 1;
+                    if reason == TransactionErrorReason::AlreadyProcessed {
+                        stats.num_dropped_on_already_processed += 1;
+                    } else {
+                        stats.num_dropped_on_age += 1;
+                    }
                     return (Err(transaction_error(index, reason)), stats);
                 }
             }
@@ -797,10 +800,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         let deadline = (!buffering).then(|| Instant::now() + Duration::from_millis(100));
         for _ in 0..ATOMIC_TXN_BATCH_BURST {
             let batch = if let Some(deadline) = deadline {
-                let (result, receive_time_us) =
-                    measure_us!(self.parsed_batch_receiver.recv_deadline(deadline));
-                stats.receive_time_us += receive_time_us;
-                match result {
+                match self.parsed_batch_receiver.recv_deadline(deadline) {
                     Ok(batch) => batch,
                     Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError::Receiver),
                     Err(RecvTimeoutError::Timeout) => break,
@@ -827,7 +827,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 bam_state,
                 BamConnectionState::Disconnected | BamConnectionState::Connecting
             ) {
-                stats.num_dropped_without_parsing += batch.txns_max_age.len();
+                stats.num_dropped_without_parsing += 1;
             } else if container
                 .insert_new_batch(
                     batch.txns_max_age,
@@ -844,6 +844,7 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                     SchedulingError::ContainerFull,
                 );
             } else {
+                stats.num_buffered += 1;
                 self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
             }
             if !buffering {
@@ -930,7 +931,10 @@ impl BamReceiveAndBufferMetrics {
     }
 }
 
-#[derive(Default)]
+// Bounded so rebuilding the histograms on every 20 ms report stays cheap; larger samples clamp.
+const VERIFY_US_PER_PACKET_MAX: u64 = 100_000;
+const BATCH_PACKETS_LEN_MAX: u64 = 1_024;
+
 struct SigverifyMetrics {
     pub verify_batches_pp_us_hist: Histogram,
     pub batch_packets_len_hist: Histogram,
@@ -938,6 +942,26 @@ struct SigverifyMetrics {
     pub total_packets_verified: usize,
     pub total_batches_verified: usize,
     pub oversized_packets: usize,
+}
+
+impl Default for SigverifyMetrics {
+    fn default() -> Self {
+        let histogram = |max_value| {
+            Histogram::configure()
+                .max_value(max_value)
+                .precision(2)
+                .build()
+                .unwrap()
+        };
+        Self {
+            verify_batches_pp_us_hist: histogram(VERIFY_US_PER_PACKET_MAX),
+            batch_packets_len_hist: histogram(BATCH_PACKETS_LEN_MAX),
+            total_verify_time_us: 0,
+            total_packets_verified: 0,
+            total_batches_verified: 0,
+            oversized_packets: 0,
+        }
+    }
 }
 
 impl SigverifyMetrics {
@@ -1005,17 +1029,17 @@ impl SigverifyMetrics {
     pub fn increment_verify_batches_pp_us(&mut self, us: u64, packet_count: usize) {
         if packet_count > 0 {
             let per_packet_us = (us as f64 / packet_count as f64).round() as u64;
-            self.verify_batches_pp_us_hist
-                .increment(per_packet_us)
-                .unwrap();
+            let _ = self
+                .verify_batches_pp_us_hist
+                .increment(per_packet_us.min(VERIFY_US_PER_PACKET_MAX));
         }
     }
 
     pub fn increment_batch_packets_len(&mut self, packet_count: usize) {
         if packet_count > 0 {
-            self.batch_packets_len_hist
-                .increment(packet_count as u64)
-                .unwrap();
+            let _ = self
+                .batch_packets_len_hist
+                .increment((packet_count as u64).min(BATCH_PACKETS_LEN_MAX));
         }
     }
 }
@@ -1361,6 +1385,13 @@ pub(super) mod tests {
 
         metrics.sigverify_metrics.oversized_packets = 1;
         assert!(metrics.has_data());
+
+        // Samples above the bounded histograms' range are clamped, not dropped or panicked on.
+        let sigverify = &mut metrics.sigverify_metrics;
+        sigverify.increment_verify_batches_pp_us(u64::MAX, 1);
+        sigverify.increment_batch_packets_len(usize::MAX);
+        assert_eq!(sigverify.verify_batches_pp_us_hist.entries(), 1);
+        assert_eq!(sigverify.batch_packets_len_hist.entries(), 1);
     }
 
     #[test]
@@ -1460,15 +1491,17 @@ pub(super) mod tests {
             TransactionStateContainer::with_capacity(2 * (ATOMIC_TXN_BATCH_BURST + 1));
 
         let decision = BufferedPacketsDecision::Consume(bank);
-        receiver
+        let stats = receiver
             .receive_and_buffer_packets(&mut container, &decision)
             .unwrap();
         assert_eq!(container.queue_size(), ATOMIC_TXN_BATCH_BURST);
+        assert_eq!(stats.num_buffered, ATOMIC_TXN_BATCH_BURST);
         assert_eq!(receiver.parsed_batch_receiver.len(), 1);
 
-        receiver
+        let stats = receiver
             .receive_and_buffer_packets(&mut container, &decision)
             .unwrap();
+        assert_eq!(stats.num_buffered, 1);
         let seq_ids = (0..=ATOMIC_TXN_BATCH_BURST)
             .map(|_| {
                 let id = container.pop().unwrap();
@@ -1718,6 +1751,20 @@ pub(super) mod tests {
             matches!(&txn_batch_result.result, Some(atomic_txn_batch_result::Result::NotCommitted(not_committed)) if
                 matches!(not_committed.reason, Some(Reason::DeserializationError(_))))
         ));
+
+        // Parser stats arrive with its next 20 ms report.
+        let mut stats = ReceivingStats::default();
+        let start = Instant::now();
+        while stats.num_received == 0 && start.elapsed() < Duration::from_secs(5) {
+            stats.accumulate(
+                receive_and_buffer
+                    .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+                    .unwrap(),
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(stats.num_received, 1);
+        assert_eq!(stats.num_dropped_on_parsing_and_sanitization, 1);
         exit.store(true, Ordering::Relaxed);
     }
 
@@ -1816,15 +1863,17 @@ pub(super) mod tests {
                 checks,
                 &mut metrics,
             )
-            .0
         };
         for revert_on_error in [false, true] {
-            assert!(parse(&selected, enabled, revert_on_error).is_ok());
+            assert!(parse(&selected, enabled, revert_on_error).0.is_ok());
+            let (result, stats) = parse(&without_shared, checks_without_shared, revert_on_error);
             assert!(matches!(
-                parse(&without_shared, checks_without_shared, revert_on_error),
+                result,
                 Err(Reason::TransactionError(error))
                     if error.reason == TransactionErrorReason::AlreadyProcessed as i32
             ));
+            assert_eq!(stats.num_dropped_on_already_processed, 1);
+            assert_eq!(stats.num_dropped_on_age, 0);
         }
 
         // Like BankForks::clear_bank(), drop the provisional bank's slot before replacing it.
@@ -1834,7 +1883,7 @@ pub(super) mod tests {
             .clear_bank(provisional.slot(), false);
         let replacement = child_bank(&root, 4);
         for revert_on_error in [false, true] {
-            assert!(parse(&replacement, true, revert_on_error).is_ok());
+            assert!(parse(&replacement, true, revert_on_error).0.is_ok());
         }
     }
 

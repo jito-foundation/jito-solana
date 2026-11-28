@@ -344,8 +344,14 @@ where
             self.update_receiving_metrics(&receiving_stats);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
-            let should_report = self.count_metrics.interval_has_data() && self.scheduling_enabled();
-            let priority_min_max = self.container.get_min_max_priority();
+            // BAM rows report while BAM is not connected too, so work dropped on a disconnect
+            // shows up instead of resetting with the interval.
+            let should_report = self.count_metrics.interval_has_data()
+                && (self.bam_controller || self.scheduling_enabled());
+            // BAM container priorities are a FIFO counter, not fees.
+            let priority_min_max = (!self.bam_controller)
+                .then(|| self.container.get_min_max_priority())
+                .flatten();
             self.count_metrics.update(|count_metrics| {
                 count_metrics.update_priority_stats(priority_min_max);
             });

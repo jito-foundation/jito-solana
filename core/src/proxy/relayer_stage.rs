@@ -123,8 +123,6 @@ impl RelayerStage {
         packet_tx: agave_wake_channel::Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
     ) {
-        let mut error_count: u64 = 0;
-
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
@@ -142,8 +140,7 @@ impl RelayerStage {
             .await
             {
                 match e {
-                    // This error is frequent on hot spares, and the parsed string does not work
-                    // with datapoints (incorrect escaping).
+                    // Hot spares hit this on every retry, so it is logged, not reported.
                     ProxyError::AuthenticationPermissionDenied => {
                         warn!(
                             "relayer permission denied. not on leader schedule. ignore if \
@@ -151,10 +148,9 @@ impl RelayerStage {
                         )
                     }
                     e => {
-                        error_count += 1;
                         datapoint_warn!(
                             "relayer_stage-proxy_error",
-                            ("count", error_count, i64),
+                            ("count", 1, i64),
                             ("error", e.to_string(), String),
                         );
                     }
@@ -287,9 +283,6 @@ impl RelayerStage {
         let mut relayer_stats = RelayerStageStats::default();
         let mut metrics_and_auth_tick = interval(METRICS_TICK);
 
-        let mut num_full_refreshes: u64 = 1;
-        let mut num_refresh_access_token: u64 = 0;
-
         let mut heartbeat_check_interval = interval(local_config.expected_heartbeat_interval);
         let mut last_heartbeat_ts = Instant::now();
 
@@ -323,19 +316,17 @@ impl RelayerStage {
                         .await?;
 
                     if access_token_refreshed {
-                        num_refresh_access_token += 1;
                         datapoint_info!(
                             "relayer_stage-refresh_access_token",
                             ("url", &local_config.relayer_url, String),
-                            ("count", num_refresh_access_token, i64),
+                            ("count", 1, i64),
                         );
                     }
                     if refresh_token_refreshed {
-                        num_full_refreshes += 1;
                         datapoint_info!(
                             "relayer_stage-tokens_generated",
                             ("url", &local_config.relayer_url, String),
-                            ("count", num_full_refreshes, i64),
+                            ("count", 1, i64),
                         );
                     }
                 }

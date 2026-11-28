@@ -1,5 +1,8 @@
 use {
-    crate::{bam_dependencies::BamConnectionState, tonic_endpoint::endpoint_from_url},
+    crate::{
+        bam_dependencies::BamConnectionState, proxy::sanitize_status_message_for_influx,
+        tonic_endpoint::endpoint_from_url,
+    },
     arc_swap::ArcSwap,
     chrono::{DateTime, Utc},
     futures::{StreamExt, stream},
@@ -302,7 +305,11 @@ impl BamDiscovery {
         datapoint_info!(
             "bam_discovery-selected",
             ("url", node.url.clone(), String),
-            ("region", node.region.clone(), String),
+            (
+                "region",
+                sanitize_status_message_for_influx(&node.region),
+                String
+            ),
             ("rtt_us", node.rtt_us as i64, i64),
         );
         true

@@ -1,6 +1,6 @@
 use {
     crate::{CandidateIdentity, snapshot_worker::WorkerOutcome},
-    solana_metrics::datapoint_error,
+    solana_metrics::{datapoint_error, datapoint_info},
     std::fmt::Display,
 };
 
@@ -46,7 +46,11 @@ pub(super) fn report_spawn_failure(error: impl Display, candidate: CandidateIden
 
 pub(super) fn report_worker_outcome(outcome: &WorkerOutcome, candidate: CandidateIdentity) {
     match outcome {
-        WorkerOutcome::Written(_) => {}
+        WorkerOutcome::Written(_) => datapoint_info!(
+            "tip_router_snapshot_service-written",
+            ("epoch", candidate.epoch as i64, i64),
+            ("slot", candidate.slot as i64, i64),
+        ),
         WorkerOutcome::Failed(error) => {
             report_candidate_failure(CandidateFailureEvent::Worker, error, candidate);
         }

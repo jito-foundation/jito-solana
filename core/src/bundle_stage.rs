@@ -60,7 +60,6 @@ const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 // Stats emitted periodically
 pub struct BundleStageLoopMetrics {
     last_report: Instant,
-    id: u32,
 
     // total received
     num_bundles_received: Saturating<u64>,
@@ -93,13 +92,15 @@ pub struct BundleStageLoopMetrics {
     tip_programs_error: Saturating<u64>,
     bundle_lock_errors: Saturating<u64>,
     bundles_processed: Saturating<u64>,
+    bundles_failed: Saturating<u64>,
+    // Counts attempts: a retried bundle is requeued and counts again if it retries again.
+    bundles_retried: Saturating<u64>,
 }
 
 impl Default for BundleStageLoopMetrics {
     fn default() -> Self {
         BundleStageLoopMetrics {
             last_report: Instant::now(),
-            id: 0,
             num_bundles_received: Saturating(0),
             num_packets_received: Saturating(0),
             newly_buffered_bundles_count: Saturating(0),
@@ -118,6 +119,8 @@ impl Default for BundleStageLoopMetrics {
             tip_programs_error: Saturating(0),
             bundle_lock_errors: Saturating(0),
             bundles_processed: Saturating(0),
+            bundles_failed: Saturating(0),
+            bundles_retried: Saturating(0),
         }
     }
 }
@@ -151,7 +154,6 @@ impl BundleStageLoopMetrics {
         if self.last_report.elapsed().as_millis() >= report_interval_ms as u128 && self.has_data() {
             datapoint_info!(
                 "bundle_stage-loop_stats",
-                ("id", self.id, i64),
                 (
                     "num_bundles_received",
                     self.num_bundles_received.0 as i64,
@@ -230,6 +232,8 @@ impl BundleStageLoopMetrics {
                 ("tip_programs_error", self.tip_programs_error.0 as i64, i64),
                 ("bundle_lock_errors", self.bundle_lock_errors.0 as i64, i64),
                 ("bundles_processed", self.bundles_processed.0 as i64, i64),
+                ("bundles_failed", self.bundles_failed.0 as i64, i64),
+                ("bundles_retried", self.bundles_retried.0 as i64, i64),
             );
 
             *self = Self::default();
@@ -253,6 +257,8 @@ impl BundleStageLoopMetrics {
             || self.tip_programs_error.0 > 0
             || self.bundle_lock_errors.0 > 0
             || self.bundles_processed.0 > 0
+            || self.bundles_failed.0 > 0
+            || self.bundles_retried.0 > 0
     }
 }
 
@@ -596,13 +602,15 @@ impl BundleStage {
                     bundle_storage.destroy_bundle(bundle);
                 }
                 Err(BundleExecutionError::ErrorRetryable) => {
+                    bundle_stage_metrics.bundles_retried += 1;
                     bundle_storage.retry_bundle(bundle);
                 }
                 Err(BundleExecutionError::ErrorNonRetryable) => {
+                    bundle_stage_metrics.bundles_failed += 1;
                     bundle_storage.destroy_bundle(bundle);
                 }
             }
-            consume_worker_metrics.maybe_report_and_reset("10000");
+            consume_worker_metrics.maybe_report_and_reset("bundle_stage");
         }
 
         debug_assert!(

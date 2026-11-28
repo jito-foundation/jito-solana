@@ -428,7 +428,6 @@ impl BankingStage {
             );
             let mut worker_metrics = Vec::with_capacity(num_workers);
             for index in 0..num_workers {
-                let id = index + BAM_METRICS_ID_OFFSET as usize;
                 let consume_worker = ConsumeWorker::new(
                     bam_scheduler_exit.clone(),
                     work_receiver.clone(),
@@ -440,7 +439,7 @@ impl BankingStage {
                 worker_metrics.push(consume_worker.metrics_handle());
                 threads.push(
                     Builder::new()
-                        .name(format!("solCoWorker{id:02}"))
+                        .name(format!("solBamWorker{index:02}"))
                         .spawn(move || {
                             let _ = consume_worker.run();
                         })

@@ -112,14 +112,12 @@ impl MulticastShredCheckService {
         multicast_addr: SocketAddr,
     ) {
         let next = route_found.then_some(multicast_addr);
-        let current = multicast_receiver_address.load();
-        if current.as_ref() == &next {
-            return;
-        }
-
-        multicast_receiver_address.store(Arc::new(next));
         let status = if route_found { "enabled" } else { "disabled" };
-        info!("Set multicast receiver state for {multicast_addr}: {status}");
+        if multicast_receiver_address.load().as_ref() != &next {
+            multicast_receiver_address.store(Arc::new(next));
+            info!("Set multicast receiver state for {multicast_addr}: {status}");
+        }
+        // Report every check, so a box that never had a route still shows as disabled.
         datapoint_info!(
             "multicast_shred_check",
             ("status", status, String),
