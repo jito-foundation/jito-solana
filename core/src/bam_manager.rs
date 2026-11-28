@@ -21,7 +21,7 @@ use {
         },
         bam_dependencies::{BamConnectionState, BamDependencies, BamOutboundMessage},
         bam_discovery::BamDiscovery,
-        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        proxy::{block_engine_stage::BlockBuilderFeeInfo, sanitize_status_message_for_influx},
     },
     arc_swap::ArcSwap,
     jito_protos::proto::{
@@ -42,6 +42,37 @@ use {
 const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 const STALE_ATTEMPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+const CONNECT_FAILED_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Reports failed connect attempts when the error changes, then at most once per
+/// `CONNECT_FAILED_REPORT_INTERVAL`, so a node that keeps rejecting us stays visible without a
+/// row per retry. Reset when a connection goes live.
+#[derive(Default)]
+struct ConnectFailures {
+    last: Option<(String, std::time::Instant)>,
+    /// Failed attempts since the last live connection.
+    attempts: u64,
+}
+
+impl ConnectFailures {
+    fn record(&mut self, url: &str, error: String) {
+        self.attempts += 1;
+        if self.last.as_ref().is_some_and(|(last_error, reported_at)| {
+            *last_error == error && reported_at.elapsed() < CONNECT_FAILED_REPORT_INTERVAL
+        }) {
+            return;
+        }
+        datapoint_warn!(
+            "bam_manager-connection",
+            "event" => "connect_failed",
+            ("url", url, String),
+            ("error", error.as_str(), String),
+            ("attempts", self.attempts, i64),
+        );
+        self.last = Some((error, std::time::Instant::now()));
+    }
+}
 
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<ArcSwap<Option<String>>>,
@@ -139,6 +170,7 @@ impl BamManager {
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let mut bam_client_id_set = false;
+        let mut connect_failures = ConnectFailures::default();
 
         while !exit.load(Ordering::Relaxed) {
             let latest_bam_url = bam_url.load_full();
@@ -237,6 +269,8 @@ impl BamManager {
                         }
                         Some(Err(e)) => {
                             error!("Failed to connect to BAM with url: {url}: {e}");
+                            connect_failures
+                                .record(url, sanitize_status_message_for_influx(&e.to_string()));
                             Self::set_bam_disconnected(&dependencies);
                             std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                             continue;
@@ -265,6 +299,7 @@ impl BamManager {
                                  {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and will \
                                  retry",
                             );
+                            connect_failures.record(url, "not_healthy_after_wait".to_string());
                             std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         }
                         continue;
@@ -287,7 +322,7 @@ impl BamManager {
                     "BAM connection to {} unhealthy, disconnecting",
                     connection.url()
                 );
-                true
+                Some("unhealthy")
             } else if Self::handle_identity_change(
                 &identity_changed,
                 &new_identity,
@@ -295,17 +330,23 @@ impl BamManager {
                 &exit,
                 false,
             ) {
-                true
+                Some("identity_changed")
             } else {
                 if connect_url.as_deref() == Some(connection.url()) {
-                    false
+                    None
                 } else {
                     Self::set_bam_disconnected(&dependencies);
-                    true
+                    Some("url_changed")
                 }
             };
 
-            if disconnect {
+            if let Some(reason) = disconnect {
+                datapoint_warn!(
+                    "bam_manager-connection",
+                    "event" => "disconnected",
+                    ("url", connection.url(), String),
+                    ("reason", reason, String),
+                );
                 outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                 continue;
             }
@@ -325,6 +366,7 @@ impl BamManager {
                         "BAM initial builder config could not publish a fee snapshot; falling \
                          back to Block Engine"
                     );
+                    connect_failures.record(connection.url(), "builder_config".to_string());
                     Self::set_bam_disconnected(&dependencies);
                     outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                     std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
@@ -334,6 +376,12 @@ impl BamManager {
                     dependencies
                         .bam_enabled
                         .store(BamConnectionState::Connected as u8, Ordering::Release);
+                    connect_failures = ConnectFailures::default();
+                    datapoint_info!(
+                        "bam_manager-connection",
+                        "event" => "connected",
+                        ("url", connection.url(), String),
+                    );
                 }
             }
             // Send leader state if we are in a leader slot

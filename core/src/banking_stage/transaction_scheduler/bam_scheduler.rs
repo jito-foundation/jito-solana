@@ -62,6 +62,21 @@ pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_P
 /// Number of BAM execution workers, also used to cap outstanding BAM batches.
 pub(in crate::banking_stage) const NUM_BAM_WORKERS: usize = 8;
 
+// Bounded so the slot-end report stays cheap on the scheduler thread; longer samples clamp.
+const HISTOGRAM_MAX_US: u64 = 60_000_000;
+
+fn bounded_histogram() -> Histogram {
+    Histogram::configure()
+        .max_value(HISTOGRAM_MAX_US)
+        .precision(2)
+        .build()
+        .unwrap()
+}
+
+fn elapsed_us(now: Instant, since: Instant) -> u64 {
+    (now.duration_since(since).as_micros() as u64).min(HISTOGRAM_MAX_US)
+}
+
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
@@ -75,6 +90,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     time_in_priograph_us: Histogram,
     time_in_worker_us: Histogram,
     slot: Option<Slot>,
+    /// Last slot that ended; the histogram rows report it.
+    last_slot: Slot,
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
@@ -188,9 +205,10 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             inflight_batch_info: IntMap::default(),
             prio_graph: PrioGraph::new(|id, _| *id),
             insertion_to_prio_graph_time: IntMap::default(),
-            time_in_priograph_us: Histogram::new(),
-            time_in_worker_us: Histogram::new(),
+            time_in_priograph_us: bounded_histogram(),
+            time_in_worker_us: bounded_histogram(),
             slot: None,
+            last_slot: 0,
             reusable_consume_work: Vec::new(),
             extra_checks_enabled: true,
             shared_leader_state,
@@ -376,13 +394,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 continue;
             };
 
-            // Update time in prio-graph metric
-            if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
-                let _ = self
-                    .time_in_priograph_us
-                    .increment(now.duration_since(insertion_time).as_micros() as u64);
-            };
-
             // Insertion checked slot expiry; a slot change drains the graph and pending head.
             // Validate borrowed transactions before allocating or acquiring a work object.
             let check_error = {
@@ -397,6 +408,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 missing.or_else(|| self.check_transactions(admission_bank, &txns))
             };
             if let Some((index, err)) = check_error {
+                self.insertion_to_prio_graph_time.remove(&seq_id);
                 container.remove_by_id(id.id);
                 self.prio_graph.unblock(&id);
                 self.send_back_result(
@@ -468,7 +480,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             work.revert_on_error = revert_on_error;
             work.target_slot = slot;
             work.admission = Some((Arc::clone(admission_bank), results));
-            num_scheduled += work.ids.len();
+            num_scheduled += 1;
             if let Err(err) = self.consume_work_sender.send(work) {
                 self.recycle_work_object(err.0);
                 return Err(SchedulerError::DisconnectedSendChannel(
@@ -476,6 +488,12 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 ));
             }
             self.inflight_reserved_cost += reserved_cost;
+            // Time from insertion to dispatch, including any cost-admission deferral.
+            if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
+                let _ = self
+                    .time_in_priograph_us
+                    .increment(elapsed_us(now, insertion_time));
+            }
             self.inflight_batch_info.insert(
                 batch_id,
                 InflightBatchInfo {
@@ -607,6 +625,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             }
             None => debug!("Bank boundary detected: slot changed to None"),
         }
+        if let Some(prev_slot) = prev_slot {
+            self.last_slot = prev_slot;
+        }
         self.slot = bank_slot;
 
         // Drain container and send back 'retryable'
@@ -635,35 +656,32 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 self.prio_graph.unblock(&inflight_info.priority_id);
             }
         }
-        let now = Instant::now();
         while let Some((next_batch_id, _)) = self.prio_graph.pop_and_unblock() {
             let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) else {
                 container.remove_by_id(next_batch_id.id);
                 continue;
             };
-            if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
-                let _ = self
-                    .time_in_priograph_us
-                    .increment(now.duration_since(insertion_time).as_micros() as u64);
-            };
-
             self.send_no_leader_slot_bundle_result(seq_id);
             container.remove_by_id(next_batch_id.id);
         }
 
         self.prio_graph.clear();
         self.insertion_to_prio_graph_time.clear();
-
-        // Only report timing metrics when slot has ended
-        if self.slot.is_none() {
-            self.report_histogram_metrics();
-        }
     }
 
-    fn report_histogram_metrics(&mut self) {
+    /// Reports once the slot has ended and its in-flight work has drained, so the rows include
+    /// the slot's last completions. A row spans earlier slots if no bankless gap was seen.
+    fn maybe_report_histogram_metrics(&mut self) {
+        if self.slot.is_some()
+            || !self.inflight_batch_info.is_empty()
+            || (self.time_in_priograph_us.entries() == 0 && self.time_in_worker_us.entries() == 0)
+        {
+            return;
+        }
         let percentile = |p| self.time_in_priograph_us.percentile(p).unwrap_or_default();
         datapoint_info!(
             "bam_scheduler_bank_boundary-metrics",
+            ("slot", self.last_slot, i64),
             ("time_in_priograph_us_p50", percentile(50.0), i64),
             ("time_in_priograph_us_p90", percentile(90.0), i64),
             ("time_in_priograph_us_p99", percentile(99.0), i64),
@@ -678,6 +696,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         let percentile = |p| self.time_in_worker_us.percentile(p).unwrap_or_default();
         datapoint_info!(
             "bam_scheduler_worker_time_metrics",
+            ("slot", self.last_slot, i64),
             ("time_in_worker_us_p50", percentile(50.0), i64),
             ("time_in_worker_us_p90", percentile(90.0), i64),
             ("time_in_worker_us_p99", percentile(99.0), i64),
@@ -741,7 +760,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
         // IMPORTANT: This must be called before the receiving code below
         self.maybe_bank_boundary_actions(decision, container);
 
-        let mut num_transactions = 0;
+        let mut num_batches = 0;
         let now = Instant::now();
         while let Ok(result) = self.finished_consume_work_receiver.try_recv() {
             let FinishedConsumeWork {
@@ -749,7 +768,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 retryable_indexes,
                 extra_info,
             } = result;
-            num_transactions += work.ids.len();
+            num_batches += 1;
             let batch_id = work.batch_id;
             let revert_on_error = work.revert_on_error;
             let Some(inflight_batch_info) = self.inflight_batch_info.remove(&batch_id) else {
@@ -788,10 +807,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             }
             self.recycle_work_object(work);
 
-            let _ = self.time_in_worker_us.increment(
-                now.duration_since(inflight_batch_info.schedule_time)
-                    .as_micros() as u64,
-            );
+            let _ = self
+                .time_in_worker_us
+                .increment(elapsed_us(now, inflight_batch_info.schedule_time));
             if let Some(extra_info) = extra_info {
                 let mut processed_results = extra_info.into_iter();
                 let bundle_result = if revert_on_error {
@@ -821,8 +839,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             }
             container.remove_by_id(inflight_batch_info.priority_id.id);
         }
+        self.maybe_report_histogram_metrics();
 
-        Ok((num_transactions, 0))
+        Ok((num_batches, 0))
     }
 
     fn scheduling_common_mut(&mut self) -> &mut SchedulingCommon<Tx> {
@@ -1734,7 +1753,7 @@ mod tests {
         let decision = BufferedPacketsDecision::Consume(bank.clone());
         test.receive_completed(&mut container, &decision);
 
-        assert_eq!(test.schedule(&mut container), NUM_BAM_WORKERS * batch_size);
+        assert_eq!(test.schedule(&mut container), NUM_BAM_WORKERS);
         assert_eq!(
             block_cost_and_in_flight(&bank),
             (
@@ -1751,7 +1770,7 @@ mod tests {
         assert_eq!(test.schedule(&mut container), 0);
 
         finish_committed(&mut test, &mut container, &decision, completed, 150);
-        assert_eq!(test.schedule(&mut container), batch_size);
+        assert_eq!(test.schedule(&mut container), 1);
         let next = test.consume_work_receiver.try_recv().unwrap();
         assert_eq!(
             test.scheduler.inflight_batch_info[&next.batch_id].seq_id,
@@ -1964,7 +1983,7 @@ mod tests {
         let should_defer = !impossible_head || !revert_on_error;
         assert_eq!(
             test.schedule(&mut container),
-            if should_defer { 1 } else { 5 }
+            if should_defer { 1 } else { 3 }
         );
         let work_a = test.consume_work_receiver.try_recv().unwrap();
         if should_defer {
@@ -2032,7 +2051,7 @@ mod tests {
         test.receive_completed(&mut container, &decision);
 
         test.scheduler.schedule(&mut container, 0, 0).unwrap();
-        test.consume_work_receiver.try_recv().unwrap();
+        let mut work_a = test.consume_work_receiver.try_recv().unwrap();
         assert!(!test.scheduler.pending_admission.is_empty());
 
         // Leaving the slot returns both the deferred head and its expired dependent to BAM.
@@ -2069,6 +2088,16 @@ mod tests {
         assert!(test.response_receiver.try_recv().is_err());
         // A is still inflight; its result arrives with the worker's response as before.
         assert_eq!(test.scheduler.inflight_batch_info.len(), 1);
+
+        // Only A was dispatched, so it is the only priograph sample. The ended slot's histograms
+        // wait for A and report once the bankless gap drains.
+        assert_eq!(test.scheduler.time_in_priograph_us.entries(), 1);
+        assert_eq!(test.scheduler.last_slot, bank.slot());
+        settle_committed(&bank, &mut work_a, 150);
+        finish_committed(&mut test, &mut container, &boundary, work_a, 150);
+        let reported = !next_slot;
+        assert_eq!(test.scheduler.time_in_priograph_us.entries() == 0, reported);
+        assert_eq!(test.scheduler.time_in_worker_us.entries() == 0, reported);
     }
 
     #[test_case::test_case(false; "repeated_replacement")]

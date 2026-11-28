@@ -39,6 +39,8 @@ pub struct TpuPacketSender {
     sender: agave_wake_channel::Sender<PacketBatch>,
     forward: Arc<AtomicBool>,
     packets_forwarded: Arc<AtomicU64>,
+    /// Packets that reached our own TPU while the relayer or BAM TPU was advertised.
+    packets_dropped: Arc<AtomicU64>,
 }
 
 impl TpuPacketSender {
@@ -47,16 +49,19 @@ impl TpuPacketSender {
             sender,
             forward: Arc::new(AtomicBool::new(true)),
             packets_forwarded: Arc::new(AtomicU64::new(0)),
+            packets_dropped: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
 impl ChannelSend<PacketBatch> for TpuPacketSender {
     fn try_send(&self, batch: PacketBatch) -> Result<(), TrySendError<PacketBatch>> {
+        let num_packets = batch.len() as u64;
         if !self.forward.load(Ordering::Relaxed) {
+            self.packets_dropped
+                .fetch_add(num_packets, Ordering::Relaxed);
             return Ok(());
         }
-        let num_packets = batch.len() as u64;
         self.sender.try_send(batch)?;
         self.packets_forwarded
             .fetch_add(num_packets, Ordering::Relaxed);
@@ -376,6 +381,13 @@ impl FetchStageTpuStateMachine {
                     .swap(0, Ordering::Relaxed),
                 i64
             ),
+            (
+                "fetch_stage_packets_dropped",
+                self.tpu_packet_sender
+                    .packets_dropped
+                    .swap(0, Ordering::Relaxed),
+                i64
+            ),
             ("heartbeats_received", self.heartbeats_received, i64),
         );
         self.heartbeats_received = 0;
@@ -491,15 +503,23 @@ mod tests {
                 .packets_forwarded
                 .load(Ordering::Relaxed)
         };
-        let packets_forwarded = forwarded();
+        let dropped = || {
+            brain
+                .tpu_packet_sender
+                .packets_dropped
+                .load(Ordering::Relaxed)
+        };
+        let (packets_forwarded, packets_dropped) = (forwarded(), dropped());
         let pkt = PacketBatch::from(vec![BytesPacket::empty(); 3]);
         assert!(brain.tpu_packet_sender.try_send(pkt.clone()).is_ok());
         if should_send {
             assert_eq!(packet_rx.try_recv().unwrap(), pkt);
             assert_eq!(forwarded(), packets_forwarded + 3);
+            assert_eq!(dropped(), packets_dropped);
         } else {
             assert!(packet_rx.try_recv().is_err());
             assert_eq!(forwarded(), packets_forwarded);
+            assert_eq!(dropped(), packets_dropped + 3);
         }
     }
 

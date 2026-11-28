@@ -173,8 +173,6 @@ impl BlockEngineStage {
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicU8>,
     ) {
-        let mut error_count: u64 = 0;
-
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
@@ -200,18 +198,16 @@ impl BlockEngineStage {
             .await
             {
                 match e {
-                    // This error is frequent on hot spares, and the parsed string does not work
-                    // with datapoints (incorrect escaping).
+                    // Hot spares hit this on every retry, so it is logged, not reported.
                     ProxyError::AuthenticationPermissionDenied => warn!(
                         "block engine permission denied. not on leader schedule. ignore if \
                          hot-spare."
                     ),
                     ProxyError::BamEnabled => {}
                     e => {
-                        error_count += 1;
                         datapoint_warn!(
                             "block_engine_stage-proxy_error",
-                            ("count", error_count, i64),
+                            ("count", 1, i64),
                             ("error", e.to_string(), String),
                         );
                     }
@@ -276,11 +272,6 @@ impl BlockEngineStage {
             ));
         };
 
-        datapoint_info!(
-            "block_engine_stage-connect",
-            "type" => "direct_global",
-            ("count", 1, i64),
-        );
         let backend_endpoint = Self::get_endpoint(global.block_engine_url.as_str())?;
 
         datapoint_info!(
@@ -329,11 +320,6 @@ impl BlockEngineStage {
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         let endpoints = Self::get_block_engine_endpoints(&endpoint).await?;
-        datapoint_info!(
-            "block_engine_stage-autoconfig",
-            ("regioned_count", endpoints.regioned_endpoints.len(), i64),
-            ("count", 1, i64),
-        );
         let candidates = Self::probe_and_rank_endpoints(&endpoints.regioned_endpoints).await;
         let candidates = if candidates.is_empty() {
             let Some(global) = endpoints.global_endpoint else {
@@ -395,8 +381,7 @@ impl BlockEngineStage {
                 Err(e) => {
                     // log each connection error
                     match &e {
-                        // This error is frequent on hot spares, and the parsed string does not work
-                        // with datapoints (incorrect escaping).
+                        // Hot spares hit this on every retry, so it is logged, not reported.
                         ProxyError::AuthenticationPermissionDenied => warn!(
                             "block engine permission denied. not on leader schedule. ignore if \
                              hot-spare."
@@ -408,7 +393,7 @@ impl BlockEngineStage {
                                 "type" => "proxy_err",
                                 ("url", block_engine_url, String),
                                 ("count", 1, i64),
-                                ("error", other.to_string(), String),
+                                ("err", other.to_string(), String),
                             );
                         }
                     }
@@ -566,7 +551,7 @@ impl BlockEngineStage {
                         "type" => "probe_request",
                         ("url", block_engine_url, String),
                         ("count", 1, i64),
-                        ("err", status.to_string(), String),
+                        ("err", ProxyError::from(status).to_string(), String),
                     );
                 }
                 Err(_elapsed) => {
@@ -670,6 +655,7 @@ impl BlockEngineStage {
 
         datapoint_info!(
             "block_engine_stage-autoconfig",
+            ("regioned_count", endpoints.len(), i64),
             ("endpoints_count", agg_endpoints.len(), i64),
             ("best_endpoint_url", best_endpoint_url.as_str(), String),
             ("best_endpoint_latency_us", best_endpoint_rtt_us, i64),
@@ -763,8 +749,6 @@ impl BlockEngineStage {
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
         let refresh_within_s: u64 = METRICS_TICK.as_secs().saturating_mul(3).saturating_div(2);
 
-        let mut num_full_refreshes: u64 = 1;
-        let mut num_refresh_access_token: u64 = 0;
         let mut block_engine_stats = BlockEngineStageStats::default();
         let mut metrics_and_auth_tick = interval(METRICS_TICK);
         let mut maintenance_tick = interval(MAINTENANCE_TICK);
@@ -805,19 +789,17 @@ impl BlockEngineStage {
                         .await?;
 
                     if access_token_refreshed {
-                        num_refresh_access_token += 1;
                         datapoint_info!(
                             "block_engine_stage-refresh_access_token",
                             ("url", &block_engine_url, String),
-                            ("count", num_refresh_access_token, i64),
+                            ("count", 1, i64),
                         );
                     }
                     if refresh_token_refreshed {
-                        num_full_refreshes += 1;
                         datapoint_info!(
                             "block_engine_stage-tokens_generated",
                             ("url", &block_engine_url, String),
-                            ("count", num_full_refreshes, i64),
+                            ("count", 1, i64),
                         );
                     }
                 }
@@ -975,7 +957,11 @@ impl BlockEngineStage {
             datapoint_warn!(
                 "block_engine_stage-block_builder_pubkey_parse_error",
                 ("url", block_engine_url, String),
-                ("pubkey", &block_builder_info.pubkey, String),
+                (
+                    "pubkey",
+                    sanitize_status_message_for_influx(&block_builder_info.pubkey),
+                    String
+                ),
                 ("count", 1, i64),
             );
             return Err(ProxyError::BlockEngineEndpointError(

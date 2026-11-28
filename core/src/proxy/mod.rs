@@ -102,7 +102,7 @@ pub enum ProxyError {
 
 const SANITIZED_MESSAGE_LIMIT: usize = 128;
 
-fn sanitize_status_message_for_influx(input: &str) -> String {
+pub(crate) fn sanitize_status_message_for_influx(input: &str) -> String {
     input
         .chars()
         .filter(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | ' '))
